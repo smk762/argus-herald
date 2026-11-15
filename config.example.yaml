@@ -20,6 +20,11 @@ destinations:
     #   packages: [your-pkg-*]       # or {include: [...], exclude: [...]}; default: everything
     #   hashtags: [python]           # appended while they fit (X: at most 2)
     #   link_placement: reply        # body (default) or reply (X, Bluesky, Mastodon)
+    # schedule:                    # optional; approved drafts wait for a slot (UTC)
+    #   slots: [Tue 08:00, Fri 08:00]
+    #   min_gap_hours: 24
+    #   offset_minutes: 0          # shift from the post's shared time on other platforms
+    #   grace_hours: 6             # a slot missed by more than this isn't posted late
     mode: manual  # Open in X link, posted by a person. `api` posts with the X API (billed per post).
   discord:
     enabled: false

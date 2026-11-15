@@ -30,6 +30,20 @@ class Destination:
     url: str | None = None
     mode: str | None = None  # twitter: "manual" (default) or "api"
     audience: "Audience | None" = None
+    schedule: "Schedule | None" = None
+
+
+_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+@dataclass(frozen=True)
+class Schedule:
+    """When a destination's approved drafts go out (UTC)."""
+
+    slots: tuple[tuple[int, int, int], ...]  # (weekday 0=Mon, hour, minute)
+    min_gap_hours: float = 24.0
+    offset_minutes: int = 0  # shift from the post group's shared time
+    grace_hours: float = 6.0  # a slot missed by more than this isn't posted late
 
 
 @dataclass(frozen=True)
@@ -306,8 +320,34 @@ def _destinations(value: Any) -> dict[str, Destination]:
             url=url.strip() if isinstance(url, str) else None,
             mode=mode,
             audience=_audience(str(key), raw.get("audience"), mode),
+            schedule=_schedule(str(key), raw.get("schedule")),
         )
     return out
+
+
+def _schedule(key: str, value: Any) -> Schedule | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ConfigError(f"destinations.{key}.schedule must be a mapping")
+    slots = []
+    for raw in _strings(value.get("slots") or []):
+        match = re.match(r"^\s*([A-Za-z]{3})[a-z]*\s+(\d{1,2}):(\d{2})\s*$", raw)
+        day = match.group(1).lower() if match else ""
+        if not match or day not in _DAYS or int(match.group(2)) > 23 or int(match.group(3)) > 59:
+            raise ConfigError(f"destinations.{key}.schedule.slots: {raw!r} should look like 'Tue 08:00' (UTC)")
+        slots.append((_DAYS.index(day), int(match.group(2)), int(match.group(3))))
+    if not slots:
+        raise ConfigError(f"destinations.{key}.schedule needs at least one slot")
+    numbers = {}
+    for name, default, low, high in (("min_gap_hours", 24, 0, 24 * 14), ("offset_minutes", 0, -1440, 1440),
+                                     ("grace_hours", 6, 0, 72)):
+        number = value.get(name, default)
+        if not isinstance(number, (int, float)) or isinstance(number, bool) or not low <= number <= high:
+            raise ConfigError(f"destinations.{key}.schedule.{name} must be a number from {low} to {high}")
+        numbers[name] = number
+    return Schedule(slots=tuple(sorted(set(slots))), min_gap_hours=float(numbers["min_gap_hours"]),
+                    offset_minutes=int(numbers["offset_minutes"]), grace_hours=float(numbers["grace_hours"]))
 
 
 def _audience(key: str, value: Any, mode: str | None) -> Audience | None:

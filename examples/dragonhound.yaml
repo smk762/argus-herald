@@ -29,6 +29,9 @@ destinations:
     mode: manual
     audience:
       link_placement: reply   # the post stays visual-first; the link goes in a self-reply
+    schedule:                 # approved drafts go out at the next free slot (UTC)
+      slots: [Tue 08:00, Fri 08:00]
+      min_gap_hours: 24
   patreon:
     enabled: true
     name: AtlasRealms

@@ -213,6 +213,36 @@ destinations:
 
 `pip-release platforms` prints each audience.
 
+## Scheduling
+
+A destination with a schedule doesn't post the moment you approve. The draft waits for the next free slot:
+
+```yaml
+destinations:
+  twitter:
+    schedule:
+      slots: [Tue 08:00, Fri 08:00]   # UTC
+      min_gap_hours: 24               # distance from this destination's other posts
+      offset_minutes: 0               # shift from the post's time on other platforms
+      grace_hours: 6
+```
+
+- On approve, a draft gets the next slot that's at least `min_gap_hours` from that destination's other scheduled or published posts. Drafts of the same post go out together: once one is scheduled, the others take its time plus their own `offset_minutes`.
+- The watcher wakes up for each scheduled draft. API platforms post. X and Patreon are handed off with a desktop notice ("Time to post"), and the draft page has the Open/Copy buttons ready.
+- If the watcher wasn't running and a slot passed more than `grace_hours` ago, nothing is posted late: you get a notice, and the draft stays approved without a time.
+- Editing an approved draft returns it to pending and releases its slot.
+- On the draft page, pick another free slot, enter a time, unschedule, or press **Publish** to post now. From the shell:
+
+```bash
+pip-release approve 12                 # also schedules it
+pip-release approve 12 --no-schedule   # goes out when you publish it
+pip-release schedule 12 --at 2026-12-01T08:00Z   # or --next, or --clear
+pip-release scheduled
+pip-release slots suggest              # engagement by weekday and hour, once post metrics exist
+```
+
+`slots suggest` ranks weekday and time-of-day buckets per platform by engagement, and suggests a slot once a platform has at least 6 posts. It only suggests and never changes the config.
+
 ## Media
 
 Any draft can carry images, GIFs or short clips, and each one needs alt text. On a draft's review page, upload a file or pick one from the media folder (`.pip-release/media/` by default, or `media: {dir: …}`), and optionally attach it to every draft of the same post. From the shell:

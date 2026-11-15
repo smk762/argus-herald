@@ -111,7 +111,8 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
     if args.command == "edit":
         return cmd_edit(store, by_id, args.id)
     if args.command == "approve":
-        return cmd_approve(store, by_id, _ids(args, store), args.note, _gate(config))
+        return cmd_approve(store, by_id, _ids(args, store), args.note, _gate(config),
+                           schedule=not args.no_schedule, schedules=_schedules(config))
     if args.command == "reject":
         return cmd_reject(store, _ids(args, store), args.note)
     if args.command == "publish":
@@ -126,6 +127,16 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
         return cmd_collect(config, store, http, args.since)
     if args.command == "digest":
         return cmd_digest(config, store, publishers, args)
+    if args.command == "schedule":
+        return cmd_schedule(config, store, args)
+    if args.command == "scheduled":
+        return cmd_scheduled(store)
+    if args.command == "slots":
+        from pip_release.metrics import metrics_path
+        from pip_release.schedule import suggest
+
+        print(suggest(metrics_path(config)))
+        return 0
     if args.command == "regenerate":
         return cmd_regenerate(config, store, by_id, args.id, args.force)
     if args.command == "promote":
@@ -376,7 +387,73 @@ def cmd_platforms(
     return 0
 
 
+def _schedules(config: Config) -> dict:
+    return {name: d.schedule for name, d in config.destinations.items() if d.schedule is not None}
+
+
+def cmd_schedule(config: Config, store: Store, args: argparse.Namespace) -> int:
+    from pip_release.schedule import free_slots, iso, parse
+
+    draft = _one(store, args.id)
+    if draft.status != APPROVED:
+        raise ReviewError(f"Draft {draft.id} is {draft.status}; approve it before scheduling")
+    if args.clear:
+        store.set_publish_at(draft.id, None)
+        print(f"Draft {draft.id} is no longer scheduled; it goes out when you publish it.")
+        return 0
+    if args.at:
+        try:
+            when = parse(args.at)
+        except ValueError as exc:
+            raise ReviewError("--at must be an ISO time, e.g. 2026-12-01T08:00Z") from exc
+        if when <= datetime.now(timezone.utc):
+            raise ReviewError("That time has passed; use publish to post now")
+    else:
+        schedule = _schedules(config).get(draft.platform)
+        if schedule is None:
+            raise ReviewError(f"{draft.platform} has no schedule in the config; pass --at")
+        slots = free_slots(store, draft.platform, schedule, datetime.now(timezone.utc), count=1, ignore=draft.id)
+        if not slots:
+            raise ReviewError("No free slot in the next weeks")
+        when = slots[0]
+    store.set_publish_at(draft.id, iso(when))
+    print(f"Draft {draft.id} goes out {iso(when)}.")
+    return 0
+
+
+def cmd_scheduled(store: Store) -> int:
+    drafts = store.scheduled()
+    if not drafts:
+        print("Nothing scheduled.")
+    for draft in drafts:
+        print(f"{draft.publish_at}  #{draft.id:<5} {draft.platform:<10} {draft.label}")
+    return 0
+
+
+def _publish_due(config: Config, store: Store, http: HttpClient) -> None:
+    """Publish or hand off scheduled drafts that are due, and say so."""
+    from pip_release.schedule import publish_due
+
+    if not store.scheduled():
+        return
+    try:
+        gate = load_gate(config.privacy, os.environ)
+    except GateUnavailable:
+        gate = None
+    results = publish_due(store, configured_publishers(config), _schedules(config), os.environ, http, gate,
+                          datetime.now(timezone.utc))
+    for result in results:
+        print(f"scheduled #{result.draft.id} {result.draft.platform}: {result.kind}: {result.detail}")
+    handed = [r.draft for r in results if r.kind == "handed_off"]
+    if handed:
+        _notify_text("Time to post", "\n".join(f"{d.platform}: {d.label}" for d in handed[:6]) + "\nOpen the review page to post it.")
+    problems = [r for r in results if r.kind in ("missed", "failed")]
+    if problems:
+        _notify_text("Scheduled post needs you", "\n".join(f"{r.draft.platform}: {r.draft.label}: {r.kind}" for r in problems[:6]))
+
+
 def cmd_poll(config: Config, store: Store, http: HttpClient, publishers: list[Publisher]) -> int:
+    _publish_due(config, store, http)
     events = poll(config, store, http, publishers)
     new_ids: list[int] = []
     errors = 0
@@ -502,7 +579,18 @@ def _notify_text(summary: str, body: str) -> None:
 
 
 def cmd_watch(config: Config, store: Store, http: HttpClient, publishers: list[Publisher]) -> int:
+    last_poll = 0.0
     while True:
+        now = time.time()
+        if now - last_poll < config.interval_seconds:
+            # Woken for a scheduled post between polls.
+            try:
+                _publish_due(config, store, http)
+            except (ConfigError, ReviewError, HttpError, OSError, ValueError) as exc:
+                log.error("%s", exc)
+            time.sleep(_sleep_for(config, store, last_poll))
+            continue
+        last_poll = now
         try:
             cmd_poll(config, store, http, publishers)
             _discover_daily(config, store, http)
@@ -510,7 +598,17 @@ def cmd_watch(config: Config, store: Store, http: HttpClient, publishers: list[P
         except (ConfigError, ReviewError, HttpError, OSError, ValueError) as exc:
             log.error("%s", exc)
             _heartbeat(config)
-        time.sleep(config.interval_seconds)
+        time.sleep(_sleep_for(config, store, last_poll))
+
+
+def _sleep_for(config: Config, store: Store, last_poll: float) -> float:
+    """Until the next poll, or the next scheduled post if that's sooner (at least 30 s)."""
+    from pip_release.schedule import next_due_in
+
+    until_poll = max(0.0, last_poll + config.interval_seconds - time.time())
+    due = next_due_in(store, datetime.now(timezone.utc))
+    wait = until_poll if due is None else min(until_poll, due + 1)
+    return max(30.0, wait)
 
 
 def cmd_drafts(store: Store, status: str | None) -> int:
@@ -557,17 +655,22 @@ def cmd_approve(
     ids: list[int],
     note: str | None,
     gate: Gate,
+    *,
+    schedule: bool = True,
+    schedules: dict | None = None,
 ) -> int:
     refused = False
     for draft_id in ids:
         draft = _one(store, draft_id)
         try:
-            approve(store, _publisher(publishers, draft.platform), draft_id, note, gate=gate)
+            updated = approve(store, _publisher(publishers, draft.platform), draft_id, note, gate=gate,
+                              schedule=schedule, schedules=schedules)
         except PrivacyRefused as exc:
             print(f"Draft {draft_id}: {exc}", file=sys.stderr)
             refused = True
             continue
-        print(f"Approved {draft_id}.")
+        when = f", scheduled for {updated.publish_at}" if updated.publish_at else ""
+        print(f"Approved {draft_id}{when}.")
     return 1 if refused else 0
 
 
@@ -865,6 +968,9 @@ def _parser() -> argparse.ArgumentParser:
     ):
         command = sub.add_parser(name, help=help_text)
         command.add_argument("ids", nargs="*", type=int)
+        if name == "approve":
+            command.add_argument("--no-schedule", action="store_true",
+                                 help="Don't give it a slot; it goes out when you publish it")
         command.add_argument("--release", help="project==version")
         command.add_argument("--post", help="Every draft of one post, by post key")
         command.add_argument("--note")
@@ -896,6 +1002,16 @@ def _parser() -> argparse.ArgumentParser:
     digest_cmd = sub.add_parser("digest", help="Digest mode: the open window and past digests")
     digest_cmd.add_argument("action", nargs="?", default="status", choices=("status", "exclude", "include", "rebuild"))
     digest_cmd.add_argument("refs", nargs="*", help="project==version for exclude/include, digest ids for rebuild")
+
+    sched = sub.add_parser("schedule", help="Set when an approved draft goes out")
+    sched.add_argument("id", type=int)
+    group = sched.add_mutually_exclusive_group()
+    group.add_argument("--at", help="ISO time (UTC if no offset), e.g. 2026-12-01T08:00Z")
+    group.add_argument("--next", action="store_true", help="The destination's next free slot (default)")
+    group.add_argument("--clear", action="store_true", help="Unschedule: it goes out when you publish it")
+    sub.add_parser("scheduled", help="List scheduled drafts")
+    slots = sub.add_parser("slots", help="Suggest posting times from engagement data")
+    slots.add_argument("action", choices=("suggest",))
 
     regen = sub.add_parser("regenerate", help="Draft a digest or headline post again (with the drafting backend)")
     regen.add_argument("id", type=int)

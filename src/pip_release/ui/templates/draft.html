@@ -197,6 +197,32 @@
     {% if draft.edited %}<label class="check"><input type="checkbox" name="force" value="1"> replace my edits</label>{% endif %}
   </form>
   {% endif %}
+  {% if draft.status == "approved" %}
+  <section class="schedule" aria-labelledby="schedule-h">
+    <h2 id="schedule-h">When it goes out</h2>
+    {% if draft.publish_at %}
+    <p>Scheduled for <strong>{{ publish_at_label }}</strong>. The watcher {{ "hands it to you to post" if handoff_manual else "publishes it" }} then; Publish below posts it now instead.</p>
+    {% else %}
+    <p>Not scheduled: it goes out when you press Publish.</p>
+    {% endif %}
+    <form method="post" action="/drafts/{{ draft.id }}/schedule" class="schedule-form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      {% if slot_choices %}
+      <label for="when">Free slots</label>
+      <select id="when" name="when">
+        {% for slot in slot_choices %}<option value="{{ slot.value }}">{{ slot.label }}</option>{% endfor %}
+        {% if draft.publish_at %}<option value="clear">Unschedule</option>{% endif %}
+      </select>
+      {% endif %}
+      <label for="at">or a time (UTC)</label>
+      <input id="at" name="at" type="datetime-local">
+      <button type="submit">Set time</button>
+    </form>
+    {% if draft.publish_at and not slot_choices %}
+    <form method="post" action="/drafts/{{ draft.id }}/schedule"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="when" value="clear"><button type="submit">Unschedule</button></form>
+    {% endif %}
+  </section>
+  {% endif %}
   <div class="side-actions">
     {% if can_publish %}
     <form method="post" action="/drafts/{{ draft.id }}/publish">

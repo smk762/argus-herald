@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     error TEXT,
     reply TEXT NOT NULL DEFAULT '',
     drafted_by TEXT NOT NULL DEFAULT 'template',
+    publish_at TEXT,
     UNIQUE (post_key, platform)
 );
 """
@@ -154,6 +155,8 @@ class Store:
             self.conn.execute("ALTER TABLE drafts ADD COLUMN reply TEXT NOT NULL DEFAULT ''")
         if "drafted_by" not in columns:
             self.conn.execute("ALTER TABLE drafts ADD COLUMN drafted_by TEXT NOT NULL DEFAULT 'template'")
+        if "publish_at" not in columns:
+            self.conn.execute("ALTER TABLE drafts ADD COLUMN publish_at TEXT")
 
     def _migrate_sources(self) -> None:
         """Add a source column to projects and seen (keys were PyPI names only)."""
@@ -503,6 +506,8 @@ class Store:
     ) -> Draft | None:
         assignments = ["status = ?", "updated_at = ?"]
         params: list[object] = [to_status, _now()]
+        if to_status == "pending" and "publish_at" not in fields:
+            fields = {**fields, "publish_at": None}  # back to review: its slot is released
         for key, value in fields.items():
             if key not in DRAFT_FIELDS:
                 raise ValueError(f"Unknown draft field {key}")
@@ -548,6 +553,36 @@ class Store:
 
     def remove_media(self, media_id: int) -> bool:
         return bool(self.conn.execute("DELETE FROM draft_media WHERE id = ?", (media_id,)).rowcount)
+
+    def set_publish_at(self, draft_id: int, when: str | None) -> bool:
+        cur = self.conn.execute(
+            "UPDATE drafts SET publish_at = ?, updated_at = ? WHERE id = ? AND status = 'approved'",
+            (when, _now(), draft_id),
+        )
+        return bool(cur.rowcount)
+
+    def due(self, now: str) -> list[Draft]:
+        rows = self.conn.execute(
+            "SELECT * FROM drafts WHERE status = 'approved' AND publish_at IS NOT NULL AND publish_at <= ? "
+            "ORDER BY publish_at, id", (now,),
+        ).fetchall()
+        return [_draft(row) for row in rows]
+
+    def scheduled(self, platform: str | None = None) -> list[Draft]:
+        clause, params = ("AND platform = ?", (platform,)) if platform else ("", ())
+        rows = self.conn.execute(
+            f"SELECT * FROM drafts WHERE status = 'approved' AND publish_at IS NOT NULL {clause} ORDER BY publish_at",
+            params,
+        ).fetchall()
+        return [_draft(row) for row in rows]
+
+    def post_times(self, platform: str) -> list[str]:
+        """When this platform's posts went out (or were handed off to be posted)."""
+        rows = self.conn.execute(
+            "SELECT updated_at AS t FROM drafts WHERE platform = ? AND status IN ('published', 'handed_off')",
+            (platform,),
+        ).fetchall()
+        return [row["t"] for row in rows]
 
     def set_note(self, draft_id: int, note: str | None) -> None:
         self.conn.execute("UPDATE drafts SET note = ? WHERE id = ?", (note, draft_id))
@@ -621,4 +656,5 @@ def _draft(row: sqlite3.Row) -> Draft:
         subject=row["subject"],
         reply=row["reply"],
         drafted_by=row["drafted_by"],
+        publish_at=row["publish_at"],
     )

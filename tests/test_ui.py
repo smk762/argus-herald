@@ -54,9 +54,7 @@ def _seed(config) -> None:
     store.close()
 
 
-def _app(tmp_path, token: str = ""):
-    config = _config(tmp_path)
-    _seed(config)
+def _env(token: str = "") -> dict:
     import os
 
     env = {
@@ -66,7 +64,13 @@ def _app(tmp_path, token: str = ""):
     }
     if token:
         env["PIP_RELEASE_UI_TOKEN"] = token
-    return create_app(config, env), config
+    return env
+
+
+def _app(tmp_path, token: str = ""):
+    config = _config(tmp_path)
+    _seed(config)
+    return create_app(config, _env(token)), config
 
 
 def _csrf(html: str) -> str:
@@ -447,3 +451,24 @@ def test_regenerate_is_only_for_digest_and_headline_drafts(tmp_path):
     assert "/drafts/1/regenerate" not in page.text  # a release draft has no Regenerate button
     result = client.post("/drafts/1/regenerate", data={"csrf": _csrf(page.text)}, follow_redirects=True)
     assert "Only digest and headline drafts can be regenerated" in result.text
+
+
+def test_schedule_on_approve_and_change_it(tmp_path):
+    from pip_release.config import Schedule
+
+    from dataclasses import replace
+
+    _app_unused, config = _app(tmp_path)
+    config.destinations["twitter"] = replace(config.destinations["twitter"], schedule=Schedule(slots=((1, 8, 0), (4, 8, 0))))
+    app = create_app(config, _env())
+    client = TestClient(app)
+    page = client.get("/drafts/1")
+    approved = client.post("/drafts/1/approve", data={"csrf": _csrf(page.text)}, follow_redirects=True)
+    assert "; scheduled for " in approved.text and "Scheduled for <strong>" in approved.text
+    assert 'name="when"' in approved.text
+    custom = client.post("/drafts/1/schedule", data={"csrf": _csrf(approved.text), "at": "2099-03-04T05:06"}, follow_redirects=True)
+    assert "Scheduled for Wed 04 Mar 05:06 UTC." in custom.text
+    past = client.post("/drafts/1/schedule", data={"csrf": _csrf(custom.text), "at": "2001-01-01T00:00"}, follow_redirects=True)
+    assert "That time has passed" in past.text
+    cleared = client.post("/drafts/1/schedule", data={"csrf": _csrf(past.text), "when": "clear"}, follow_redirects=True)
+    assert "Unscheduled." in cleared.text and "Not scheduled" in cleared.text
