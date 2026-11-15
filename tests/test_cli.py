@@ -155,3 +155,25 @@ def test_compose_reads_stdin_and_drafts_each_destination(tmp_path, capsys, monke
     assert main([*base, "drafts", "--status", "pending"]) == 0
     assert "note     Provenance" in capsys.readouterr().out
     assert main([*base, "compose", "x", "--platform", "twitter"]) == 2
+
+
+def test_media_commands_and_compose_with_media(tmp_path, capsys):
+    from PIL import Image
+
+    base, path = _seeded(tmp_path)
+    Image.new("RGB", (8, 8)).save(tmp_path / "shot.png")
+    assert main([*base, "media", "add", "1", str(tmp_path / "shot.png")]) == 2  # alt required
+    assert main([*base, "media", "add", "1", str(tmp_path / "shot.png"), "--alt", "A black square"]) == 0
+    assert "Attached shot.png as image to 1 draft(s)" in capsys.readouterr().out
+    assert main([*base, "media", "list", "1"]) == 0
+    assert "alt: A black square" in capsys.readouterr().out
+    assert main([*base, "media", "alt", "1", "A dark square"]) == 0
+    assert main([*base, "show", "1"]) == 0 and "alt: A dark square" in capsys.readouterr().out
+    assert main([*base, "media", "remove", "1"]) == 0
+    assert main([*base, "compose", "Clip", "--media", str(tmp_path / "shot.png")]) == 2  # one --alt per --media
+    assert main([*base, "compose", "Clip", "--media", str(tmp_path / "shot.png"), "--alt", "Square"]) == 0
+    from pip_release.store import Store
+
+    store = Store(path)
+    assert [m["alt"] for d in store.list_drafts() if d.kind == "demo" for m in store.media(d.id)] == ["Square"]
+    store.close()

@@ -7,6 +7,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# ffmpeg strips metadata from attached video clips; without it clips can't be approved.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin app \
     && mkdir -p /data \
     && chown app:app /data

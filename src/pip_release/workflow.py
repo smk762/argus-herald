@@ -8,6 +8,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -58,8 +59,53 @@ def draft_fields(draft: Draft) -> dict[str, str]:
 
 
 def gate_hits(store: Store, gate: Gate, draft: Draft) -> list[Hit]:
-    """Hits in this draft that haven't been accepted for it."""
-    return gate.check(draft_fields(draft), store.accepted(draft.id))
+    """Hits in this draft (text and alt text) that haven't been accepted for it."""
+    fields = draft_fields(draft)
+    for index, item in enumerate(store.media(draft.id), start=1):
+        fields[f"alt text {index}"] = item["alt"]
+    return gate.check(fields, store.accepted(draft.id))
+
+
+def media_problems(store: Store, publisher: Publisher, draft: Draft) -> list[str]:
+    """Why this draft's attachments can't be approved or published yet."""
+    from pip_release.media import UNSTRIPPED, MediaError, check_limits
+
+    media = store.media(draft.id)
+    problems = [f"{m['name']} needs alt text" for m in media if not m["alt"].strip()]
+    problems += [f"{m['name']}: video metadata wasn't stripped (install ffmpeg and attach it again)"
+                 for m in media if m["removed"] == UNSTRIPPED]
+    problems += [f"{m['name']}: the cleaned file is missing" for m in media if not Path(m["path"]).is_file()]
+    try:
+        check_limits(publisher.media_limits, publisher.label, media)
+    except MediaError as exc:
+        problems.append(str(exc))
+    return problems
+
+
+def attach_media(
+    store: Store, media_root: Path, draft_id: int, source: Path, alt: str, *, all_drafts: bool = False,
+    name: str | None = None,
+) -> list[int]:
+    """Clean a file and attach it to a draft (or every draft of its post). Returns media ids."""
+    from pip_release.media import MediaError, clean
+
+    draft = _require_draft(store, draft_id)
+    if draft.status not in (PENDING, APPROVED, FAILED):
+        raise ReviewError(f"Draft {draft_id} is {draft.status}; media can't change now")
+    try:
+        cleaned = clean(source, media_root / "clean")
+    except MediaError as exc:
+        raise ReviewError(str(exc)) from exc
+    targets = [draft]
+    if all_drafts:
+        targets = [d for d in store.list_drafts(post_key=draft.post_key) if d.status in (PENDING, APPROVED, FAILED)]
+    ids = []
+    for target in targets:
+        ids.append(store.add_media(target.id, kind=cleaned.kind, path=str(cleaned.path), name=name or source.name,
+                                   alt=alt.strip(), size=cleaned.bytes, removed=cleaned.removed))
+        if target.status == APPROVED:  # new media needs a fresh look
+            store.transition(target.id, (APPROVED,), PENDING)
+    return ids
 
 
 def enforce_gate(store: Store, gate: Gate, draft: Draft) -> None:
@@ -547,6 +593,9 @@ def approve(
 ) -> Draft:
     draft = _require_draft(store, draft_id)
     publisher.validate(draft.title, draft.body)
+    problems = media_problems(store, publisher, draft)
+    if problems:
+        raise ReviewError("; ".join(problems))
     enforce_gate(store, gate, draft)
     updated = store.transition(
         draft_id, (PENDING,), APPROVED, note=note, error=None
@@ -596,6 +645,9 @@ def publish_draft(
         )
     # Checked again here: the deny-list or config may have changed since approval.
     enforce_gate(store, gate, draft)
+    problems = media_problems(store, publisher, draft)
+    if problems:
+        raise ReviewError("; ".join(problems))
     if dry_run:
         return PublishResult(external_id=None, detail=draft.body, handed_off=publisher.manual)
     locked = store.transition(draft.id, (APPROVED, FAILED, PUBLISHING), PUBLISHING, error=None)

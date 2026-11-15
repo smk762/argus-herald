@@ -1,0 +1,15 @@
+{% if media %}
+<div class="attach">
+  <h3>Attach these files</h3>
+  <ul class="media-list">
+    {% for item in media %}
+    <li>
+      <a href="/media/{{ item.id }}" download="{{ item.name }}">{{ item.name }}</a> <span class="quiet">{{ item.kind }} · {{ (item.bytes / 1000)|round|int }} kB · metadata removed</span>
+      <label for="alt-copy-{{ item.id }}">Alt text</label>
+      <textarea id="alt-copy-{{ item.id }}" readonly rows="2">{{ item.alt }}</textarea>
+      <button type="button" class="copy" data-copy="alt-copy-{{ item.id }}">Copy alt text</button>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}

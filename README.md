@@ -168,6 +168,33 @@ sources:
 
 Feeds are read on every `poll`, so the watcher picks them up too. Drafts from a feed are keyed by the item's id, so a feed entry is never drafted twice.
 
+## Media
+
+Any draft can carry images, GIFs or short clips, and each one needs alt text. On a draft's review page, upload a file or pick one from the media folder (`.pip-release/media/` by default, or `media: {dir: …}`), and optionally attach it to every draft of the same post. From the shell:
+
+```bash
+pip-release media add 12 ~/clips/atlas-coast.gif --alt "A coastline painted over real terrain, labels fading in" --all-drafts
+pip-release media list 12
+pip-release media alt 7 "Better description"
+pip-release compose "Coastlines, painted." --kind demo --media shot.png --alt "…"
+```
+
+**Metadata never leaves the machine.** Each file gets a cleaned copy, and only that copy is posted or handed off:
+
+- **JPEG, PNG and WebP:** the EXIF rotation is applied, then EXIF (including GPS), XMP, IPTC, comments and text chunks are dropped. The colour profile is kept.
+- **GIF:** frames and timing are kept, and comments are dropped.
+- **MP4, MOV and WebM:** `ffmpeg -map_metadata -1 -c copy`. Without ffmpeg, a clip is attached but marked unstripped, and approve refuses it.
+
+The review page says what was removed (for example "EXIF with GPS location, comment").
+
+Approve is refused while any attachment lacks alt text, when the privacy gate flags alt text, or when the attachments don't fit the platform:
+
+- **X:** 4 images, or 1 GIF or video; images up to 5 MB, GIFs up to 15 MB.
+- **Patreon:** more generous limits.
+- Platforms that can't attach media yet refuse drafts that carry it.
+
+For X and Patreon, the handoff lists the cleaned files to download and attach, each with its alt text ready to copy.
+
 ## Privacy gate
 
 Every draft passes a privacy gate on approve and again on publish. A hit refuses the draft; text is never rewritten. It catches:

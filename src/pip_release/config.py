@@ -49,6 +49,11 @@ class Config:
     discover_prefix: str = ""
     digest: "DigestSettings | None" = None  # None: one draft per release (per_release mode)
     github: "GitHubSource | None" = None
+    media_dir: Path | None = None  # where attachments and their cleaned copies live
+
+    @property
+    def media_root(self) -> Path:
+        return self.media_dir or self.store_path.parent / "media"
 
 
 @dataclass(frozen=True)
@@ -125,12 +130,16 @@ def load_config(path: Path) -> Config:
     if unknown:
         raise ConfigError(f"sources name platforms that aren't in destinations: {', '.join(unknown)}")
     github = _github(data.get("github"))
+    media = data.get("media") or {}
+    if not isinstance(media, dict) or not isinstance(media.get("dir", ""), str):
+        raise ConfigError("media must be a mapping with an optional dir path")
     digest = _digest(data.get("digest"))
     if digest:
         unknown = sorted(set(digest.platforms) - set(destinations))
         if unknown:
             raise ConfigError(f"digest.platforms aren't in destinations: {', '.join(unknown)}")
     return Config(
+        media_dir=Path(media["dir"]).expanduser() if media.get("dir") else None,
         github=github,
         digest=digest,
         feeds=feeds,
