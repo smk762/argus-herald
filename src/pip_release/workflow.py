@@ -8,8 +8,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from pip_release.config import Config, normalize_name
+from pip_release.feeds import FeedItem, FeedSource, read_feed
 from pip_release.http import Http, HttpError, check_url, send_json
 from pip_release.models import (
     APPROVED,
@@ -18,7 +20,9 @@ from pip_release.models import (
     PENDING,
     PUBLISHED,
     PUBLISHING,
+    POST_KINDS,
     Draft,
+    Post,
     PublishResult,
 )
 from pip_release.notes import fetch_notes
@@ -93,9 +97,9 @@ def poll(
     publishers: list[Publisher],
 ) -> list[PollEvent]:
     projects = tracked_projects(config)
-    if not projects:
+    if not projects and not config.feeds:
         raise ReviewError(
-            "No projects to watch. Add pypi.projects. "
+            "Nothing to watch. Add pypi.projects or sources. "
             "PyPI does not publish a per-user release feed."
         )
     events: list[PollEvent] = []
@@ -103,10 +107,11 @@ def poll(
         for project in projects:
             if not store.is_baselined(project):
                 events.extend(_baseline_only(store, http, project))
+        events.extend(poll_feeds(config, store, http, [], draft=False))
         events.append(
             PollEvent(
                 "error",
-                projects[0],
+                (projects or [config.feeds[0].name])[0],
                 detail="No destinations are enabled, so new releases were left unseen",
             )
         )
@@ -140,7 +145,92 @@ def poll(
                 events.append(_draft_release(store, http, publishers, project, item.version))
             except (OSError, ValueError) as exc:
                 events.append(PollEvent("error", project, item.version, detail=str(exc)))
+    events.extend(poll_feeds(config, store, http, publishers))
     return events
+
+
+# Site categories that may become posts, and the draft kind each one gets.
+_SITE_KINDS = {"note": "note", "release": "headline", "digest": "digest"}
+
+
+def compose(
+    store: Store, publishers: list[Publisher], post: Post, *, post_key: str | None = None
+) -> list[int]:
+    """One pending draft per destination for a post that isn't a release. Returns new ids."""
+    if post.kind not in POST_KINDS and post.kind not in _SITE_KINDS.values():
+        raise ReviewError(f"Unknown post kind {post.kind!r}. Use one of: {', '.join(POST_KINDS)}")
+    if not post.text.strip() and not post.link.strip():
+        raise ReviewError("A post needs text, a link, or both")
+    if post.link.strip():
+        try:
+            check_url(post.link.strip())
+        except ValueError as exc:
+            raise ReviewError(f"Link: {exc}") from exc
+    if not publishers:
+        raise ReviewError("No destinations are enabled")
+    key = post_key or f"post:{uuid4().hex[:12]}"
+    ids: list[int] = []
+    for publisher in publishers:
+        rendered = publisher.render_post(post)
+        draft_id, created = store.add_draft(
+            kind=post.kind,
+            post_key=key,
+            subject=post.subject or post.title or post.text.strip().split("\n", 1)[0][:80],
+            platform=publisher.id,
+            title=rendered.title,
+            body=rendered.body,
+            link=post.link.strip(),
+        )
+        if created:
+            ids.append(draft_id)
+    return ids
+
+
+def poll_feeds(
+    config: Config, store: Store, http: Http, publishers: list[Publisher], *, draft: bool = True
+) -> list[PollEvent]:
+    """Read each feed. The first read baselines it; later new items become posts."""
+    events: list[PollEvent] = []
+    for feed in config.feeds:
+        try:
+            items = read_feed(http, feed.url)
+        except (HttpError, OSError, ValueError) as exc:
+            events.append(PollEvent("error", feed.name, detail=str(exc)))
+            continue
+        if not store.feed_baselined(feed.name):
+            store.baseline_feed(feed.name, [item.id for item in items])
+            events.append(PollEvent("baseline", feed.name, detail=f"{len(items)} items already in the feed"))
+            continue
+        if not draft:
+            continue
+        targets = [p for p in publishers if not feed.platforms or p.id in feed.platforms]
+        for item in items:
+            if store.feed_seen(feed.name, item.id):
+                continue
+            post = feed_post(feed, item)
+            if post is None:
+                store.mark_feed_seen(feed.name, item.id)
+                continue
+            if not targets:
+                events.append(PollEvent("error", feed.name, item.title, detail="no enabled destination for this source"))
+                continue
+            ids = compose(store, targets, post, post_key=f"{feed.name}:{item.id}")
+            store.mark_feed_seen(feed.name, item.id)
+            labels = ", ".join(f"#{i}" for i in ids) or "drafts already existed"
+            events.append(PollEvent("draft", feed.name, item.title, detail=labels, draft_ids=ids))
+    return events
+
+
+def feed_post(feed: FeedSource, item: FeedItem) -> Post | None:
+    """The post for a feed item, or None when this source skips it."""
+    if feed.name == "site":
+        matched = [c for c in item.categories if c in feed.categories]
+        if not matched:
+            return None
+        kind = _SITE_KINDS.get(matched[0], feed.kind)
+        text = item.title if not item.summary else f"{item.title}\n\n{item.summary}"
+        return Post(kind=kind, subject=item.title, text=text, link=item.link)
+    return Post(kind=feed.kind, subject=item.title, text=f"New video: {item.title}", link=item.link)
 
 
 def _baseline_only(store: Store, http: Http, project: str) -> list[PollEvent]:
@@ -226,14 +316,14 @@ def desktop_notice(
         return None
     releases: list[str] = []
     for draft in drafts:
-        label = f"{draft.project} {draft.version}"
+        label = draft.label
         if label not in releases:
             releases.append(label)
     count = len(drafts)
     if still_waiting:
-        summary = "PyPI draft still waiting" if count == 1 else f"{count} PyPI drafts still waiting"
+        summary = "Draft still waiting" if count == 1 else f"{count} drafts still waiting"
     else:
-        summary = "PyPI draft waiting" if count == 1 else f"{count} PyPI drafts waiting"
+        summary = "Draft waiting" if count == 1 else f"{count} drafts waiting"
     lines = releases[:6]
     extra = len(releases) - len(lines)
     if extra:
@@ -255,6 +345,8 @@ def notify_review(
         "drafts": [
             {
                 "id": draft.id,
+                "kind": draft.kind,
+                "subject": draft.label,
                 "project": draft.project,
                 "version": draft.version,
                 "platform": draft.platform,

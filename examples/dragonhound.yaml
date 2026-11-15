@@ -28,6 +28,16 @@ destinations:
   telegram:
     enabled: false
 
+# Posts that aren't releases. The first read of each feed baselines it; later items become drafts.
+sources:
+  site:
+    feed: https://dragonhound.dev/updates.xml
+    categories: [note]   # build notes; digests are drafted by herald itself
+    platforms: [twitter]
+  youtube:
+    channel_id: UCxZha6M0r90kFIGkFvKRvcw   # youtube.com/@dragonhound7227
+    platforms: [twitter]
+
 poll:
   interval_seconds: 1800
 

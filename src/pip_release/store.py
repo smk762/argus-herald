@@ -32,10 +32,29 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS drafts (
+CREATE TABLE IF NOT EXISTS feed_sources (
+    source TEXT PRIMARY KEY,
+    baselined_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS feed_items (
+    source TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    seen_at TEXT NOT NULL,
+    PRIMARY KEY (source, item_id)
+);
+"""
+
+# One row per draft. `post_key` ties the per-platform drafts of one piece of content together:
+# "release:<project>==<version>", "post:<id>" for composed posts, "<source>:<item id>" for feeds.
+# Releases fill project and version; other kinds leave them empty and use `subject`.
+_DRAFTS = """
+CREATE TABLE IF NOT EXISTS {name} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project TEXT NOT NULL,
-    version TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'release',
+    post_key TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    project TEXT NOT NULL DEFAULT '',
+    version TEXT NOT NULL DEFAULT '',
     platform TEXT NOT NULL,
     title TEXT NOT NULL,
     body TEXT NOT NULL,
@@ -47,9 +66,13 @@ CREATE TABLE IF NOT EXISTS drafts (
     note TEXT,
     external_id TEXT,
     error TEXT,
-    UNIQUE (project, version, platform)
+    UNIQUE (post_key, platform)
 );
 """
+
+
+def release_key(project: str, version: str) -> str:
+    return f"release:{project}=={version}"
 
 
 def _now() -> str:
@@ -66,6 +89,38 @@ class Store:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.executescript(_SCHEMA)
+        self._migrate_drafts()
+        self.conn.executescript(_DRAFTS.format(name="drafts"))
+
+    def _migrate_drafts(self) -> None:
+        """Rebuild a drafts table from before draft kinds (UNIQUE project, version, platform)."""
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(drafts)")}
+        if not columns or "post_key" in columns:
+            return
+        # Dropping the old table must not cascade into gate_accepts.
+        self.conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            with self.transaction():
+                self.conn.execute(_DRAFTS.format(name="drafts_new"))
+                self.conn.execute(
+                    """
+                    INSERT INTO drafts_new (
+                        id, kind, post_key, subject, project, version, platform, title, body,
+                        link, status, edited, created_at, updated_at, note, external_id, error
+                    )
+                    SELECT id, 'release', 'release:' || project || '==' || version, '', project,
+                        version, platform, title, body, link, status, edited, created_at,
+                        updated_at, note, external_id, error
+                    FROM drafts
+                    """
+                )
+                self.conn.execute("DROP TABLE drafts")
+                self.conn.execute("ALTER TABLE drafts_new RENAME TO drafts")
+                bad = self.conn.execute("PRAGMA foreign_key_check").fetchall()
+                if bad:
+                    raise sqlite3.IntegrityError(f"foreign key check failed after migration: {len(bad)} rows")
+        finally:
+            self.conn.execute("PRAGMA foreign_keys = ON")
 
     def close(self) -> None:
         self.conn.close()
@@ -115,31 +170,65 @@ class Store:
     def add_draft(
         self,
         *,
-        project: str,
-        version: str,
         platform: str,
         title: str,
         body: str,
         link: str,
+        project: str = "",
+        version: str = "",
+        kind: str = "release",
+        post_key: str | None = None,
+        subject: str = "",
     ) -> tuple[int, bool]:
+        """Insert a pending draft. Returns (id, created); an existing (post_key, platform) is kept."""
+        if post_key is None:
+            if not (project and version):
+                raise ValueError("A draft needs a post_key, or a project and version")
+            post_key = release_key(project, version)
         now = _now()
         cur = self.conn.execute(
             """
             INSERT OR IGNORE INTO drafts (
-                project, version, platform, title, body, link, status,
-                edited, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+                kind, post_key, subject, project, version, platform, title, body, link,
+                status, edited, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
             """,
-            (project, version, platform, title, body, link, now, now),
+            (kind, post_key, subject, project, version, platform, title, body, link, now, now),
         )
         self.conn.commit()
         if cur.rowcount:
             return int(cur.lastrowid), True
         row = self.conn.execute(
-            "SELECT id FROM drafts WHERE project = ? AND version = ? AND platform = ?",
-            (project, version, platform),
+            "SELECT id FROM drafts WHERE post_key = ? AND platform = ?", (post_key, platform)
         ).fetchone()
         return int(row["id"]), False
+
+    def feed_baselined(self, source: str) -> bool:
+        row = self.conn.execute("SELECT 1 FROM feed_sources WHERE source = ?", (source,)).fetchone()
+        return row is not None
+
+    def baseline_feed(self, source: str, item_ids: list[str]) -> None:
+        now = _now()
+        with self.transaction():
+            self.conn.execute(
+                "INSERT OR IGNORE INTO feed_sources (source, baselined_at) VALUES (?, ?)", (source, now)
+            )
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO feed_items (source, item_id, seen_at) VALUES (?, ?, ?)",
+                [(source, item, now) for item in item_ids],
+            )
+
+    def feed_seen(self, source: str, item_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM feed_items WHERE source = ? AND item_id = ?", (source, item_id)
+        ).fetchone()
+        return row is not None
+
+    def mark_feed_seen(self, source: str, item_id: str) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO feed_items (source, item_id, seen_at) VALUES (?, ?, ?)",
+            (source, item_id, _now()),
+        )
 
     def get(self, draft_id: int) -> Draft | None:
         row = self.conn.execute("SELECT * FROM drafts WHERE id = ?", (draft_id,)).fetchone()
@@ -162,9 +251,13 @@ class Store:
         status: str | None = None,
         project: str | None = None,
         version: str | None = None,
+        post_key: str | None = None,
     ) -> list[Draft]:
         clauses: list[str] = []
         params: list[object] = []
+        if post_key:
+            clauses.append("post_key = ?")
+            params.append(post_key)
         if status:
             clauses.append("status = ?")
             params.append(status)
@@ -277,4 +370,7 @@ def _draft(row: sqlite3.Row) -> Draft:
         note=row["note"],
         external_id=row["external_id"],
         error=row["error"],
+        kind=row["kind"],
+        post_key=row["post_key"],
+        subject=row["subject"],
     )

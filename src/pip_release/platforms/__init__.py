@@ -11,7 +11,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 from pip_release.config import Config, Destination
 from pip_release.http import Http, send_json
-from pip_release.models import Draft, PublishResult, Release, Rendered
+from pip_release.models import Draft, Post, PublishResult, Release, Rendered
 from pip_release.oauth1 import authorization_header
 from pip_release.textutil import fit_body, fit_weighted, html_text, weighted_length
 
@@ -36,6 +36,11 @@ class Publisher(ABC):
 
     @abstractmethod
     def render(self, release: Release) -> Rendered: ...
+
+    def render_post(self, post: Post) -> Rendered:
+        """A post that isn't a release. Keeps paragraphs, clips the text, never drops the link."""
+        body = fit_body("", post.text, post.link, getattr(self, "limit", 10000))
+        return Rendered(title=post.title or post.subject, body=body)
 
     @abstractmethod
     def missing_secrets(self, env: Mapping[str, str]) -> list[str]: ...
@@ -87,6 +92,13 @@ class TwitterPublisher(Publisher):
 
     def handoff_url(self, draft: Draft) -> str | None:
         return intent_url(draft.body)
+
+    def render_post(self, post: Post) -> Rendered:
+        text = post.text.strip()
+        joined = "\n\n".join(part for part in (text, post.link.strip()) if part)
+        if weighted_length(joined) <= self.limit:
+            return Rendered(title="", body=joined)
+        return Rendered(title="", body=fit_weighted(text, post.link, self.limit))
 
     def render(self, release: Release) -> Rendered:
         head = _headline(release)

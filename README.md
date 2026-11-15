@@ -1,6 +1,6 @@
 # pip-release
 
-pip-release watches PyPI projects, drafts an announcement for each new version, and waits for a person to edit and approve it before anything is published.
+pip-release watches PyPI projects, drafts an announcement for each new version, and waits for a person to edit and approve it before anything is published. Posts that aren't releases (demos, build notes, videos) go through the same queue.
 
 Public identities live in YAML or JSON. Tokens and webhook URLs live in `.env`. The first poll records versions that are already on PyPI and does not draft them. Later versions become one draft per enabled platform.
 
@@ -49,6 +49,33 @@ pip-release reset --reject-pending [--before 2026-11-15] [--yes]
 `baseline` does what the first poll does, on demand and for projects that are already tracked: every version on PyPI right now is marked seen, so the next `poll` drafts only what is released after it. `reset --reject-pending` rejects pending drafts with the note `stale backlog`. It shows the count per project and asks first unless `--yes` is given. Together they clear a backlog of old releases nobody wants announced.
 
 `pip-release watch` repeats `poll` on `poll.interval_seconds` (at least 60, default 1800). A new draft can also be posted as JSON to `PIP_RELEASE_REVIEW_WEBHOOK`. When `notify-send` is available, the same event raises a desktop notification that stays in the GNOME notification list. Set `PIP_RELEASE_DESKTOP_NOTIFY=0` to skip it. While any draft is still pending, that alert is repeated every 24 hours.
+
+## Posts that aren't releases
+
+Demos, build notes, new pages and videos go through the same queue: one pending draft per destination, the privacy gate, approve, then publish or hand off.
+
+```bash
+pip-release compose "Hex territories on real terrain." --kind demo --link https://example.org/realms
+echo "How the curator scores a dataset." | pip-release compose - --kind note --subject "Curator's numbers"
+pip-release approve --post post:3f2a…        # every draft of one post
+```
+
+The review UI has the same form under **New post**. `--kind` is one of `demo`, `note`, `video`, `page`. Each platform's draft is fitted to its own limit and keeps the link.
+
+Two feeds can create posts on their own. Each is baselined on its first read, like PyPI, so nothing already in it is announced:
+
+```yaml
+sources:
+  site:
+    feed: https://dragonhound.dev/updates.xml   # Atom; entries whose category is listed become posts
+    categories: [note]                         # build notes ("digest" and "release" are also accepted)
+    platforms: [twitter]                       # default: every enabled destination
+  youtube:
+    channel_id: UCxZha6M0r90kFIGkFvKRvcw        # a new video, Shorts included, becomes a post
+    platforms: [twitter]
+```
+
+Feeds are read on every `poll`, so the watcher picks them up too. Drafts from a feed are keyed by the item's id, so a feed entry is never drafted twice.
 
 ## Privacy gate
 

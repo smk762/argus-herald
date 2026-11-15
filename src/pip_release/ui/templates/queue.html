@@ -3,23 +3,27 @@
 {% block body %}
 <section class="lede">
   <h1>Review</h1>
-  <p>Drafts wait here until you approve them. Nothing is published from this page until you choose Publish.</p>
+  <p>Drafts wait here until you approve them. Nothing is published from this page until you choose Publish. <a href="/compose">New post</a></p>
 </section>
 {% if not groups %}
-<p class="empty">Nothing in this list. New PyPI releases show up after the next poll.</p>
+<p class="empty">Nothing in this list. New releases, build notes and videos show up after the next poll, or <a href="/compose">write a post</a>.</p>
 {% endif %}
 {% for group in groups %}
 <article class="release">
   <header class="release-head">
     <div>
+      {% if group.kind == "release" %}
       <h2>{{ group.project }} <span>{{ group.version }}</span></h2>
       <a class="quiet" href="{{ group.link }}">PyPI release</a>
+      {% else %}
+      <h2>{{ group.label }} <span class="kind">{{ group.kind }}</span></h2>
+      {% if group.link %}<a class="quiet" href="{{ group.link }}">Link</a>{% endif %}
+      {% endif %}
     </div>
     {% if group.pending %}
     <form method="post" action="/releases/approve">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <input type="hidden" name="project" value="{{ group.project }}">
-      <input type="hidden" name="version" value="{{ group.version }}">
+      <input type="hidden" name="post_key" value="{{ group.post_key }}">
       <button type="submit">Approve {{ group.pending }} pending</button>
     </form>
     {% endif %}

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}New post{% endblock %}
+{% block body %}
+<p class="back"><a href="/?status=open">Back to review</a></p>
+<article class="sheet">
+  <h1>New post</h1>
+  <p>For anything that isn't a release: a demo clip, a build note, a video, a page. You get one pending draft per destination, fitted to its length limit. Edit each one, then approve it like any other draft.</p>
+  {% if error %}<p class="flash flash-bad" role="alert">{{ error }}</p>{% endif %}
+  <form method="post" action="/compose" class="editor">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="kind">Kind</label>
+    <select id="kind" name="kind">
+      {% for kind in kinds %}<option value="{{ kind }}"{% if kind == values.kind %} selected{% endif %}>{{ kind }}</option>{% endfor %}
+    </select>
+    <label for="subject">Label in the queue, optional</label>
+    <input id="subject" name="subject" value="{{ values.subject or '' }}" maxlength="120">
+    <label for="text">Post</label>
+    <textarea id="text" name="text" rows="8">{{ values.text or '' }}</textarea>
+    <p class="count" data-for="text" data-limit="280" data-weighted="1"><span class="count-value">0</span> / 280 on X with the link · a URL counts as 23</p>
+    <label for="link">Link, optional</label>
+    <input id="link" name="link" type="url" value="{{ values.link or '' }}" placeholder="https://dragonhound.dev/…">
+    <label for="title">Title, for platforms that have one (Patreon), optional</label>
+    <input id="title" name="title" value="{{ values.title or '' }}" maxlength="300">
+    <fieldset class="destinations">
+      <legend>Destinations</legend>
+      {% for item in destinations %}
+      <label class="check"><input type="checkbox" name="platform" value="{{ item.id }}"{% if item.checked %} checked{% endif %}> {{ item.label }}</label>
+      {% else %}
+      <p>No destinations are enabled in the config.</p>
+      {% endfor %}
+    </fieldset>
+    <div class="actions"><button type="submit" class="primary">Create drafts</button></div>
+  </form>
+</article>
+{% endblock %}

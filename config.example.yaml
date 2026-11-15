@@ -26,6 +26,15 @@ privacy:
   allow_addresses: []
   patterns: {}
 
+# Optional: posts that aren't releases.
+# sources:
+#   site:
+#     feed: https://example.org/updates.xml   # Atom; entries with these categories become posts
+#     categories: [note]
+#   youtube:
+#     channel_id: UC...                       # youtube.com/channel/UC...
+#     platforms: [twitter]                    # default: every enabled destination
+
 poll:
   interval_seconds: 1800
 

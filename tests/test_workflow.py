@@ -260,12 +260,12 @@ def test_desktop_notice_groups_a_release_and_includes_the_review_url():
     notice = desktop_notice([first, second], "http://127.0.0.1:8787/")
     assert notice is not None
     summary, body = notice
-    assert summary == "2 PyPI drafts waiting"
+    assert summary == "2 drafts waiting"
     assert body == "demo 1\nhttp://127.0.0.1:8787/"
     assert desktop_notice([], "") is None
     still = desktop_notice([first], "http://127.0.0.1:8787/", still_waiting=True)
     assert still is not None
-    assert still[0] == "PyPI draft still waiting"
+    assert still[0] == "Draft still waiting"
 
 
 def test_reminder_is_due_after_24_hours():
