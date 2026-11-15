@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xml:lang="en-US">
+  <id>tag:github.com,2008:https://github.com/smk762/argus-cull/releases</id>
+  <title>Release notes from argus-cull</title>
+  <updated>2026-11-13T13:46:35Z</updated>
+  <entry>
+    <id>tag:github.com,2008:Repository/1/v0.4.0</id>
+    <updated>2026-11-13T13:50:45Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/smk762/argus-cull/releases/tag/v0.4.0"/>
+    <title>v0.4.0</title>
+    <content type="html">&lt;p&gt;First public release with a web image at &lt;code&gt;ghcr.io/smk762/argus-cull&lt;/code&gt;.&lt;/p&gt;
+&lt;h3&gt;Added&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;p&gt;Export into a curated output root (&lt;a href=&quot;https://github.com/smk762/argus-cull/pull/50&quot;&gt;#50&lt;/a&gt;).&lt;/p&gt;&lt;/li&gt;
+&lt;li&gt;A watermark sidecar.&lt;/li&gt;
+&lt;/ul&gt;</content>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/1/stock-heads</id>
+    <updated>2026-11-10T00:00:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/smk762/argus-cull/releases/tag/stock-heads"/>
+    <title>Stock heads</title>
+    <content type="html">&lt;p&gt;Assets only.&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/1/v0.1.0</id>
+    <updated>2026-10-01T00:00:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/smk762/argus-cull/releases/tag/v0.1.0"/>
+    <title>v0.1.0</title>
+    <content type="html">&lt;p&gt;First.&lt;/p&gt;</content>
+  </entry>
+</feed>

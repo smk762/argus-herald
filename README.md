@@ -66,6 +66,19 @@ pip-release reset --reject-pending [--before 2026-11-15] [--yes]
 
 `pip-release watch` repeats `poll` on `poll.interval_seconds` (at least 60, default 1800). A new draft can also be posted as JSON to `PIP_RELEASE_REVIEW_WEBHOOK`. When `notify-send` is available, the same event raises a desktop notification that stays in the GNOME notification list. Set `PIP_RELEASE_DESKTOP_NOTIFY=0` to skip it. While any draft is still pending, that alert is repeated every 24 hours.
 
+## GitHub Releases
+
+Repos that ship without PyPI (a web UI, a demo) can still be announced. Their GitHub releases are a second source:
+
+```yaml
+github:
+  owner: smk762
+  prefix: argus-              # every public, non-fork repo starting with this; or repos: [a, b]
+  include_prereleases: true   # collected into digests, never drafted on their own
+```
+
+Each repo is baselined on its first read. With `GITHUB_TOKEN` the REST API is used. Without it, the public `releases.atom` feed is read, which never lists drafts. Tags must be versions (`v0.4.0` becomes `0.4.0`), so asset-only tags like `stock-heads` are skipped. A version released on both PyPI and GitHub is kept once, under PyPI, with the GitHub release notes, whichever was seen first. In a digest, GitHub-only releases are listed with `source: github`.
+
 ## Digests
 
 A suite that releases often shouldn't post every version. With a `digest:` block, releases are collected into fixed windows instead of drafted one by one:

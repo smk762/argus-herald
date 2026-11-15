@@ -11,15 +11,19 @@ from pathlib import Path
 from pip_release.models import DRAFT_FIELDS, Draft
 
 _SCHEMA = """
+-- Release sources: "pypi" (a PyPI project) or "github" (a repo's GitHub releases).
 CREATE TABLE IF NOT EXISTS projects (
-    name TEXT PRIMARY KEY,
-    baselined_at TEXT NOT NULL
+    source TEXT NOT NULL DEFAULT 'pypi',
+    name TEXT NOT NULL,
+    baselined_at TEXT NOT NULL,
+    PRIMARY KEY (source, name)
 );
 CREATE TABLE IF NOT EXISTS seen (
+    source TEXT NOT NULL DEFAULT 'pypi',
     project TEXT NOT NULL,
     version TEXT NOT NULL,
     seen_at TEXT NOT NULL,
-    PRIMARY KEY (project, version)
+    PRIMARY KEY (source, project, version)
 );
 CREATE TABLE IF NOT EXISTS gate_accepts (
     draft_id INTEGER NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
@@ -126,9 +130,31 @@ class Store:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
+        self._migrate_sources()
         self.conn.executescript(_SCHEMA)
         self._migrate_drafts()
         self.conn.executescript(_DRAFTS.format(name="drafts"))
+
+    def _migrate_sources(self) -> None:
+        """Add a source column to projects and seen (keys were PyPI names only)."""
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(seen)")}
+        if not columns or "source" in columns:
+            return
+        with self.transaction():
+            self.conn.execute("ALTER TABLE projects RENAME TO projects_old")
+            self.conn.execute("ALTER TABLE seen RENAME TO seen_old")
+            self.conn.execute(
+                "CREATE TABLE projects (source TEXT NOT NULL DEFAULT 'pypi', name TEXT NOT NULL, "
+                "baselined_at TEXT NOT NULL, PRIMARY KEY (source, name))"
+            )
+            self.conn.execute(
+                "CREATE TABLE seen (source TEXT NOT NULL DEFAULT 'pypi', project TEXT NOT NULL, version TEXT NOT NULL, "
+                "seen_at TEXT NOT NULL, PRIMARY KEY (source, project, version))"
+            )
+            self.conn.execute("INSERT INTO projects (source, name, baselined_at) SELECT 'pypi', name, baselined_at FROM projects_old")
+            self.conn.execute("INSERT INTO seen (source, project, version, seen_at) SELECT 'pypi', project, version, seen_at FROM seen_old")
+            self.conn.execute("DROP TABLE projects_old")
+            self.conn.execute("DROP TABLE seen_old")
 
     def _migrate_drafts(self) -> None:
         """Rebuild a drafts table from before draft kinds (UNIQUE project, version, platform)."""
@@ -173,37 +199,36 @@ class Store:
             self.conn.rollback()
             raise
 
-    def is_baselined(self, project: str) -> bool:
+    def is_baselined(self, project: str, source: str = "pypi") -> bool:
         row = self.conn.execute(
-            "SELECT 1 FROM projects WHERE name = ?", (project,)
+            "SELECT 1 FROM projects WHERE source = ? AND name = ?", (source, project)
         ).fetchone()
         return row is not None
 
-    def baseline(self, project: str, versions: list[str]) -> None:
+    def baseline(self, project: str, versions: list[str], source: str = "pypi") -> None:
         now = _now()
         with self.transaction():
             self.conn.execute(
-                "INSERT OR IGNORE INTO projects (name, baselined_at) VALUES (?, ?)",
-                (project, now),
+                "INSERT OR IGNORE INTO projects (source, name, baselined_at) VALUES (?, ?, ?)",
+                (source, project, now),
             )
             self.conn.executemany(
-                "INSERT OR IGNORE INTO seen (project, version, seen_at) VALUES (?, ?, ?)",
-                [(project, version, now) for version in versions],
+                "INSERT OR IGNORE INTO seen (source, project, version, seen_at) VALUES (?, ?, ?, ?)",
+                [(source, project, version, now) for version in versions],
             )
 
-    def seen(self, project: str, version: str) -> bool:
+    def seen(self, project: str, version: str, source: str = "pypi") -> bool:
         row = self.conn.execute(
-            "SELECT 1 FROM seen WHERE project = ? AND version = ?",
-            (project, version),
+            "SELECT 1 FROM seen WHERE source = ? AND project = ? AND version = ?",
+            (source, project, version),
         ).fetchone()
         return row is not None
 
-    def mark_seen(self, project: str, version: str) -> None:
+    def mark_seen(self, project: str, version: str, source: str = "pypi") -> None:
         self.conn.execute(
-            "INSERT OR IGNORE INTO seen (project, version, seen_at) VALUES (?, ?, ?)",
-            (project, version, _now()),
+            "INSERT OR IGNORE INTO seen (source, project, version, seen_at) VALUES (?, ?, ?, ?)",
+            (source, project, version, _now()),
         )
-        self.conn.commit()
 
     def add_draft(
         self,
@@ -247,6 +272,20 @@ class Store:
         self, *, project: str, version: str, released_at: str, summary: str, notes: str, url: str,
         source: str = "pypi",
     ) -> bool:
+        """Record a release for the digest. A version on both PyPI and GitHub is kept once, under
+        pypi, with the GitHub notes. Returns True when a new row was added."""
+        other = "github" if source == "pypi" else "pypi" if source == "github" else None
+        twin = self.release(project, version, other) if other else None
+        if twin is not None and source == "github":
+            if notes.strip():
+                self.conn.execute("UPDATE releases SET notes = ? WHERE id = ?", (notes, twin["id"]))
+            return False
+        if twin is not None and source == "pypi":
+            if twin["digest_id"] is not None:
+                return False  # already announced as a GitHub release in a closed digest
+            notes = twin["notes"] if twin["notes"].strip() else notes
+            released_at = min(released_at or twin["released_at"], twin["released_at"])
+            self.conn.execute("DELETE FROM releases WHERE id = ?", (twin["id"],))
         cur = self.conn.execute(
             "INSERT OR IGNORE INTO releases (source, project, version, released_at, seen_at, summary, notes, url) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -274,8 +313,13 @@ class Store:
     def set_excluded(self, release_id: int, excluded: bool) -> None:
         self.conn.execute("UPDATE releases SET excluded = ? WHERE id = ?", (int(excluded), release_id))
 
-    def seen_versions(self, project: str) -> list[str]:
-        return [row["version"] for row in self.conn.execute("SELECT version FROM seen WHERE project = ?", (project,))]
+    def seen_versions(self, project: str, source: str | None = None) -> list[str]:
+        """Versions seen for a project, from one source or (default) any."""
+        if source is None:
+            rows = self.conn.execute("SELECT DISTINCT version FROM seen WHERE project = ?", (project,))
+        else:
+            rows = self.conn.execute("SELECT version FROM seen WHERE source = ? AND project = ?", (source, project))
+        return [row["version"] for row in rows]
 
     def create_digest(self, period_from: str, period_to: str, closes_at: str) -> int:
         """A digest for one window. Takes every open release seen before the window closed."""

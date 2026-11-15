@@ -35,6 +35,7 @@ class FeedItem:
     published: str
     summary: str = ""
     categories: tuple[str, ...] = field(default_factory=tuple)
+    content: str = ""  # <content>, as given (GitHub release feeds put the notes here as HTML)
 
 
 def youtube_feed_url(channel_id: str) -> str:
@@ -86,6 +87,7 @@ def parse_atom(body: bytes) -> list[FeedItem]:
                 published=_text(entry, f"{_ATOM}published") or _text(entry, f"{_ATOM}updated"),
                 summary=summary.strip(),
                 categories=categories,
+                content=_text(entry, f"{_ATOM}content"),
             )
         )
     items.sort(key=lambda item: item.published)
