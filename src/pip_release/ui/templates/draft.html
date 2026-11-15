@@ -20,6 +20,45 @@
   {% if draft.note %}
   <p class="note">{{ draft.note }}</p>
   {% endif %}
+  {% set blocked = gate_error or hits %}
+  {% if gate_error %}
+  <section class="privacy privacy-bad" role="alert">
+    <h2>Privacy gate unavailable</h2>
+    <p>{{ gate_error }}</p>
+  </section>
+  {% endif %}
+  {% for warning in gate_warnings %}
+  <p class="flash flash-bad" role="status">{{ warning }}</p>
+  {% endfor %}
+  {% if hits %}
+  <section class="privacy privacy-bad" role="alert" data-hits="{{ hits|length }}">
+    <h2>Refused by the privacy gate</h2>
+    <p>Edit the text so these are gone, or accept a hit for this draft only, with a note saying why it is safe.</p>
+    {% if marked %}
+    <pre class="marked">{% for text, hit in marked %}{% if hit %}<mark title="{{ hit.label }}">{{ text }}</mark>{% else %}{{ text }}{% endif %}{% endfor %}</pre>
+    {% endif %}
+    <ul class="hits">
+      {% for hit in hits %}
+      <li>
+        <strong>{{ hit.label }}</strong> in {{ hit.field }}: <code>{{ hit.match }}</code>
+        <form method="post" action="/drafts/{{ draft.id }}/accept" class="accept-form">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="key" value="{{ hit.key }}">
+          <label for="accept-{{ loop.index }}">Why it is safe</label>
+          <input id="accept-{{ loop.index }}" name="note" required minlength="3">
+          <button type="submit">Accept for this draft</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+  {% if accepted %}
+  <details class="privacy">
+    <summary>{{ accepted|length }} accepted privacy hit{{ "s" if accepted|length != 1 }}</summary>
+    <ul>{% for key, why in accepted.items() %}<li><code>{{ key }}</code>: {{ why }}</li>{% endfor %}</ul>
+  </details>
+  {% endif %}
   {% if handoff and handoff.kind == "intent" %}
   <section class="handoff">
     <h2>Post on {{ label }}</h2>
@@ -68,7 +107,7 @@
       <button type="submit">Save</button>
       {% endif %}
       {% if can_approve %}
-      <button type="submit" class="primary" formaction="/drafts/{{ draft.id }}/approve">Approve</button>
+      <button type="submit" class="primary" formaction="/drafts/{{ draft.id }}/approve"{% if blocked %} disabled title="Resolve the privacy gate first"{% endif %}>Approve</button>
       {% endif %}
     </div>
     {% if can_edit %}
@@ -79,7 +118,7 @@
     {% if can_publish %}
     <form method="post" action="/drafts/{{ draft.id }}/publish">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button type="submit" class="primary">Publish</button>
+      <button type="submit" class="primary"{% if blocked %} disabled title="Resolve the privacy gate first"{% endif %}>Publish</button>
     </form>
     {% endif %}
     {% if can_reject %}

@@ -247,3 +247,14 @@ button:focus-visible, a:focus-visible, textarea:focus-visible, input:focus-visib
 
 .handoff .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .confirm-form { margin-top: 0.8rem; }
+
+.privacy { margin: 1rem 0; padding: 0.6rem 0.9rem; border: 1px solid var(--line); border-radius: 8px; }
+.privacy-bad { border-color: #e3c4bd; }
+.privacy h2 { margin-top: 0; color: var(--brick); font-size: 1.05rem; }
+.marked { white-space: pre-wrap; font: inherit; margin: 0.5rem 0; }
+.marked mark { background: #f6d9d2; color: inherit; outline: 1px solid var(--brick); border-radius: 2px; }
+.hits { padding-left: 1.1rem; }
+.hits li { margin-bottom: 0.7rem; }
+.accept-form { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin-top: 0.3rem; }
+.accept-form input[name="note"] { flex: 1; min-width: 180px; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }

@@ -57,7 +57,13 @@ def _seed(config) -> None:
 def _app(tmp_path, token: str = ""):
     config = _config(tmp_path)
     _seed(config)
-    env = {"PIP_RELEASE_UI_SECRET": "test-secret"}
+    import os
+
+    env = {
+        "PIP_RELEASE_UI_SECRET": "test-secret",
+        "PIP_RELEASE_OPSEC_DENYLIST": os.environ["PIP_RELEASE_OPSEC_DENYLIST"],
+        "AI_AUDIT_OPSEC_DENYLIST": os.environ["AI_AUDIT_OPSEC_DENYLIST"],
+    }
     if token:
         env["PIP_RELEASE_UI_TOKEN"] = token
     return create_app(config, env), config
@@ -248,4 +254,68 @@ def test_x_draft_hands_off_to_an_intent_link_and_records_the_post_url(tmp_path):
     assert "with its post URL" in good.text
     store = Store(config.store_path)
     assert (store.get(1).status, store.get(1).external_id) == ("published", "https://x.com/dragonhound3/status/777")
+    store.close()
+
+
+def _put_hit(config):
+    store = Store(config.store_path)
+    store.update_text(1, "", "argus-atlas 0.2.0, ask bob@corp.test", ("pending",))
+    store.close()
+
+
+def test_privacy_hit_is_marked_and_blocks_approve_until_accepted(tmp_path):
+    app, config = _app(tmp_path)
+    _put_hit(config)
+    client = TestClient(app)
+    page = client.get("/drafts/1")
+    assert "Refused by the privacy gate" in page.text
+    assert '<mark title="email address">bob@corp.test</mark>' in page.text
+    assert 'formaction="/drafts/1/approve" disabled' in page.text
+
+    refused = client.post("/drafts/1/approve", data={"csrf": _csrf(page.text)}, follow_redirects=True)
+    assert "The privacy gate refused this draft" in refused.text
+    no_note = client.post(
+        "/drafts/1/accept", data={"csrf": _csrf(refused.text), "key": "email:bob@corp.test", "note": ""}, follow_redirects=True
+    )
+    assert "needs a note" in no_note.text
+    accepted = client.post(
+        "/drafts/1/accept",
+        data={"csrf": _csrf(no_note.text), "key": "email:bob@corp.test", "note": "public support address"},
+        follow_redirects=True,
+    )
+    assert "Refused by the privacy gate" not in accepted.text
+    assert "1 accepted privacy hit" in accepted.text
+    approved = client.post("/drafts/1/approve", data={"csrf": _csrf(accepted.text)}, follow_redirects=True)
+    assert "Approved twitter" in approved.text
+
+
+def test_missing_denylist_disables_approve_and_publish(tmp_path):
+    app, config = _app(tmp_path)
+    import os
+
+    os.remove(os.environ["PIP_RELEASE_OPSEC_DENYLIST"])
+    client = TestClient(app)
+    page = client.get("/drafts/1")
+    assert "Privacy gate unavailable" in page.text
+    assert 'formaction="/drafts/1/approve" disabled' in page.text
+    refused = client.post("/drafts/1/approve", data={"csrf": _csrf(page.text)}, follow_redirects=True)
+    assert "deny-list is missing" in refused.text
+    store = Store(config.store_path)
+    assert store.get(1).status == "pending"
+    store.close()
+
+
+def test_bulk_approve_skips_refused_drafts(tmp_path):
+    app, config = _app(tmp_path)
+    _put_hit(config)
+    client = TestClient(app)
+    page = client.get("/")
+    result = client.post(
+        "/releases/approve",
+        data={"csrf": _csrf(page.text), "project": "argus-atlas", "version": "0.2.0"},
+        follow_redirects=True,
+    )
+    assert "Approved 1 draft" in result.text and "refused twitter" in result.text
+    store = Store(config.store_path)
+    assert (store.get(1).status, store.get(2).status) == ("pending", "approved")
     store.close()

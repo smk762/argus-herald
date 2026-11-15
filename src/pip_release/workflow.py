@@ -23,6 +23,7 @@ from pip_release.models import (
 )
 from pip_release.notes import fetch_notes
 from pip_release.platforms import Publisher
+from pip_release.privacy import Gate, Hit, describe
 from pip_release.pypi import fetch_release, list_versions
 from pip_release.store import Store
 
@@ -36,6 +37,39 @@ STALE_NOTE = "stale backlog"
 
 class ReviewError(Exception):
     pass
+
+
+class PrivacyRefused(ReviewError):
+    def __init__(self, hits: list[Hit]) -> None:
+        super().__init__(describe(hits))
+        self.hits = hits
+
+
+def draft_fields(draft: Draft) -> dict[str, str]:
+    """The text of a draft the privacy gate reads."""
+    return {"title": draft.title, "body": draft.body, "link": draft.link}
+
+
+def gate_hits(store: Store, gate: Gate, draft: Draft) -> list[Hit]:
+    """Hits in this draft that haven't been accepted for it."""
+    return gate.check(draft_fields(draft), store.accepted(draft.id))
+
+
+def enforce_gate(store: Store, gate: Gate, draft: Draft) -> None:
+    hits = gate_hits(store, gate, draft)
+    if hits:
+        raise PrivacyRefused(hits)
+
+
+def accept_hit(store: Store, gate: Gate, draft_id: int, key: str, note: str | None) -> None:
+    """Let one specific hit through for one draft. The note says why and is required."""
+    draft = _require_draft(store, draft_id)
+    if not (note or "").strip():
+        raise ReviewError("Accepting a privacy hit needs a note saying why it is safe to publish")
+    current = {hit.key for hit in gate_hits(store, gate, draft)}
+    if key not in current:
+        raise ReviewError(f"Draft {draft_id} has no open privacy hit {key!r}")
+    store.accept_hit(draft_id, key, note.strip())
 
 
 @dataclass
@@ -280,9 +314,12 @@ def rebaseline(
     return events
 
 
-def approve(store: Store, publisher: Publisher, draft_id: int, note: str | None) -> Draft:
+def approve(
+    store: Store, publisher: Publisher, draft_id: int, note: str | None, *, gate: Gate
+) -> Draft:
     draft = _require_draft(store, draft_id)
     publisher.validate(draft.title, draft.body)
+    enforce_gate(store, gate, draft)
     updated = store.transition(
         draft_id, (PENDING,), APPROVED, note=note, error=None
     )
@@ -322,12 +359,15 @@ def publish_draft(
     env: Mapping[str, str],
     http: Http,
     *,
+    gate: Gate,
     dry_run: bool = False,
 ) -> PublishResult:
     if draft.status not in (APPROVED, FAILED, PUBLISHING):
         raise ReviewError(
             f"Draft {draft.id} is {draft.status}. Approve it before publishing."
         )
+    # Checked again here: the deny-list or config may have changed since approval.
+    enforce_gate(store, gate, draft)
     if dry_run:
         return PublishResult(external_id=None, detail=draft.body, handed_off=publisher.manual)
     locked = store.transition(draft.id, (APPROVED, FAILED, PUBLISHING), PUBLISHING, error=None)
