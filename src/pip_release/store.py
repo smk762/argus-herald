@@ -32,6 +32,31 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS digests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    period_from TEXT NOT NULL UNIQUE,
+    period_to TEXT NOT NULL,
+    closes_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    site_path TEXT,
+    site_hash TEXT,
+    error TEXT
+);
+-- Releases collected in digest mode. digest_id is set when a window closes.
+CREATE TABLE IF NOT EXISTS releases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL DEFAULT 'pypi',
+    project TEXT NOT NULL,
+    version TEXT NOT NULL,
+    released_at TEXT NOT NULL,
+    seen_at TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    excluded INTEGER NOT NULL DEFAULT 0,
+    digest_id INTEGER REFERENCES digests(id),
+    UNIQUE (source, project, version)
+);
 CREATE TABLE IF NOT EXISTS feed_sources (
     source TEXT PRIMARY KEY,
     baselined_at TEXT NOT NULL
@@ -202,6 +227,77 @@ class Store:
             "SELECT id FROM drafts WHERE post_key = ? AND platform = ?", (post_key, platform)
         ).fetchone()
         return int(row["id"]), False
+
+    # ---- digest mode -------------------------------------------------------------------
+
+    def add_release(
+        self, *, project: str, version: str, released_at: str, summary: str, notes: str, url: str,
+        source: str = "pypi",
+    ) -> bool:
+        cur = self.conn.execute(
+            "INSERT OR IGNORE INTO releases (source, project, version, released_at, seen_at, summary, notes, url) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (source, project, version, released_at or _now(), _now(), summary, notes, url),
+        )
+        return bool(cur.rowcount)
+
+    def releases(self, *, digest_id: int | None = None, open_only: bool = False) -> list[sqlite3.Row]:
+        """Releases of one digest, or those not in any digest yet (open_only), oldest first."""
+        if open_only:
+            where, params = "digest_id IS NULL", ()
+        elif digest_id is not None:
+            where, params = "digest_id = ?", (digest_id,)
+        else:
+            where, params = "1", ()
+        return self.conn.execute(
+            f"SELECT * FROM releases WHERE {where} ORDER BY released_at, id", params
+        ).fetchall()
+
+    def release(self, project: str, version: str, source: str = "pypi") -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM releases WHERE source = ? AND project = ? AND version = ?", (source, project, version)
+        ).fetchone()
+
+    def set_excluded(self, release_id: int, excluded: bool) -> None:
+        self.conn.execute("UPDATE releases SET excluded = ? WHERE id = ?", (int(excluded), release_id))
+
+    def seen_versions(self, project: str) -> list[str]:
+        return [row["version"] for row in self.conn.execute("SELECT version FROM seen WHERE project = ?", (project,))]
+
+    def create_digest(self, period_from: str, period_to: str, closes_at: str) -> int:
+        """A digest for one window. Takes every open release seen before the window closed."""
+        with self.transaction():
+            cur = self.conn.execute(
+                "INSERT INTO digests (period_from, period_to, closes_at, created_at) VALUES (?, ?, ?, ?)",
+                (period_from, period_to, closes_at, _now()),
+            )
+            digest_id = int(cur.lastrowid)
+            self.conn.execute(
+                "UPDATE releases SET digest_id = ? WHERE digest_id IS NULL AND released_at < ?",
+                (digest_id, closes_at),
+            )
+        return digest_id
+
+    def digests(self) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM digests ORDER BY period_from DESC").fetchall()
+
+    def digest(self, digest_id: int) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM digests WHERE id = ?", (digest_id,)).fetchone()
+
+    def update_digest(self, digest_id: int, **fields: object) -> None:
+        allowed = {"site_path", "site_hash", "error"}
+        if not fields or set(fields) - allowed:
+            raise ValueError(f"Unknown digest fields: {set(fields) - allowed}")
+        sets = ", ".join(f"{key} = ?" for key in fields)
+        self.conn.execute(f"UPDATE digests SET {sets} WHERE id = ?", (*fields.values(), digest_id))
+
+    def refresh_text(self, draft_id: int, title: str, body: str) -> bool:
+        """Replace a pending draft's text only if a person hasn't edited it."""
+        cur = self.conn.execute(
+            "UPDATE drafts SET title = ?, body = ?, updated_at = ? WHERE id = ? AND status = 'pending' AND edited = 0",
+            (title, body, _now(), draft_id),
+        )
+        return bool(cur.rowcount)
 
     def feed_baselined(self, source: str) -> bool:
         row = self.conn.execute("SELECT 1 FROM feed_sources WHERE source = ?", (source,)).fetchone()

@@ -263,3 +263,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 select { font: inherit; padding: 0.35rem 0.5rem; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
 .destinations { border: 1px solid var(--line); border-radius: 8px; margin: 1rem 0; padding: 0.5rem 0.9rem; }
 .destinations .check { display: inline-flex; gap: 0.35rem; align-items: center; margin-right: 1rem; }
+
+.sections { display: flex; gap: 0.9rem; font-size: 0.9rem; }
+.releases { list-style: none; padding: 0; margin: 0.5rem 0 0; }
+.releases li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.6rem; padding: 0.55rem 0; border-top: 1px solid var(--line); }
+.releases li.excluded > div:first-child { opacity: 0.55; }
+.row-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+.row-actions form { display: flex; gap: 0.35rem; align-items: center; }
+.badge { font-size: 0.72rem; padding: 0.1rem 0.45rem; border-radius: 999px; background: #e3f0ec; color: var(--teal); margin-left: 0.3rem; }
+.badge-done { background: #eee; color: var(--muted); }
+.badge-off { background: #f8e8e4; color: var(--brick); }

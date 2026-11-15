@@ -38,6 +38,13 @@ privacy:
 #     channel_id: UC...                       # youtube.com/channel/UC...
 #     platforms: [twitter]                    # default: every enabled destination
 
+# Optional: collect releases into windows instead of one post per release.
+# digest:
+#   anchor: 2026-11-16          # first day of the first window (UTC)
+#   window_days: 14
+#   site_url: https://example.org/updates/
+#   site_dir: ../my-site/src/content/updates   # herald writes <window end>-digest.md here, draft: true
+
 poll:
   interval_seconds: 1800
 

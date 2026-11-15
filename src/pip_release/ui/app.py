@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import re
 import secrets
+from datetime import datetime, timezone
 from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import quote, urlsplit
@@ -259,6 +260,33 @@ def create_app(
         _flash(request, "ok", f"Created {len(ids)} pending {noun}. Review and approve each one.")
         return RedirectResponse("/?status=pending", status_code=303)
 
+    async def digests_page(request: Request) -> Response:
+        denied = _guard(request, state["token"])
+        if denied is not None:
+            return denied
+        with _store(config) as store:
+            page = _digests_context(store, config)
+        return _render(request, "digests.html", **page)
+
+    async def digest_action(request: Request) -> Response:
+        denied = _guard(request, state["token"])
+        if denied is not None:
+            return denied
+        form = await request.form()
+        if not _csrf_ok(request, form.get("csrf")):
+            return _expired()
+        action = request.path_params["action"]
+        target = int(request.path_params["target"])
+        try:
+            if config.digest is None:
+                raise ReviewError("Digest mode is off")
+            message = _digest_perform(state, config, action, target, form)
+        except (ReviewError, ValueError, GateUnavailable, OSError) as exc:
+            _flash(request, "bad", str(exc))
+            return RedirectResponse("/digests", status_code=303)
+        _flash(request, "ok", message)
+        return RedirectResponse("/digests", status_code=303)
+
     async def confirm_one(request: Request) -> Response:
         return await _act(request, state, "confirm")
 
@@ -314,6 +342,8 @@ def create_app(
         Route("/login", login_form, methods=["GET"]),
         Route("/login", login_submit, methods=["POST"]),
         Route("/", queue, methods=["GET"]),
+        Route("/digests", digests_page, methods=["GET"]),
+        Route("/digests/{action:str}/{target:int}", digest_action, methods=["POST"]),
         Route("/compose", compose_form, methods=["GET"]),
         Route("/compose", compose_submit, methods=["POST"]),
         Route("/drafts/{draft_id:int}", draft_page, methods=["GET"]),
@@ -422,6 +452,76 @@ def _draft_context(config: Config, draft: Draft, publisher: Publisher | None) ->
         "can_add_url": draft.status == "published" and not draft.external_id and bool(publisher and publisher.manual),
         "handoff": handoff,
     }
+
+
+def _release_view(store: Store, rows) -> list[dict]:
+    from pip_release.digest import highlight, notable
+
+    suggested = {row["id"] for row, _line, flag in notable(store, [r for r in rows if not r["excluded"]]) if flag}
+    return [
+        {
+            "id": row["id"], "project": row["project"], "version": row["version"], "source": row["source"],
+            "released_at": row["released_at"][:10], "excluded": bool(row["excluded"]), "url": row["url"],
+            "suggested": row["id"] in suggested, "highlight": highlight(row["notes"], row["summary"]),
+            "promoted": bool(store.list_drafts(post_key=f"headline:{row['project']}=={row['version']}")),
+        }
+        for row in rows
+    ]
+
+
+def _digests_context(store: Store, config: Config) -> dict:
+    from pip_release.digest import current_window, period_label, window_of
+
+    settings = config.digest
+    if settings is None:
+        return {"enabled": False}
+    now = datetime.now(timezone.utc)
+    window = current_window(settings, now)
+    past = []
+    for row in store.digests():
+        drafts = store.list_drafts(post_key=f"digest:{row['period_from']}")
+        past.append({
+            "id": row["id"], "label": period_label(window_of(row)), "site_path": row["site_path"],
+            "error": row["error"], "drafts": drafts, "releases": _release_view(store, store.releases(digest_id=row["id"])),
+        })
+    return {
+        "enabled": True,
+        "open": {"label": period_label(window), "closes": window.end.isoformat(),
+                 "releases": _release_view(store, store.releases(open_only=True))},
+        "past": past,
+        "site_dir": str(settings.site_dir) if settings.site_dir else "",
+    }
+
+
+def _digest_perform(state: dict, config: Config, action: str, target: int, form) -> str:
+    from pip_release.digest import build_digest, promote
+
+    settings = config.digest
+    with _store(config) as store:
+        if action in ("exclude", "include"):
+            row = store.conn.execute("SELECT * FROM releases WHERE id = ?", (target,)).fetchone()
+            if row is None:
+                raise ReviewError(f"No release {target}")
+            store.set_excluded(target, action == "exclude")
+            hint = " Rebuild the digest to refresh its drafts and page." if row["digest_id"] else ""
+            return f"{action.capitalize()}d {row['project']} {row['version']}.{hint}"
+        if action == "rebuild":
+            try:
+                gate = _gate(state)
+            except GateUnavailable:
+                gate = None
+            ids, status = build_digest(store, settings, _enabled(state), target, gate)
+            return f"Rebuilt: {len(ids)} new drafts; unedited drafts refreshed; page {status}."
+        if action == "promote":
+            row = store.conn.execute("SELECT * FROM releases WHERE id = ?", (target,)).fetchone()
+            if row is None:
+                raise ReviewError(f"No release {target}")
+            site_page = form.get("site_page") == "1"
+            gate = _gate(state) if site_page else None
+            ids, status = promote(store, settings, _enabled(state), row, site_page=site_page, gate=gate)
+            extra = f" Site page: {status}." if status else ""
+            return f"Promoted {row['project']} {row['version']}: {len(ids)} headline drafts.{extra}"
+    raise ReviewError(f"Unknown action {action}")
 
 
 def _enabled(state: dict) -> list[Publisher]:

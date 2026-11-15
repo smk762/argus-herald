@@ -112,6 +112,10 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
         return cmd_reject(store, _ids(args, store), args.note)
     if args.command == "publish":
         return cmd_publish(config, store, by_id, http, _ids(args, store), args.dry_run, _gate(config))
+    if args.command == "digest":
+        return cmd_digest(config, store, publishers, args)
+    if args.command == "promote":
+        return cmd_promote(config, store, publishers, args)
     if args.command == "compose":
         return cmd_compose(store, publishers, args)
     if args.command == "check":
@@ -457,6 +461,74 @@ def cmd_compose(store: Store, publishers: list[Publisher], args: argparse.Namesp
     return 0
 
 
+def _release_ref(store: Store, ref: str):
+    if "==" not in ref:
+        raise ReviewError("Name a release as project==version")
+    project, version = ref.split("==", 1)
+    row = store.release(project, version)
+    if row is None:
+        raise ReviewError(f"{ref} isn't a collected release (digest mode collects releases as they're seen)")
+    return row
+
+
+def _digest_settings(config: Config):
+    if config.digest is None:
+        raise ReviewError("Digest mode is off. Add a digest: block to the config.")
+    return config.digest
+
+
+def cmd_digest(config: Config, store: Store, publishers: list[Publisher], args: argparse.Namespace) -> int:
+    from pip_release.digest import build_digest, current_window, notable, period_label, window_of
+
+    settings = _digest_settings(config)
+    if args.action in ("exclude", "include"):
+        for ref in args.refs:
+            row = _release_ref(store, ref)
+            store.set_excluded(row["id"], args.action == "exclude")
+            print(f"{args.action}d {ref}")
+        print("Run pip-release digest rebuild <id> to refresh a digest that was already drafted.")
+        return 0
+    if args.action == "rebuild":
+        if not args.refs:
+            raise ReviewError("Name the digest id to rebuild")
+        try:
+            gate = load_gate(config.privacy, os.environ)
+        except GateUnavailable:
+            gate = None
+        for ref in args.refs:
+            ids, status = build_digest(store, settings, publishers, int(ref), gate)
+            print(f"digest {ref}: new drafts {', '.join(f'#{i}' for i in ids) or 'none'}; {status}")
+        return 0
+    now = datetime.now(timezone.utc)
+    window = current_window(settings, now)
+    open_rows = store.releases(open_only=True)
+    print(f"Open window {period_label(window)} (closes {window.end}): {len(open_rows)} releases so far")
+    suggested = {row["id"] for row, _line, flag in notable(store, open_rows) if flag}
+    for row in open_rows:
+        flags = (" [excluded]" if row["excluded"] else "") + (" [suggested headline]" if row["id"] in suggested else "")
+        print(f"  {row['project']}=={row['version']}{flags}")
+    for row in store.digests()[:5]:
+        count = len([r for r in store.releases(digest_id=row["id"]) if not r["excluded"]])
+        page = row["site_path"] or "no page"
+        error = f"  ! {row['error']}" if row["error"] else ""
+        print(f"digest {row['id']}  {period_label(window_of(row))}  {count} releases  {page}{error}")
+    return 0
+
+
+def cmd_promote(config: Config, store: Store, publishers: list[Publisher], args: argparse.Namespace) -> int:
+    from pip_release.digest import promote
+
+    row = _release_ref(store, args.ref)
+    gate = None
+    if args.site_page:
+        gate = load_gate(config.privacy, os.environ)
+    ids, status = promote(store, config.digest, publishers, row, site_page=args.site_page, gate=gate)
+    print(f"headline drafts: {', '.join(f'#{i}' for i in ids) or 'already existed'}")
+    if status:
+        print(status)
+    return 0
+
+
 def cmd_check(store: Store, gate: Gate, ids: list[int]) -> int:
     drafts = [_one(store, i) for i in ids] if ids else [
         *store.list_drafts(status=PENDING), *store.list_drafts(status=APPROVED)
@@ -621,6 +693,14 @@ def _parser() -> argparse.ArgumentParser:
     publish.add_argument("--approved", action="store_true", help="Every approved draft")
     publish.add_argument("--dry-run", action="store_true", help="Print the post and do not send it")
 
+    digest_cmd = sub.add_parser("digest", help="Digest mode: the open window and past digests")
+    digest_cmd.add_argument("action", nargs="?", default="status", choices=("status", "exclude", "include", "rebuild"))
+    digest_cmd.add_argument("refs", nargs="*", help="project==version for exclude/include, digest ids for rebuild")
+
+    promote_cmd = sub.add_parser("promote", help="Give one collected release its own headline post")
+    promote_cmd.add_argument("ref", help="project==version")
+    promote_cmd.add_argument("--site-page", action="store_true", help="Also write a kind: release site page")
+
     compose_cmd = sub.add_parser(
         "compose", help="Draft a post that isn't a release (demo, build note, video, page)"
     )
@@ -707,6 +787,10 @@ def _format_event(event: PollEvent) -> str:
         return f"baselined {event.project} ({event.detail}); no drafts"
     if event.kind == "draft":
         return f"drafted {event.project} {event.version}: {event.detail}"
+    if event.kind == "collect":
+        return f"collected {event.project} {event.version} for the next digest"
+    if event.kind == "digest":
+        return f"{event.project} to {event.version}: drafts {', '.join(f'#{i}' for i in event.draft_ids) or 'none new'}; {event.detail}"
     if event.kind == "skip":
         return f"skipped {event.project} {event.version}: {event.detail}"
     return f"error {event.project}: {event.detail}"

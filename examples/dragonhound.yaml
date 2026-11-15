@@ -46,6 +46,14 @@ sources:
     channel_id: UCxZha6M0r90kFIGkFvKRvcw   # youtube.com/@dragonhound7227
     platforms: [twitter]
 
+# Releases are collected into 14-day windows (Mondays, UTC). When one closes, herald drafts a
+# site page (draft: true) and one post per destination. Never commits or pushes the site.
+digest:
+  anchor: 2026-11-16
+  window_days: 14
+  site_url: https://dragonhound.dev/updates/
+  # site_dir: <your checkout of the site>/src/content/updates   (local config only)
+
 poll:
   interval_seconds: 1800
 

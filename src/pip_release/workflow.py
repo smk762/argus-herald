@@ -27,7 +27,7 @@ from pip_release.models import (
 )
 from pip_release.notes import fetch_notes
 from pip_release.platforms import Publisher
-from pip_release.privacy import Gate, Hit, describe
+from pip_release.privacy import Gate, GateUnavailable, Hit, describe, load_gate
 from pip_release.pypi import fetch_release, list_versions
 from pip_release.store import Store
 
@@ -95,6 +95,8 @@ def poll(
     store: Store,
     http: Http,
     publishers: list[Publisher],
+    *,
+    now: datetime | None = None,
 ) -> list[PollEvent]:
     projects = tracked_projects(config)
     if not projects and not config.feeds:
@@ -142,10 +144,70 @@ def poll(
                 events.append(PollEvent("skip", project, item.version, detail="yanked"))
                 continue
             try:
-                events.append(_draft_release(store, http, publishers, project, item.version))
+                if config.digest is not None:
+                    events.append(_collect_release(store, http, project, item.version, item.upload_time))
+                else:
+                    events.append(_draft_release(store, http, publishers, project, item.version))
             except (OSError, ValueError) as exc:
                 events.append(PollEvent("error", project, item.version, detail=str(exc)))
     events.extend(poll_feeds(config, store, http, publishers))
+    if config.digest is not None:
+        events.extend(close_digests(config, store, publishers, now=now))
+    return events
+
+
+def _release_with_notes(http: Http, project: str, version: str):
+    release = fetch_release(http, project, version)
+    if release.yanked:
+        return release
+    try:
+        notes = fetch_notes(http, release.project_urls, release.version)
+    except (HttpError, OSError, ValueError):
+        log.warning("Release notes for %s %s were skipped", project, version, exc_info=True)
+        notes = ""
+    return replace(release, notes=notes)
+
+
+def _collect_release(store: Store, http: Http, project: str, version: str, uploaded: str) -> PollEvent:
+    """Digest mode: record the release for its window instead of drafting it."""
+    try:
+        release = _release_with_notes(http, project, version)
+    except (HttpError, OSError, ValueError) as exc:
+        return PollEvent("error", project, version, detail=str(exc))
+    if release.yanked:
+        store.mark_seen(project, version)
+        return PollEvent("skip", project, version, detail="yanked")
+    released_at = uploaded or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    store.add_release(
+        project=project, version=version, released_at=released_at.replace("Z", "+00:00"),
+        summary=release.summary, notes=release.notes, url=release.url,
+    )
+    store.mark_seen(project, version)
+    return PollEvent("collect", project, version, detail="kept for the next digest")
+
+
+def close_digests(
+    config: Config, store: Store, publishers: list[Publisher], *, now: datetime | None = None
+) -> list[PollEvent]:
+    """Create a digest for every window that has closed and has none yet."""
+    from pip_release.digest import build_digest, closed_windows
+
+    settings = config.digest
+    if settings is None:
+        return []
+    now = now or datetime.now(timezone.utc)
+    done = {row["period_from"] for row in store.digests()}
+    events: list[PollEvent] = []
+    for window in closed_windows(settings, now):
+        if window.start.isoformat() in done:
+            continue
+        digest_id = store.create_digest(window.start.isoformat(), window.period_to.isoformat(), window.closes_at)
+        try:
+            gate: Gate | None = load_gate(config.privacy)
+        except GateUnavailable:
+            gate = None
+        ids, status = build_digest(store, settings, publishers, digest_id, gate)
+        events.append(PollEvent("digest", f"digest {window.start}", str(window.period_to), detail=status, draft_ids=ids))
     return events
 
 

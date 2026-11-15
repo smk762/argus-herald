@@ -66,6 +66,37 @@ pip-release reset --reject-pending [--before 2026-11-15] [--yes]
 
 `pip-release watch` repeats `poll` on `poll.interval_seconds` (at least 60, default 1800). A new draft can also be posted as JSON to `PIP_RELEASE_REVIEW_WEBHOOK`. When `notify-send` is available, the same event raises a desktop notification that stays in the GNOME notification list. Set `PIP_RELEASE_DESKTOP_NOTIFY=0` to skip it. While any draft is still pending, that alert is repeated every 24 hours.
 
+## Digests
+
+A suite that releases often shouldn't post every version. With a `digest:` block, releases are collected into fixed windows instead of drafted one by one:
+
+```yaml
+digest:
+  anchor: 2026-11-16          # first day of the first window (UTC)
+  window_days: 14
+  site_url: https://dragonhound.dev/updates/
+  site_dir: /path/to/site/src/content/updates   # local checkout; herald writes here, never commits
+  platforms: []               # default: every enabled destination
+```
+
+When a window closes (the watcher checks on every poll), herald creates one digest with every release seen before the close. A release seen after its window closed goes into the next one. For each digest it drafts:
+
+- **a site page** `<close date>-digest.md` with front matter (`title`, `date`, `kind: digest`, `summary`, `period`, `releases` grouped by package, oldest version first) and `draft: true`, plus a short list of highlights for a person to rewrite into prose. The page passes the privacy gate first. Herald writes it only when no file is there, or when the file is still exactly what herald wrote, so your edits are never overwritten;
+- **one post per destination**: the period, the count, up to three notable changes (as many as fit the platform without clipping), and the link to the page.
+
+Each highlight is the first sentence of the release's first *Added* bullet, or of its first bullet, or its summary. A release is **suggested** for a headline post of its own when it's a major or minor bump, or a first release, and its notes add something. Patch releases and prereleases are never suggested. Suggestions are only badges: promoting is your call.
+
+The **Digests** page in the review UI shows the open window and past digests. Drop a release from a digest, promote one to its own `headline` post (optionally with a `kind: release` site page), or **Rebuild** a digest after a change. Rebuild refreshes drafts nobody has edited, and the page if nobody has edited it. From the shell:
+
+```bash
+pip-release digest                          # open window and recent digests
+pip-release digest exclude argus-lens==0.12.1
+pip-release digest rebuild 3
+pip-release promote argus-lens==0.13.0 --site-page
+```
+
+Without a `digest:` block (or with `mode: per_release`), every release gets its own drafts as before.
+
 ## Posts that aren't releases
 
 Demos, build notes, new pages and videos go through the same queue: one pending draft per destination, the privacy gate, approve, then publish or hand off.
