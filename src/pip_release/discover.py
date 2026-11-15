@@ -91,10 +91,15 @@ def _pypi_status(http: Http, name: str) -> int:
 
 def _github_repos(http: Http, owner: str, token: str) -> list[str]:
     """Public, non-fork, non-archived repos of a user or organisation."""
+    return sorted(str(repo["name"]) for repo in github_repo_info(http, owner, token))
+
+
+def github_repo_info(http: Http, owner: str, token: str) -> list[dict]:
+    """The GitHub API records of an owner's public, non-fork, non-archived repos."""
     headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    names: list[str] = []
+    repos: list[dict] = []
     for page in range(1, MAX_PAGES + 1):
         url = f"{GITHUB_API}/users/{quote(owner, safe='')}/repos?type=owner&per_page=100&page={page}"
         status, body = http.request("GET", url, headers=headers)
@@ -104,11 +109,11 @@ def _github_repos(http: Http, owner: str, token: str) -> list[str]:
         if not isinstance(batch, list):
             raise ValueError("Unexpected GitHub response")
         for repo in batch:
-            if isinstance(repo, dict) and not repo.get("fork") and not repo.get("archived") and not repo.get("private"):
-                names.append(str(repo.get("name") or ""))
+            if isinstance(repo, dict) and repo.get("name") and not repo.get("fork") and not repo.get("archived") and not repo.get("private"):
+                repos.append(repo)
         if len(batch) < 100:
             break
-    return sorted(name for name in names if name)
+    return repos
 
 
 def _pyproject_name(http: Http, owner: str, repo: str) -> str | None:
