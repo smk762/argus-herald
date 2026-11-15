@@ -201,6 +201,32 @@ class Store:
             return None
         return self.get(draft_id)
 
+    def pending_before(self, before: str | None = None) -> list[Draft]:
+        """Pending drafts, optionally only those created before an ISO date or timestamp."""
+        if before is None:
+            return self.list_drafts(status="pending")
+        rows = self.conn.execute(
+            "SELECT * FROM drafts WHERE status = 'pending' AND created_at < ? ORDER BY id",
+            (before,),
+        ).fetchall()
+        return [_draft(row) for row in rows]
+
+    def reject_pending(self, ids: list[int], note: str) -> int:
+        """Reject the given drafts in one transaction. Rows no longer pending are left alone."""
+        if not ids:
+            return 0
+        now = _now()
+        changed = 0
+        with self.transaction():
+            for draft_id in ids:
+                cur = self.conn.execute(
+                    "UPDATE drafts SET status = 'rejected', note = ?, updated_at = ? "
+                    "WHERE id = ? AND status = 'pending'",
+                    (note, now, draft_id),
+                )
+                changed += cur.rowcount
+        return changed
+
     def update_text(
         self, draft_id: int, title: str, body: str, from_statuses: tuple[str, ...]
     ) -> Draft | None:

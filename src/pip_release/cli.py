@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,10 +36,12 @@ from pip_release.workflow import (
     edit_draft,
     desktop_notice,
     REMINDER_KEY,
+    STALE_NOTE,
     notify_review,
     poll,
     reminder_due,
     publish_draft,
+    rebaseline,
     reject,
 )
 
@@ -82,6 +85,12 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
         return cmd_platforms(config, by_id, os.environ)
     if args.command == "poll":
         return cmd_poll(config, store, http, publishers)
+    if args.command == "baseline":
+        return cmd_baseline(config, store, http, args.projects)
+    if args.command == "reset":
+        if not args.reject_pending:
+            raise ReviewError("Nothing to reset. Pass --reject-pending.")
+        return cmd_reset(store, args.before, args.yes, args.note)
     if args.command == "watch":
         return cmd_watch(config, store, http, publishers)
     if args.command == "drafts":
@@ -190,6 +199,54 @@ def cmd_poll(config: Config, store: Store, http: HttpClient, publishers: list[Pu
         _remind_pending(store, http)
     _heartbeat(config)
     return 1 if errors else 0
+
+
+def cmd_baseline(
+    config: Config, store: Store, http: HttpClient, projects: list[str] | None
+) -> int:
+    events = rebaseline(config, store, http, projects or None)
+    for event in events:
+        print(_format_event(event))
+    return 1 if any(event.kind == "error" for event in events) else 0
+
+
+def cmd_reset(store: Store, before: str | None, yes: bool, note: str) -> int:
+    cutoff = parse_cutoff(before) if before else None
+    drafts = store.pending_before(cutoff)
+    scope = f" created before {cutoff}" if cutoff else ""
+    if not drafts:
+        print(f"No pending drafts{scope}.")
+        return 0
+    print(f"{len(drafts)} pending drafts{scope}:")
+    for project, count in sorted(Counter(draft.project for draft in drafts).items()):
+        print(f"  {project:<24} {count}")
+    created = sorted(draft.created_at for draft in drafts)
+    print(f"  oldest {created[0]}, newest {created[-1]}")
+    if not yes and not _confirm(f"Reject {len(drafts)} drafts with note {note!r}? [y/N] "):
+        print("Nothing changed.")
+        return 1
+    changed = store.reject_pending([draft.id for draft in drafts], note)
+    print(f"Rejected {changed}.")
+    return 0
+
+
+def parse_cutoff(value: str) -> str:
+    """An ISO date or timestamp as a string that compares correctly with created_at (UTC)."""
+    try:
+        if len(value) == 10:
+            return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ReviewError(f"--before must be an ISO date or timestamp, not {value!r}") from exc
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _confirm(prompt: str) -> bool:
+    if not sys.stdin.isatty():
+        raise ReviewError("No terminal to confirm on. Pass --yes.")
+    return input(prompt).strip().lower() in ("y", "yes")
 
 
 def _remind_pending(store: Store, http: HttpClient) -> None:
@@ -391,6 +448,17 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("discover", help="Print projects from a PyPI user profile")
     sub.add_parser("poll", help="Check PyPI once")
     sub.add_parser("watch", help="Poll on the configured interval")
+    baseline = sub.add_parser(
+        "baseline", help="Mark every current version as seen, without drafting"
+    )
+    baseline.add_argument("projects", nargs="*", help="Only these tracked projects")
+    reset = sub.add_parser("reset", help="Clear the review queue")
+    reset.add_argument(
+        "--reject-pending", action="store_true", help="Reject pending drafts"
+    )
+    reset.add_argument("--before", help="Only drafts created before this ISO date or timestamp (UTC)")
+    reset.add_argument("--note", default=STALE_NOTE, help=f"Default: {STALE_NOTE!r}")
+    reset.add_argument("--yes", action="store_true", help="Do not ask for confirmation")
     sub.add_parser("platforms", help="Show destinations and missing secrets")
     sub.add_parser("healthcheck", help="Exit 0 when the watcher heartbeat is fresh")
     ui = sub.add_parser("ui", help="Open the review UI")
