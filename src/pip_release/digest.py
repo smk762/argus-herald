@@ -313,12 +313,59 @@ def write_page(
     return f"wrote {path}"
 
 
+def _digest_facts(store: Store, window: Window, rows: list[sqlite3.Row]) -> str:
+    picks = {row["id"]: suggested for row, _line, suggested in notable(store, rows)}
+    lines = [f"Releases from {period_label(window)}, oldest first:"]
+    for row in sorted(rows, key=lambda r: r["released_at"]):
+        mark = " (a notable release)" if picks.get(row["id"]) else ""
+        lines.append(f"- {row['project']} {row['version']}{mark}: {highlight(row['notes'], row['summary'])}")
+        notes = " ".join(row["notes"].split())[:500]
+        if notes:
+            lines.append(f"  Release notes: {notes}")
+    return "\n".join(lines)
+
+
+def _headline_facts(row: sqlite3.Row) -> str:
+    notes = row["notes"].strip()[:1500]
+    return f"Release: {row['project']} {row['version']}\nSummary: {row['summary']}\nRelease notes:\n{notes}"
+
+
+def _assisted(backend, publisher: Publisher, request, link: str, subject: str, gate: Gate | None):
+    """(rendered, drafted_by, note): the model's draft, or None with the reason it fell back."""
+    from pip_release.drafting import DraftingError, draft
+
+    if backend is None:
+        return None, "template", None
+    try:
+        text = draft(backend, publisher, request, link, gate)
+    except DraftingError as exc:
+        return None, "template", f"Template used: {exc}"
+    rendered = publisher.render_post(Post(kind=request.task, subject=subject, text=text, link=link, title=subject))
+    return rendered, backend.label, None
+
+
+def _digest_draft(store, window, mine, publisher, link, subject, backend, gate):
+    from pip_release.drafting import Request
+
+    picks = notable(store, mine)
+    opening = social_text(window, mine, picks, 0)
+    rendered, drafted_by, note = _assisted(
+        backend, publisher, Request("digest", _digest_facts(store, window, mine), opening), link, subject, gate
+    )
+    if rendered is None:
+        rendered = render_for(publisher, lambda n: social_text(window, mine, picks, n), link, subject)
+    rendered, reply = publisher.shape(rendered, link)
+    return rendered, reply, drafted_by, note
+
+
 def build_digest(
-    store: Store, settings: DigestSettings, publishers: list[Publisher], digest_id: int, gate: Gate | None
+    store: Store, settings: DigestSettings, publishers: list[Publisher], digest_id: int, gate: Gate | None,
+    backend=None, *, force: bool = False,
 ) -> tuple[list[int], str]:
     """Create or refresh the digest's drafts and site page. Returns (new draft ids, page status).
 
-    Drafts a person has edited, and pages a person has edited, are left alone.
+    Drafts a person has edited (unless force), and pages a person has edited, are left alone.
+    With a drafting backend, each destination's post is drafted by the model.
     """
     row = store.digest(digest_id)
     if row is None:
@@ -338,45 +385,62 @@ def build_digest(
         mine = [r for r in included if publisher.wants([r["project"]])]
         if not mine:
             continue
-        picks = notable(store, mine)
-        rendered = render_for(publisher, lambda n, mine=mine, picks=picks: social_text(window, mine, picks, n), link, subject)
-        rendered, reply = publisher.shape(rendered, link)
-        if publisher.id in existing:
-            store.refresh_text(existing[publisher.id].id, rendered.title, rendered.body, reply)
+        current = existing.get(publisher.id)
+        if current is not None and (current.status != "pending" or (current.edited and not force)):
+            continue  # don't spend a model call on a draft that won't be replaced
+        rendered, reply, drafted_by, note = _digest_draft(store, window, mine, publisher, link, subject, backend, gate)
+        if current is not None:
+            store.refresh_text(current.id, rendered.title, rendered.body, reply, drafted_by, note, force=force)
             continue
         draft_id, made = store.add_draft(
             kind="digest", post_key=post_key, subject=subject, platform=publisher.id,
-            title=rendered.title, body=rendered.body, link=link, reply=reply,
+            title=rendered.title, body=rendered.body, link=link, reply=reply, drafted_by=drafted_by,
         )
         if made:
             created.append(draft_id)
+            if note:
+                store.set_note(draft_id, note)
     page = render_page(store, settings, window, included)
     status = write_page(store, settings, digest_id, window.slug, page, gate)
     return created, status
 
 
+def _headline_draft(row, publisher, backend, gate):
+    from pip_release.drafting import Request
+
+    subject = f"{row['project']} {row['version']}"
+    rendered, drafted_by, note = _assisted(backend, publisher, Request("headline", _headline_facts(row)), row["url"], subject, gate)
+    if rendered is None:
+        release = Release(
+            project=row["project"], version=row["version"], summary=row["summary"], url=row["url"],
+            author=None, project_urls={}, yanked=False, notes=row["notes"],
+        )
+        rendered = publisher.render(release)
+    rendered, reply = publisher.shape(rendered, row["url"])
+    return rendered, reply, drafted_by, note
+
+
 def promote(
     store: Store, settings: DigestSettings | None, publishers: list[Publisher], row: sqlite3.Row,
-    *, site_page: bool = False, gate: Gate | None = None,
+    *, site_page: bool = False, gate: Gate | None = None, backend=None,
 ) -> tuple[list[int], str]:
     """Give one release its own post group (kind headline), and optionally a site page."""
-    release = Release(
-        project=row["project"], version=row["version"], summary=row["summary"], url=row["url"],
-        author=None, project_urls={}, yanked=False, notes=row["notes"],
-    )
     post_key = f"headline:{row['project']}=={row['version']}"
+    existing = {d.platform for d in store.list_drafts(post_key=post_key)}
     created: list[int] = []
     for publisher in publishers:
-        if not publisher.wants([row["project"]]):
+        if not publisher.wants([row["project"]]) or publisher.id in existing:
             continue
-        rendered, reply = publisher.shape(publisher.render(release), row["url"])
+        rendered, reply, drafted_by, note = _headline_draft(row, publisher, backend, gate)
         draft_id, made = store.add_draft(
             kind="headline", post_key=post_key, subject=f"{row['project']} {row['version']}",
             project=row["project"], version=row["version"], platform=publisher.id,
-            title=rendered.title, body=rendered.body, link=row["url"], reply=reply,
+            title=rendered.title, body=rendered.body, link=row["url"], reply=reply, drafted_by=drafted_by,
         )
         if made:
             created.append(draft_id)
+            if note:
+                store.set_note(draft_id, note)
     status = ""
     if site_page and settings is not None:
         day = datetime.now(timezone.utc).date()
@@ -385,6 +449,40 @@ def promote(
         text = render_page(store, settings, window, [row], kind="release", title=f"{row['project']} {row['version']}")
         status = _write_release_page(settings, slug, text, gate)
     return created, status
+
+
+def regenerate(
+    store: Store, settings: DigestSettings | None, publisher: Publisher, draft_id: int, backend, gate: Gate | None,
+    *, force: bool = False,
+) -> str:
+    """Draft one digest or headline post again. An edited draft is replaced only with force."""
+    draft = store.get(draft_id)
+    if draft is None:
+        raise ValueError(f"No draft {draft_id}")
+    if draft.status != "pending":
+        raise ValueError(f"Draft {draft_id} is {draft.status}; only pending drafts can be regenerated")
+    if draft.edited and not force:
+        raise ValueError("This draft was edited by a person. Tick 'replace my edits' to regenerate it anyway.")
+    if draft.kind == "digest" and settings is not None:
+        period_from = draft.post_key.split(":", 1)[1]
+        digest_row = next((r for r in store.digests() if r["period_from"] == period_from), None)
+        if digest_row is None:
+            raise ValueError("The digest for this draft no longer exists")
+        window = window_of(digest_row)
+        mine = [r for r in store.releases(digest_id=digest_row["id"]) if not r["excluded"] and publisher.wants([r["project"]])]
+        if not mine:
+            raise ValueError("No releases in this digest are for this audience any more")
+        rendered, reply, drafted_by, note = _digest_draft(
+            store, window, mine, publisher, draft.link, draft.subject, backend, gate)
+    elif draft.kind == "headline":
+        row = store.release(draft.project, draft.version) or store.release(draft.project, draft.version, "github")
+        if row is None:
+            raise ValueError("The release for this draft isn't in the digest records")
+        rendered, reply, drafted_by, note = _headline_draft(row, publisher, backend, gate)
+    else:
+        raise ValueError("Only digest and headline drafts can be regenerated")
+    store.refresh_text(draft_id, rendered.title, rendered.body, reply, drafted_by, note, force=True)
+    return note or f"Regenerated by {drafted_by}."
 
 
 def _write_release_page(settings: DigestSettings, slug: str, text: str, gate: Gate | None) -> str:

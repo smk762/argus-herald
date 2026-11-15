@@ -399,6 +399,9 @@ def create_app(
     async def accept_one(request: Request) -> Response:
         return await _act(request, state, "accept")
 
+    async def regenerate_one(request: Request) -> Response:
+        return await _act(request, state, "regenerate")
+
     async def approve_release(request: Request) -> Response:
         denied = _guard(request, state["token"])
         if denied is not None:
@@ -462,6 +465,7 @@ def create_app(
         Route("/drafts/{draft_id:int}/publish", publish_one, methods=["POST"]),
         Route("/drafts/{draft_id:int}/confirm", confirm_one, methods=["POST"]),
         Route("/drafts/{draft_id:int}/accept", accept_one, methods=["POST"]),
+        Route("/drafts/{draft_id:int}/regenerate", regenerate_one, methods=["POST"]),
         Route("/drafts/{draft_id:int}/media", media_add, methods=["POST"]),
         Route("/media/{media_id:int}", media_file, methods=["GET"]),
         Route("/media/{media_id:int}/{action:str}", media_edit, methods=["POST"]),
@@ -518,6 +522,19 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
         confirmed = confirm(store, draft.id, url)
         where = " with its post URL" if confirmed.external_id else ""
         return f"Marked {draft.label} published on {publisher.label}{where}."
+    if action == "regenerate":
+        from pip_release.digest import regenerate
+
+        try:
+            gate = _gate(state)
+        except GateUnavailable:
+            gate = None
+        backend, warning = _backend(state)
+        try:
+            message = regenerate(store, config.digest, publisher, draft.id, backend, gate, force=form.get("force") == "1")
+        except ValueError as exc:
+            raise ReviewError(str(exc)) from exc
+        return f"{message} {warning}".strip()
     if action == "accept":
         key = str(form.get("key") or "")
         accept_hit(store, _gate(state), draft.id, key, note)
@@ -625,15 +642,23 @@ def _digest_perform(state: dict, config: Config, action: str, target: int, form)
                 gate = _gate(state)
             except GateUnavailable:
                 gate = None
-            ids, status = build_digest(store, settings, _enabled(state), target, gate)
-            return f"Rebuilt: {len(ids)} new drafts; unedited drafts refreshed; page {status}."
+            backend, warning = _backend(state)
+            ids, status = build_digest(store, settings, _enabled(state), target, gate, backend)
+            extra = f" Note: {warning}." if warning else ""
+            return f"Rebuilt: {len(ids)} new drafts; unedited drafts refreshed; page {status}.{extra}"
         if action == "promote":
             row = store.conn.execute("SELECT * FROM releases WHERE id = ?", (target,)).fetchone()
             if row is None:
                 raise ReviewError(f"No release {target}")
             site_page = form.get("site_page") == "1"
-            gate = _gate(state) if site_page else None
-            ids, status = promote(store, settings, _enabled(state), row, site_page=site_page, gate=gate)
+            backend, _warning = _backend(state)
+            try:
+                gate = _gate(state)
+            except GateUnavailable:
+                if site_page:
+                    raise
+                gate = None
+            ids, status = promote(store, settings, _enabled(state), row, site_page=site_page, gate=gate, backend=backend)
             extra = f" Site page: {status}." if status else ""
             return f"Promoted {row['project']} {row['version']}: {len(ids)} headline drafts.{extra}"
     raise ReviewError(f"Unknown action {action}")
@@ -694,6 +719,12 @@ def _media_context(store: Store, config: Config, draft: Draft, publisher: Publis
         "media_dir": str(config.media_root),
         "siblings": len(store.list_drafts(post_key=draft.post_key)) > 1,
     }
+
+
+def _backend(state: dict):
+    from pip_release.drafting import configured_backend
+
+    return configured_backend(state["config"].drafting, state["env"], state["http"] or HttpClient())
 
 
 def _enabled(state: dict) -> list[Publisher]:

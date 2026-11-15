@@ -126,6 +126,8 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
         return cmd_collect(config, store, http, args.since)
     if args.command == "digest":
         return cmd_digest(config, store, publishers, args)
+    if args.command == "regenerate":
+        return cmd_regenerate(config, store, by_id, args.id, args.force)
     if args.command == "promote":
         return cmd_promote(config, store, publishers, args)
     if args.command == "compose":
@@ -636,8 +638,9 @@ def cmd_digest(config: Config, store: Store, publishers: list[Publisher], args: 
             gate = load_gate(config.privacy, os.environ)
         except GateUnavailable:
             gate = None
+        backend = _backend(config)
         for ref in args.refs:
-            ids, status = build_digest(store, settings, publishers, int(ref), gate)
+            ids, status = build_digest(store, settings, publishers, int(ref), gate, backend)
             print(f"digest {ref}: new drafts {', '.join(f'#{i}' for i in ids) or 'none'}; {status}")
         return 0
     now = datetime.now(timezone.utc)
@@ -663,10 +666,42 @@ def cmd_promote(config: Config, store: Store, publishers: list[Publisher], args:
     gate = None
     if args.site_page:
         gate = load_gate(config.privacy, os.environ)
-    ids, status = promote(store, config.digest, publishers, row, site_page=args.site_page, gate=gate)
+    backend = _backend(config)
+    if backend is not None and backend.remote and gate is None:
+        try:
+            gate = load_gate(config.privacy, os.environ)
+        except GateUnavailable:
+            gate = None
+    ids, status = promote(store, config.digest, publishers, row, site_page=args.site_page, gate=gate, backend=backend)
     print(f"headline drafts: {', '.join(f'#{i}' for i in ids) or 'already existed'}")
     if status:
         print(status)
+    return 0
+
+
+def _backend(config: Config):
+    from pip_release.drafting import configured_backend
+
+    backend, warning = configured_backend(config.drafting, os.environ, HttpClient())
+    if warning:
+        print(f"warning: {warning}", file=sys.stderr)
+    return backend
+
+
+def cmd_regenerate(config: Config, store: Store, publishers: Mapping[str, Publisher], draft_id: int, force: bool) -> int:
+    from pip_release.digest import regenerate
+
+    draft = _one(store, draft_id)
+    try:
+        gate = load_gate(config.privacy, os.environ)
+    except GateUnavailable:
+        gate = None
+    try:
+        message = regenerate(store, config.digest, _publisher(publishers, draft.platform), draft_id,
+                             _backend(config), gate, force=force)
+    except ValueError as exc:
+        raise ReviewError(str(exc)) from exc
+    print(message)
     return 0
 
 
@@ -861,6 +896,10 @@ def _parser() -> argparse.ArgumentParser:
     digest_cmd = sub.add_parser("digest", help="Digest mode: the open window and past digests")
     digest_cmd.add_argument("action", nargs="?", default="status", choices=("status", "exclude", "include", "rebuild"))
     digest_cmd.add_argument("refs", nargs="*", help="project==version for exclude/include, digest ids for rebuild")
+
+    regen = sub.add_parser("regenerate", help="Draft a digest or headline post again (with the drafting backend)")
+    regen.add_argument("id", type=int)
+    regen.add_argument("--force", action="store_true", help="Replace a draft a person has edited")
 
     promote_cmd = sub.add_parser("promote", help="Give one collected release its own headline post")
     promote_cmd.add_argument("ref", help="project==version")

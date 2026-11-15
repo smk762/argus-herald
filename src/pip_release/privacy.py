@@ -144,6 +144,23 @@ class Gate:
         hits.sort(key=lambda hit: (hit.start, -hit.end))
         return hits
 
+    _PLACEHOLDERS = {
+        "private-ip": "[address]", "home-path": "[path]", "email": "[email]", "lan-host": "[host]",
+        "crypto-address": "[address]", "tz-offset": "", "deny-term": "[name]",
+    }
+
+    def scrub(self, text: str) -> str:
+        """Replace every hit with a neutral placeholder, for text sent to a remote model."""
+        out, pos = [], 0
+        for hit in sorted(self.scan(text), key=lambda h: (h.start, -h.end)):
+            if hit.start < pos:
+                continue
+            out.append(text[pos:hit.start])
+            out.append(self._PLACEHOLDERS.get(hit.rule, "[redacted]"))
+            pos = hit.end
+        out.append(text[pos:])
+        return "".join(out)
+
     def check(self, fields: Mapping[str, str], accepted: Iterable[str] = ()) -> list[Hit]:
         """Hits across several fields that haven't been accepted for this draft."""
         allowed = set(accepted)

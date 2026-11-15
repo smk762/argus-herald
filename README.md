@@ -141,6 +141,28 @@ pip-release broadcasts delete 3
 
 `--platform` is any short name. `x` or `twitter` URLs are normalised like confirmed X posts. `--at` defaults to now, in UTC. The review UI has the same under **Logged posts**. Each `collect` rebuilds the broadcast events, so edits and deletions carry through.
 
+## Assisted drafting
+
+A model can write the first draft of each digest and headline post: it picks the changes that matter to each destination's audience and words them in its tone. A person still edits and approves every word.
+
+```yaml
+drafting:
+  backend: openai_compatible     # template (default) | openai_compatible | anthropic
+  models: {headline: other-model}  # optional, per task
+```
+
+- **`openai_compatible`** is a local server (Ollama's `/v1`, llama.cpp, vLLM), so draft inputs stay on your network. Put `PIP_RELEASE_LLM_BASE_URL` (for example `http://<your-ollama-host>:11434/v1`; plain `http://` is accepted only for this machine or a private address) and `PIP_RELEASE_LLM_MODEL` in `.env`, never in the committed config. `llama3.1:8b-instruct` did best in testing.
+- **`anthropic`** uses Claude through the official SDK: `pip install 'pip-release[claude]'`, with credentials from `ANTHROPIC_API_KEY` or `ant auth login`. The default model is `claude-opus-5-5` at `effort: low`, with the server-side refusal fallback on. The privacy gate scrubs everything sent (deny-list terms, emails, private addresses, paths). With no gate, nothing is sent.
+
+The model writes only the text, and herald adds the link and hashtags. A model doesn't reliably follow rules, so herald checks them in code:
+
+- no emoji (unless the audience sets `emoji: true`), no links or hashtags of its own;
+- at most three items, and the post must fit the platform without clipping.
+
+Emoji, and extra or overlong items at the end, are removed outright. Nothing is cut mid-sentence. Anything else gets one retry naming the broken rule, and after that the template draft is used, with a note on the draft saying why. Markdown backticks are removed, and reasoning output (`<think>…</think>`) is stripped.
+
+Each draft records who wrote it ("Drafted by openai_compatible:llama3.1…"). **Regenerate** on a digest or headline draft writes it again, but only replaces your edits if you tick *replace my edits* (`pip-release regenerate <id> [--force]`). Digest rebuilds and promotions use the model too.
+
 ## Posts that aren't releases
 
 Demos, build notes, new pages and videos go through the same queue: one pending draft per destination, the privacy gate, approve, then publish or hand off.

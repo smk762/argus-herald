@@ -294,7 +294,7 @@ def collect_events(metrics: Metrics, store: Store, http: Http, packages: list[st
             "kind": "broadcast", "source": draft.platform, "project": draft.project, "version": draft.version,
             "at": draft.updated_at, "url": draft.external_id or f"draft:{draft.id}",
             "detail": json.dumps({"draft": draft.id, "kind": draft.kind, "subject": draft.label,
-                                  "text": draft.body[:500], "logged": False}),
+                                  "text": draft.body[:500], "logged": False, "drafted_by": draft.drafted_by}),
         })
     for row in store.logged_broadcasts():
         broadcasts.append({

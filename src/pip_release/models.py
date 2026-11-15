@@ -76,6 +76,7 @@ class Draft:
     post_key: str = ""
     subject: str = ""
     reply: str = ""  # posted as a reply to the post (the link, when the audience wants it there)
+    drafted_by: str = "template"  # "template", or "<backend>:<model>" for assisted drafts
 
     @property
     def label(self) -> str:

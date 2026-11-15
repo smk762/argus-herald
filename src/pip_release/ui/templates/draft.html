@@ -12,6 +12,7 @@
         {% if draft.kind != "release" %}<span class="kind">{{ draft.kind }}</span>{% endif %}
         {% if draft.link %}<a href="{{ draft.link }}">{{ "Release page" if draft.kind == "release" else "Link" }}</a>{% endif %}
         {% if draft.edited %}<span>Edited</span>{% endif %}
+        {% if draft.drafted_by != "template" %}<span title="First draft written by a model; review every word">Drafted by {{ draft.drafted_by }}</span>{% endif %}
       </p>
     </div>
   </header>
@@ -189,6 +190,13 @@
     <p class="quiet">{{ label }} drafts can't carry media from here.</p>
     {% endif %}
   </section>
+  {% if draft.status == "pending" and draft.kind in ("digest", "headline") %}
+  <form method="post" action="/drafts/{{ draft.id }}/regenerate" class="regen">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit">Regenerate</button>
+    {% if draft.edited %}<label class="check"><input type="checkbox" name="force" value="1"> replace my edits</label>{% endif %}
+  </form>
+  {% endif %}
   <div class="side-actions">
     {% if can_publish %}
     <form method="post" action="/drafts/{{ draft.id }}/publish">
