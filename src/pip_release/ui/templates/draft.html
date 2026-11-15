@@ -20,18 +20,34 @@
   {% if draft.note %}
   <p class="note">{{ draft.note }}</p>
   {% endif %}
-  {% if handoff %}
+  {% if handoff and handoff.kind == "intent" %}
   <section class="handoff">
-    <h2>Paste into Patreon</h2>
+    <h2>Post on {{ label }}</h2>
+    <p>Open the composer with the text filled in, attach any media, post it, then paste the post's URL below.</p>
+    <p class="actions">
+      <a class="button primary" href="{{ handoff.url }}" target="_blank" rel="noopener noreferrer">Open in X</a>
+      <button type="button" class="copy" data-copy="handoff-text">Copy text</button>
+    </p>
+    <label for="handoff-text">Text</label>
+    <textarea id="handoff-text" readonly rows="6">{{ handoff.text }}</textarea>
+    {% include "confirm_form.html" %}
+  </section>
+  {% elif handoff %}
+  <section class="handoff">
+    <h2>Paste into {{ label }}</h2>
     <p>Open <a href="{{ handoff.url }}">{{ handoff.url }}</a>, create the post, then confirm below.</p>
     <label for="handoff-title">Title</label>
     <textarea id="handoff-title" readonly rows="2">{{ handoff.title }}</textarea>
     <label for="handoff-html">HTML</label>
     <textarea id="handoff-html" readonly rows="12">{{ handoff.html }}</textarea>
-    <form method="post" action="/drafts/{{ draft.id }}/confirm">
-      <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button type="submit" class="primary">I published this on Patreon</button>
-    </form>
+    <p class="actions"><button type="button" class="copy" data-copy="handoff-html">Copy HTML</button></p>
+    {% include "confirm_form.html" %}
+  </section>
+  {% elif can_add_url %}
+  <section class="handoff">
+    <h2>Add the post URL</h2>
+    <p>This post was confirmed without a URL. Add it so analytics can match the post.</p>
+    {% include "confirm_form.html" %}
   </section>
   {% endif %}
   <form method="post" action="/drafts/{{ draft.id }}/save" class="editor">

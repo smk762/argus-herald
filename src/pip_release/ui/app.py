@@ -20,7 +20,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from pip_release.config import Config, Destination
 from pip_release.http import Http, HttpClient, HttpError
 from pip_release.models import APPROVED, FAILED, HANDED_OFF, PENDING, PUBLISHING, STATUSES, Draft
-from pip_release.platforms import Publisher, load_publishers
+from pip_release.platforms import Publisher, configured_publishers
 from pip_release.store import Store
 from pip_release.textutil import plain_to_html
 from pip_release.workflow import ReviewError, approve, confirm, edit_draft, publish_draft, reject
@@ -32,7 +32,7 @@ _FILTERS = (
     ("pending", "Pending"),
     ("approved", "Approved"),
     ("failed", "Failed"),
-    ("handed_off", "Patreon"),
+    ("handed_off", "To post"),
     ("published", "Published"),
     ("all", "All"),
 )
@@ -42,7 +42,7 @@ _STATUS_LABEL = {
     "rejected": "Rejected",
     "published": "Published",
     "failed": "Failed",
-    "handed_off": "Ready to paste",
+    "handed_off": "Ready to post",
     "publishing": "Publishing",
 }
 _HANDLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -147,7 +147,7 @@ def create_app(
         "env": settings,
         "token": (settings.get("PIP_RELEASE_UI_TOKEN") or "").strip(),
         "http": http,
-        "publishers": {item.id: item for item in load_publishers()},
+        "publishers": configured_publishers(config),
         "templates": templates,
     }
 
@@ -296,13 +296,15 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
         reject(store, draft.id, note)
         return f"Rejected {draft.platform} for {draft.project} {draft.version}."
     if action == "confirm":
-        confirm(store, draft.id)
-        return f"Marked {draft.project} {draft.version} published on Patreon."
+        url = str(form.get("url") or "").strip() or None
+        confirmed = confirm(store, draft.id, url)
+        where = " with its post URL" if confirmed.external_id else ""
+        return f"Marked {draft.project} {draft.version} published on {publisher.label}{where}."
     if action == "publish":
         client = state["http"] or HttpClient()
         result = publish_draft(store, publisher, draft, state["env"], client)
         if result.handed_off:
-            return f"{draft.project} {draft.version} is ready to paste into Patreon."
+            return f"{draft.project} {draft.version} is ready to post on {publisher.label}."
         return result.detail
     title = str(form.get("title") if form.get("title") is not None else draft.title)
     body = str(form.get("body") if form.get("body") is not None else draft.body)
@@ -318,9 +320,13 @@ def _draft_context(config: Config, draft: Draft, publisher: Publisher | None) ->
     limit = getattr(publisher, "limit", 10000) if publisher else 10000
     destination = config.destinations.get(draft.platform)
     handoff = None
-    if draft.status == HANDED_OFF and draft.platform == "patreon":
-        where = destination.url if destination and destination.url else "https://www.patreon.com"
-        handoff = {"url": where, "title": draft.title, "html": plain_to_html(draft.body)}
+    if draft.status == HANDED_OFF and publisher is not None:
+        link = publisher.handoff_url(draft)
+        if link:
+            handoff = {"kind": "intent", "url": link, "text": draft.body}
+        else:
+            where = destination.url if destination and destination.url else "https://www.patreon.com"
+            handoff = {"kind": "paste", "url": where, "title": draft.title, "html": plain_to_html(draft.body)}
     return {
         "draft": draft,
         "label": publisher.label if publisher else draft.platform,
@@ -333,6 +339,7 @@ def _draft_context(config: Config, draft: Draft, publisher: Publisher | None) ->
         "can_publish": draft.status in {APPROVED, FAILED, PUBLISHING},
         "can_reject": draft.status not in {"rejected", "published"},
         "can_confirm": draft.status == HANDED_OFF,
+        "can_add_url": draft.status == "published" and not draft.external_id and bool(publisher and publisher.manual),
         "handoff": handoff,
     }
 

@@ -7,8 +7,9 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from importlib.metadata import entry_points
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
+from pip_release.config import Config, Destination
 from pip_release.http import Http, send_json
 from pip_release.models import Draft, PublishResult, Release, Rendered
 from pip_release.oauth1 import authorization_header
@@ -22,6 +23,16 @@ _ORDER = ("twitter", "discord", "telegram", "patreon")
 class Publisher(ABC):
     id: str
     label: str
+    # True when publish hands the text to a person instead of posting it.
+    manual: bool = False
+
+    def configure(self, destination: Destination | None) -> "Publisher":
+        """Return a publisher set up for this destination. Most need nothing."""
+        return self
+
+    def handoff_url(self, draft: Draft) -> str | None:
+        """Where a person posts a manual draft, if the platform has a prefilled link."""
+        return None
 
     @abstractmethod
     def render(self, release: Release) -> Rendered: ...
@@ -54,16 +65,36 @@ def _headline(release: Release) -> str:
     return head
 
 
+def intent_url(text: str) -> str:
+    """X's web intent: opens the composer with the text filled in. No API call, no cost."""
+    return "https://x.com/intent/post?text=" + quote(text, safe="")
+
+
 class TwitterPublisher(Publisher):
+    """X. `manual` (default) hands off an intent link; `api` posts with OAuth 1.0a."""
+
     id = "twitter"
     label = "Twitter / X"
     limit = 280
+
+    def __init__(self, mode: str = "manual") -> None:
+        self.mode = mode
+        self.manual = mode == "manual"
+
+    def configure(self, destination: Destination | None) -> "TwitterPublisher":
+        mode = (destination.mode if destination else None) or "manual"
+        return self if mode == self.mode else TwitterPublisher(mode)
+
+    def handoff_url(self, draft: Draft) -> str | None:
+        return intent_url(draft.body)
 
     def render(self, release: Release) -> Rendered:
         head = _headline(release)
         return Rendered(title="", body=fit_weighted(head, release.url, self.limit))
 
     def missing_secrets(self, env: Mapping[str, str]) -> list[str]:
+        if self.manual:
+            return []
         return _require(
             env,
             ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"),
@@ -74,10 +105,19 @@ class TwitterPublisher(Publisher):
             raise LengthError(f"Twitter posts must be {self.limit} weighted characters or fewer")
 
     def publish(self, draft: Draft, env: Mapping[str, str], http: Http) -> PublishResult:
+        self.validate(draft.title, draft.body)
+        if self.manual:
+            return PublishResult(
+                external_id=None,
+                detail=(
+                    "Open the link, attach any media and post it on X. Then run "
+                    f"pip-release confirm {draft.id} --url <post url>."
+                ),
+                handed_off=True,
+            )
         missing = self.missing_secrets(env)
         if missing:
             raise LengthError(f"Missing {', '.join(missing)}")
-        self.validate(draft.title, draft.body)
         url = "https://api.x.com/2/tweets"
         header = authorization_header(
             "POST",
@@ -188,6 +228,7 @@ class PatreonPublisher(Publisher):
     id = "patreon"
     label = "Patreon"
     limit = 10000
+    manual = True
 
     def render(self, release: Release) -> Rendered:
         head = _headline(release)
@@ -222,6 +263,14 @@ def builtin_publishers() -> list[Publisher]:
         TelegramPublisher(),
         PatreonPublisher(),
     ]
+
+
+def configured_publishers(config: Config) -> dict[str, Publisher]:
+    """Every installed publisher by id, set up from its destination block when there is one."""
+    return {
+        publisher.id: publisher.configure(config.destinations.get(publisher.id))
+        for publisher in load_publishers()
+    }
 
 
 def load_publishers() -> list[Publisher]:

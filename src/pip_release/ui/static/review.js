@@ -27,3 +27,21 @@ function bindCounter(node) {
 }
 
 document.querySelectorAll(".count").forEach(bindCounter);
+
+function bindCopy(button) {
+  const field = document.getElementById(button.dataset.copy);
+  if (!field) return;
+  const label = button.textContent;
+  button.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(field.value);
+      button.textContent = "Copied";
+    } catch {
+      field.select();
+      button.textContent = "Select and copy";
+    }
+    setTimeout(() => { button.textContent = label; }, 1500);
+  });
+}
+
+document.querySelectorAll("button.copy").forEach(bindCopy);

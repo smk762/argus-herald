@@ -199,7 +199,9 @@ textarea {
   resize: vertical;
 }
 
-button {
+button, a.button {
+  display: inline-block;
+  text-decoration: none;
   border: 1px solid var(--line);
   background: #fff;
   color: var(--ink);
@@ -209,7 +211,7 @@ button {
   cursor: pointer;
 }
 
-button.primary {
+button.primary, a.button.primary {
   background: var(--teal);
   border-color: var(--teal);
   color: var(--teal-ink);
@@ -242,3 +244,6 @@ button:focus-visible, a:focus-visible, textarea:focus-visible, input:focus-visib
   .top, .release-head, .actions { align-items: stretch; }
   button, .filters a { min-height: 2.5rem; }
 }
+
+.handoff .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.confirm-form { margin-top: 0.8rem; }

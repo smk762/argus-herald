@@ -4,7 +4,7 @@ pip-release watches PyPI projects, drafts an announcement for each new version, 
 
 Public identities live in YAML or JSON. Tokens and webhook URLs live in `.env`. The first poll records versions that are already on PyPI and does not draft them. Later versions become one draft per enabled platform.
 
-Twitter, Discord, and Telegram publish through their APIs. Patreon's public API does not create posts, so an approved Patreon draft is printed for the creator's editor. After it is posted there, `pip-release confirm` marks it published.
+Discord and Telegram publish through their APIs. X and Patreon are handed to a person: an approved X draft becomes an **Open in X** link with the text filled in (no API call, so no per-post charge, and media can be attached by hand), and an approved Patreon draft is printed for the creator's editor, because Patreon's public API does not create posts. After posting, `pip-release confirm <id> --url <post url>` marks the draft published and keeps the URL for analytics.
 
 ## Setup
 
@@ -27,7 +27,7 @@ Open the queue in a browser:
 pip-release ui
 ```
 
-That listens on `http://127.0.0.1:8787/`. Drafts are grouped by release. You can edit the text, approve or reject it, and publish from the same page. Saving an edit puts the draft back to pending. Patreon still cannot be created through its API: Publish shows the title and HTML to paste, and “I published this on Patreon” records that you did.
+That listens on `http://127.0.0.1:8787/`. Drafts are grouped by release. You can edit the text, approve or reject it, and publish from the same page. Saving an edit puts the draft back to pending. For X, Publish shows **Open in X** and **Copy text**. For Patreon, it shows the title and HTML to paste. After posting, paste the post's URL and press “I published this on …”. A post confirmed without a URL can have one added later from the same page.
 
 Set `PIP_RELEASE_UI_TOKEN` when the UI is reachable beyond your own machine. Docker’s review service listens inside the container on all interfaces and publishes only `127.0.0.1:8787` on the host, so it requires that token. `PIP_RELEASE_UI_URL` is included in the optional review webhook and printed after `poll` when new drafts appear.
 
@@ -41,6 +41,7 @@ pip-release edit 1        # $EDITOR; the draft returns to pending
 pip-release approve 1
 pip-release publish 1
 pip-release publish --approved --dry-run
+pip-release confirm 1 --url https://x.com/<user>/status/<id>   # after a manual post
 pip-release baseline      # mark every current version seen, without drafting
 pip-release reset --reject-pending [--before 2026-11-15] [--yes]
 ```
@@ -65,10 +66,10 @@ Exit status is 1 when a project could not be read. Drafts that fail to publish s
 
 | Id | Needs in `.env` | Publish |
 | --- | --- | --- |
-| `twitter` | `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET` | `POST https://api.x.com/2/tweets` with OAuth 1.0a. Posts are capped at 280 weighted characters, and a URL counts as 23. A post that includes a link is billed at the URL rate on the X developer console. |
+| `twitter` | none with `mode: manual` (default). With `mode: api`: `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET` | Manual: an `https://x.com/intent/post?text=…` link for a person to post, then `pip-release confirm <id> --url <post url>`. API: `POST https://api.x.com/2/tweets` with OAuth 1.0a; a post that includes a link is billed at the URL rate on the X developer console. Both modes cap posts at 280 weighted characters, and a URL counts as 23. |
 | `discord` | `DISCORD_WEBHOOK_URL` | Incoming webhook. The edited text is the message, up to 2000 characters. |
 | `telegram` | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | `sendMessage` as HTML. The bot must be allowed to post in the channel. |
-| `patreon` | none | Prints title and HTML. `pip-release confirm <id>` records that the creator published it. |
+| `patreon` | none | Prints title and HTML. `pip-release confirm <id> [--url <post url>]` records that the creator published it. |
 
 `pip-release platforms` prints which destinations are enabled and which secret names are still empty. It does not print secret values.
 

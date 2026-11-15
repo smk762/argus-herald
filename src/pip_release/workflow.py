@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 from pip_release.config import Config, normalize_name
 from pip_release.http import Http, HttpError, check_url, send_json
@@ -327,7 +329,7 @@ def publish_draft(
             f"Draft {draft.id} is {draft.status}. Approve it before publishing."
         )
     if dry_run:
-        return PublishResult(external_id=None, detail=draft.body, handed_off=publisher.id == "patreon")
+        return PublishResult(external_id=None, detail=draft.body, handed_off=publisher.manual)
     locked = store.transition(draft.id, (APPROVED, FAILED, PUBLISHING), PUBLISHING, error=None)
     if locked is None:
         raise ReviewError(f"Draft {draft.id} changed before it could be published")
@@ -348,14 +350,38 @@ def publish_draft(
     return result
 
 
-def confirm(store: Store, draft_id: int) -> Draft:
+def confirm(store: Store, draft_id: int, url: str | None = None) -> Draft:
+    """Record that a person posted a handed-off draft, with the post URL when known."""
     draft = _require_draft(store, draft_id)
-    updated = store.transition(draft_id, (HANDED_OFF,), PUBLISHED)
+    fields: dict[str, object] = {}
+    if url and url.strip():
+        fields["external_id"] = post_url(draft.platform, url)
+    # A published draft without a URL can still get one afterwards.
+    allowed = (HANDED_OFF, PUBLISHED) if fields and not draft.external_id else (HANDED_OFF,)
+    updated = store.transition(draft_id, allowed, PUBLISHED, **fields)
     if updated is None:
         raise ReviewError(
-            f"Draft {draft_id} is {draft.status}. Confirm is for a Patreon handoff."
+            f"Draft {draft_id} is {draft.status}. Confirm is for a manual handoff (X, Patreon)."
         )
     return updated
+
+
+_X_HOSTS = {"x.com", "twitter.com", "www.x.com", "www.twitter.com", "mobile.x.com", "mobile.twitter.com"}
+_X_STATUS = re.compile(r"^/([A-Za-z0-9_]{1,15})/status/(\d{1,25})/?$")
+
+
+def post_url(platform: str, raw: str) -> str:
+    """Check a pasted post URL and return it in canonical form (X posts as https://x.com/<user>/status/<id>)."""
+    url = raw.strip()
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ReviewError("The post URL must be a plain https:// link")
+    if platform == "twitter":
+        match = _X_STATUS.match(parsed.path)
+        if parsed.hostname.lower() not in _X_HOSTS or not match:
+            raise ReviewError("An X post URL looks like https://x.com/<user>/status/<id>")
+        return f"https://x.com/{match.group(1)}/status/{match.group(2)}"
+    return url
 
 
 def _version_count(count: int) -> str:

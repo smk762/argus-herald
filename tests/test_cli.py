@@ -31,7 +31,8 @@ def test_platforms_command_lists_the_dragonhound_accounts(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "dragonhound3" in out
     assert "AtlasRealms" in out
-    assert "missing X_API_KEY" in out
+    assert "manual" in out
+    assert "missing X_API_KEY" not in out
     assert "disabled" in out
 
 
