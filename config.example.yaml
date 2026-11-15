@@ -29,6 +29,12 @@ privacy:
   allow_addresses: []
   patterns: {}
 
+# Optional: GitHub Releases as a source (repos without PyPI, or for better notes).
+# github:
+#   owner: your-github-user
+#   prefix: your-prefix-        # or repos: [repo-a, repo-b]
+#   include_prereleases: true   # collected into digests, never drafted alone
+
 # Optional: posts that aren't releases.
 # sources:
 #   site:

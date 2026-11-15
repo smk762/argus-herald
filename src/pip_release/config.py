@@ -48,6 +48,17 @@ class Config:
     discover_owner: str | None = None  # GitHub user or org whose repos are checked by discover
     discover_prefix: str = ""
     digest: "DigestSettings | None" = None  # None: one draft per release (per_release mode)
+    github: "GitHubSource | None" = None
+
+
+@dataclass(frozen=True)
+class GitHubSource:
+    """Releases published on GitHub, for repos that don't ship to PyPI (or as better notes)."""
+
+    owner: str
+    repos: tuple[str, ...] = ()  # explicit list; empty means every public repo matching prefix
+    prefix: str = ""
+    include_prereleases: bool = True  # collected into digests, never drafted alone
 
 
 @dataclass(frozen=True)
@@ -113,12 +124,14 @@ def load_config(path: Path) -> Config:
     unknown = sorted({p for feed in feeds for p in feed.platforms} - set(destinations))
     if unknown:
         raise ConfigError(f"sources name platforms that aren't in destinations: {', '.join(unknown)}")
+    github = _github(data.get("github"))
     digest = _digest(data.get("digest"))
     if digest:
         unknown = sorted(set(digest.platforms) - set(destinations))
         if unknown:
             raise ConfigError(f"digest.platforms aren't in destinations: {', '.join(unknown)}")
     return Config(
+        github=github,
         digest=digest,
         feeds=feeds,
         discover_owner=owner.strip() if owner else None,
@@ -240,6 +253,26 @@ def _destinations(value: Any) -> dict[str, Destination]:
             mode=mode,
         )
     return out
+
+
+def _github(value: Any) -> GitHubSource | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ConfigError("github must be a mapping")
+    owner = value.get("owner")
+    if not isinstance(owner, str) or not re.match(r"^[A-Za-z0-9-]{1,39}$", owner.strip()):
+        raise ConfigError("github.owner must be a GitHub user or organisation name")
+    repos = tuple(_strings(value.get("repos") or []))
+    prefix = value.get("prefix") or ""
+    if not isinstance(prefix, str):
+        raise ConfigError("github.prefix must be a string")
+    if not repos and not prefix:
+        raise ConfigError("github needs repos: [...] or a prefix")
+    pre = value.get("include_prereleases", True)
+    if not isinstance(pre, bool):
+        raise ConfigError("github.include_prereleases must be true or false")
+    return GitHubSource(owner=owner.strip(), repos=repos, prefix=prefix.strip(), include_prereleases=pre)
 
 
 def _digest(value: Any) -> DigestSettings | None:

@@ -36,6 +36,12 @@ destinations:
   telegram:
     enabled: false
 
+# GitHub Releases: repos that don't ship to PyPI (Studio, demo UIs) reach the digest too. A version
+# also on PyPI is kept once, under pypi, with the GitHub notes.
+github:
+  owner: smk762
+  prefix: argus-
+
 # Posts that aren't releases. The first read of each feed baselines it; later items become drafts.
 sources:
   site:

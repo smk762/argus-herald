@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -12,6 +13,7 @@ from uuid import uuid4
 
 from pip_release.config import Config, normalize_name
 from pip_release.feeds import FeedItem, FeedSource, read_feed
+from pip_release.models import Release
 from pip_release.http import Http, HttpError, check_url, send_json
 from pip_release.models import (
     APPROVED,
@@ -100,7 +102,7 @@ def poll(
     now: datetime | None = None,
 ) -> list[PollEvent]:
     projects = tracked_projects(config)
-    if not projects and not config.feeds:
+    if not projects and not config.feeds and not config.github:
         raise ReviewError(
             "Nothing to watch. Add pypi.projects or sources. "
             "PyPI does not publish a per-user release feed."
@@ -111,6 +113,7 @@ def poll(
             if not store.is_baselined(project):
                 events.extend(_baseline_only(store, http, project))
         events.extend(poll_feeds(config, store, http, [], draft=False))
+        events.extend(poll_github(config, store, http, [], draft=False))
         events.append(
             PollEvent(
                 "error",
@@ -151,10 +154,80 @@ def poll(
                     events.append(_draft_release(store, http, publishers, project, item.version))
             except (OSError, ValueError) as exc:
                 events.append(PollEvent("error", project, item.version, detail=str(exc)))
+    events.extend(poll_github(config, store, http, publishers))
     events.extend(poll_feeds(config, store, http, publishers))
     if config.digest is not None:
         events.extend(close_digests(config, store, publishers, now=now))
     return events
+
+
+def poll_github(
+    config: Config, store: Store, http: Http, publishers: list[Publisher], *, draft: bool = True,
+    env: Mapping[str, str] | None = None,
+) -> list[PollEvent]:
+    """GitHub Releases. The first read of a repo baselines it; later releases are collected
+    (digest mode) or drafted. Prereleases are never drafted on their own."""
+    from pip_release.discover import _github_repos
+    from pip_release.github import list_releases
+
+    source = config.github
+    if source is None:
+        return []
+    token = ((env if env is not None else os.environ).get("GITHUB_TOKEN") or "").strip()
+    events: list[PollEvent] = []
+    repos = list(source.repos)
+    if not repos:
+        try:
+            repos = [r for r in _github_repos(http, source.owner, token) if r.startswith(source.prefix)]
+        except (HttpError, OSError, ValueError) as exc:
+            return [PollEvent("error", f"github {source.owner}", detail=str(exc))]
+    for repo in repos:
+        try:
+            releases = list_releases(http, source.owner, repo, token)
+        except (HttpError, OSError, ValueError) as exc:
+            events.append(PollEvent("error", f"{repo} (github)", detail=str(exc)))
+            continue
+        if not source.include_prereleases:
+            releases = [r for r in releases if not r.prerelease]
+        if not store.is_baselined(repo, "github"):
+            store.baseline(repo, [r.version for r in releases], "github")
+            events.append(PollEvent("baseline", f"{repo} (github)", releases[-1].version if releases else None,
+                                    detail=_version_count(len(releases)).replace("PyPI", "GitHub")))
+            continue
+        if not draft:
+            continue
+        for rel in releases:
+            if store.seen(repo, rel.version, "github"):
+                continue
+            if config.digest is not None:
+                added = store.add_release(source="github", project=repo, version=rel.version,
+                                          released_at=rel.published_at, summary=rel.name, notes=rel.notes, url=rel.url)
+                detail = "kept for the next digest" if added else "notes added to the PyPI release"
+                events.append(PollEvent("collect", f"{repo} (github)", rel.version, detail=detail))
+            elif rel.prerelease:
+                events.append(PollEvent("skip", f"{repo} (github)", rel.version, detail="prerelease"))
+            else:
+                release = Release(project=repo, version=rel.version, summary=rel.name, url=rel.url,
+                                  author=None, project_urls={}, yanked=False, notes=rel.notes)
+                ids = _drafts_for(store, publishers, release)
+                detail = ", ".join(f"#{i}" for i in ids) or "drafts already existed"
+                events.append(PollEvent("draft" if ids else "skip", f"{repo} (github)", rel.version, detail=detail, draft_ids=ids))
+            store.mark_seen(repo, rel.version, "github")
+    return events
+
+
+def _drafts_for(store: Store, publishers: list[Publisher], release: Release) -> list[int]:
+    ids: list[int] = []
+    for publisher in publishers:
+        rendered = publisher.render(release)
+        publisher.validate(rendered.title, rendered.body)
+        draft_id, created = store.add_draft(
+            project=release.project, version=release.version, platform=publisher.id,
+            title=rendered.title, body=rendered.body, link=release.url,
+        )
+        if created:
+            ids.append(draft_id)
+    return ids
 
 
 def _release_with_notes(http: Http, project: str, version: str):
