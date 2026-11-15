@@ -586,8 +586,11 @@ def rebaseline(
 
 
 def approve(
-    store: Store, publisher: Publisher, draft_id: int, note: str | None, *, gate: Gate
+    store: Store, publisher: Publisher, draft_id: int, note: str | None, *, gate: Gate,
+    schedule: bool = True, schedules: dict | None = None,
 ) -> Draft:
+    """Approve a draft. With a destination schedule, it also gets its next slot (schedule=False:
+    leave it for Publish)."""
     draft = _require_draft(store, draft_id)
     publisher.validate(draft.title, draft.body)
     problems = media_problems(store, publisher, draft)
@@ -599,6 +602,13 @@ def approve(
     )
     if updated is None:
         raise ReviewError(f"Draft {draft_id} is {draft.status} and cannot be approved")
+    if schedule and publisher.schedule is not None:
+        from pip_release.schedule import choose, iso
+
+        when = choose(store, updated, publisher.schedule, datetime.now(timezone.utc), schedules or {})
+        if when is not None:
+            store.set_publish_at(draft_id, iso(when))
+            updated = store.get(draft_id) or updated
     return updated
 
 

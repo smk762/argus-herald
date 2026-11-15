@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from importlib.metadata import entry_points
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
-from pip_release.config import Audience, Config, Destination
+from pip_release.config import Audience, Config, Destination, Schedule
 from pip_release.http import Http, send_json
 from pip_release.media import PATREON_LIMITS, X_LIMITS, MediaLimits
 from pip_release.models import Draft, Post, PublishResult, Release, Rendered
@@ -32,10 +32,12 @@ class Publisher(ABC):
     # Hashtags appended from the audience profile, at most this many.
     max_hashtags: int = 0
     audience: Audience | None = None
+    schedule: Schedule | None = None
 
     def configure(self, destination: Destination | None) -> "Publisher":
         """Return a publisher set up for this destination."""
         self.audience = destination.audience if destination else None
+        self.schedule = destination.schedule if destination else None
         return self
 
     def wants(self, packages: list[str]) -> bool:
@@ -135,6 +137,7 @@ class TwitterPublisher(Publisher):
         mode = (destination.mode if destination else None) or "manual"
         publisher = self if mode == self.mode else TwitterPublisher(mode)
         publisher.audience = destination.audience if destination else None
+        publisher.schedule = destination.schedule if destination else None
         return publisher
 
     def reply_url(self, draft: Draft) -> str | None:

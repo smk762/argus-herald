@@ -217,6 +217,7 @@ def create_app(
             page = _draft_context(config, draft, publisher)
             page.update(_gate_context(store, state, draft))
             page.update(_media_context(store, config, draft, publisher))
+            page.update(_schedule_context(store, draft, publisher))
         return _render(request, "draft.html", **page)
 
     async def save(request: Request) -> Response:
@@ -402,6 +403,9 @@ def create_app(
     async def regenerate_one(request: Request) -> Response:
         return await _act(request, state, "regenerate")
 
+    async def schedule_one(request: Request) -> Response:
+        return await _act(request, state, "schedule")
+
     async def approve_release(request: Request) -> Response:
         denied = _guard(request, state["token"])
         if denied is not None:
@@ -466,6 +470,7 @@ def create_app(
         Route("/drafts/{draft_id:int}/confirm", confirm_one, methods=["POST"]),
         Route("/drafts/{draft_id:int}/accept", accept_one, methods=["POST"]),
         Route("/drafts/{draft_id:int}/regenerate", regenerate_one, methods=["POST"]),
+        Route("/drafts/{draft_id:int}/schedule", schedule_one, methods=["POST"]),
         Route("/drafts/{draft_id:int}/media", media_add, methods=["POST"]),
         Route("/media/{media_id:int}", media_file, methods=["GET"]),
         Route("/media/{media_id:int}/{action:str}", media_edit, methods=["POST"]),
@@ -522,6 +527,24 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
         confirmed = confirm(store, draft.id, url)
         where = " with its post URL" if confirmed.external_id else ""
         return f"Marked {draft.label} published on {publisher.label}{where}."
+    if action == "schedule":
+        from pip_release.schedule import iso, parse
+
+        if draft.status != APPROVED:
+            raise ReviewError("Approve the draft before scheduling it")
+        choice = str(form.get("when") or "").strip()
+        custom = str(form.get("at") or "").strip()
+        if choice == "clear":
+            store.set_publish_at(draft.id, None)
+            return "Unscheduled. It goes out when you press Publish."
+        try:
+            when = parse(custom or choice)
+        except ValueError as exc:
+            raise ReviewError("Pick a slot or enter a time like 2026-12-01T08:00 (UTC)") from exc
+        if when <= datetime.now(timezone.utc):
+            raise ReviewError("That time has passed. Use Publish to post now.")
+        store.set_publish_at(draft.id, iso(when))
+        return f"Scheduled for {_when(iso(when))}."
     if action == "regenerate":
         from pip_release.digest import regenerate
 
@@ -552,7 +575,9 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
         draft = edit_draft(store, publisher, draft.id, title, body, reply)
     if action == "save":
         return "Saved. This draft is pending approval."
-    approve(store, publisher, draft.id, note, gate=_gate(state))
+    approved = approve(store, publisher, draft.id, note, gate=_gate(state), schedules=_schedules(config))
+    if approved.publish_at:
+        return f"Approved {draft.platform} for {draft.label}; scheduled for {_when(approved.publish_at)}."
     return f"Approved {draft.platform} for {draft.label}."
 
 
@@ -583,6 +608,7 @@ def _draft_context(config: Config, draft: Draft, publisher: Publisher | None) ->
         "audience": publisher.audience if publisher else None,
         "reply_url": publisher.reply_url(draft) if publisher and hasattr(publisher, "reply_url") else None,
         "handoff": handoff,
+        "handoff_manual": bool(publisher and publisher.manual),
     }
 
 
@@ -719,6 +745,30 @@ def _media_context(store: Store, config: Config, draft: Draft, publisher: Publis
         "media_dir": str(config.media_root),
         "siblings": len(store.list_drafts(post_key=draft.post_key)) > 1,
     }
+
+
+def _schedules(config: Config) -> dict:
+    return {name: d.schedule for name, d in config.destinations.items() if d.schedule is not None}
+
+
+def _when(value: str | None) -> str:
+    if not value:
+        return ""
+    from pip_release.schedule import parse
+
+    stamp = parse(value)
+    return f"{stamp:%a %d %b %H:%M} UTC"
+
+
+def _schedule_context(store: Store, draft: Draft, publisher: Publisher | None) -> dict:
+    from pip_release.schedule import free_slots, iso
+
+    choices = []
+    if draft.status == APPROVED and publisher is not None and publisher.schedule is not None:
+        for when in free_slots(store, draft.platform, publisher.schedule, datetime.now(timezone.utc), ignore=draft.id):
+            choices.append({"value": iso(when), "label": _when(iso(when))})
+    return {"publish_at_label": _when(draft.publish_at), "slot_choices": choices,
+            "has_schedule": bool(publisher and publisher.schedule)}
 
 
 def _backend(state: dict):

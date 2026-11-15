@@ -286,3 +286,7 @@ select { font: inherit; padding: 0.35rem 0.5rem; border: 1px solid var(--line); 
 .audience p { margin: 0.2rem 0; }
 
 .regen { display: flex; gap: 0.5rem; align-items: center; margin: 0.6rem 0; }
+
+.schedule { margin: 1rem 0; padding-top: 0.5rem; border-top: 1px solid var(--line); }
+.schedule-form { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; }
+.schedule-form label { flex-basis: 100%; margin-bottom: -0.3rem; }

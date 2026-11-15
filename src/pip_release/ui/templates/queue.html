@@ -36,6 +36,7 @@
         <span class="status status-{{ draft.status }}">{{ status_label[draft.status] }}</span>
       </div>
       <p class="excerpt">{{ draft.body }}</p>
+      {% if draft.publish_at %}<p class="quiet">Scheduled {{ draft.publish_at[:16].replace("T", " ") }} UTC</p>{% endif %}
       <a class="open" href="/drafts/{{ draft.id }}">Open #{{ draft.id }}</a>
     </li>
     {% endfor %}
