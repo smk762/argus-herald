@@ -1,0 +1,127 @@
+"""Find PyPI projects the config should track but doesn't.
+
+PyPI's JSON API answers for a name you already know; it can't list projects by prefix. So
+discovery has three parts:
+
+1. every configured name must exist on PyPI (catches typos and removed projects);
+2. when the PyPI profile page is readable (it often answers with a client challenge), it is
+   compared with the configured list;
+3. the GitHub owner's public, non-fork repos whose names start with the prefix are read for a
+   ``pyproject.toml``; a project name declared there that exists on PyPI must be configured.
+"""
+
+from __future__ import annotations
+
+import json
+import tomllib
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from urllib.parse import quote
+
+from pip_release.config import Config, normalize_name
+from pip_release.http import Http, HttpError
+from pip_release.pypi import ProfileUnavailable, discover_projects, project_json_url
+from pip_release.workflow import tracked_projects
+
+GITHUB_API = "https://api.github.com"
+RAW = "https://raw.githubusercontent.com"
+MAX_PAGES = 10
+
+
+@dataclass
+class Drift:
+    missing: list[str] = field(default_factory=list)  # configured but not on PyPI
+    unconfigured: dict[str, str] = field(default_factory=dict)  # name -> where it was found
+    notes: list[str] = field(default_factory=list)  # checks that couldn't run
+
+    @property
+    def clean(self) -> bool:
+        return not self.missing and not self.unconfigured
+
+
+def check_projects(config: Config, http: Http, env: Mapping[str, str]) -> Drift:
+    drift = Drift()
+    tracked = tracked_projects(config)
+    configured = {normalize_name(name) for name in config.projects}
+    ignored = {normalize_name(name) for name in config.ignore}
+
+    for name in tracked:
+        status = _pypi_status(http, name)
+        if status == 404:
+            drift.missing.append(name)
+        elif status != 200:
+            drift.notes.append(f"PyPI answered HTTP {status} for {name}")
+
+    def found(name: str, where: str) -> None:
+        key = normalize_name(name)
+        if key not in configured and key not in ignored and key not in {normalize_name(n) for n in drift.unconfigured}:
+            drift.unconfigured[name] = where
+
+    for user in config.users:
+        try:
+            for name in discover_projects(http, user):
+                found(name, f"PyPI profile {user}")
+        except (ProfileUnavailable, HttpError, OSError) as exc:
+            drift.notes.append(f"PyPI profile {user} not checked: {exc}")
+
+    owner, prefix = config.discover_owner, config.discover_prefix
+    if owner:
+        token = (env.get("GITHUB_TOKEN") or "").strip()
+        try:
+            repos = _github_repos(http, owner, token)
+        except (HttpError, OSError, ValueError) as exc:
+            drift.notes.append(f"GitHub repos of {owner} not checked: {exc}")
+            repos = []
+        for repo in repos:
+            if not repo.startswith(prefix):
+                continue
+            name = _pyproject_name(http, owner, repo)
+            if name and normalize_name(name) not in configured and _pypi_status(http, name) == 200:
+                found(name, f"github.com/{owner}/{repo}")
+    return drift
+
+
+def _pypi_status(http: Http, name: str) -> int:
+    try:
+        status, _ = http.request("GET", project_json_url(name), headers={"Accept": "application/json"})
+    except HttpError as exc:
+        return exc.status
+    return status
+
+
+def _github_repos(http: Http, owner: str, token: str) -> list[str]:
+    """Public, non-fork, non-archived repos of a user or organisation."""
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    names: list[str] = []
+    for page in range(1, MAX_PAGES + 1):
+        url = f"{GITHUB_API}/users/{quote(owner, safe='')}/repos?type=owner&per_page=100&page={page}"
+        status, body = http.request("GET", url, headers=headers)
+        if status != 200:
+            raise HttpError("GET", url, status)
+        batch = json.loads(body.decode("utf-8"))
+        if not isinstance(batch, list):
+            raise ValueError("Unexpected GitHub response")
+        for repo in batch:
+            if isinstance(repo, dict) and not repo.get("fork") and not repo.get("archived") and not repo.get("private"):
+                names.append(str(repo.get("name") or ""))
+        if len(batch) < 100:
+            break
+    return sorted(name for name in names if name)
+
+
+def _pyproject_name(http: Http, owner: str, repo: str) -> str | None:
+    url = f"{RAW}/{quote(owner, safe='')}/{quote(repo, safe='')}/HEAD/pyproject.toml"
+    try:
+        status, body = http.request("GET", url, headers={"Accept": "text/plain"})
+    except HttpError:
+        return None
+    if status != 200 or len(body) > 200_000:
+        return None
+    try:
+        data = tomllib.loads(body.decode("utf-8", "replace"))
+    except tomllib.TOMLDecodeError:
+        return None
+    name = (data.get("project") or {}).get("name")
+    return name.strip() if isinstance(name, str) and name.strip() else None

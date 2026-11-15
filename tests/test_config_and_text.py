@@ -65,6 +65,10 @@ def test_dragonhound_fixture_enables_twitter_and_patreon():
         "argus-forge",
         "argus-proof",
         "argus-curator",
+        "argus-darkroom",
+        "argus-survey",
+        "argus-mask",
+        "argus-mint",
     ]
     assert config.destinations["twitter"].username == "dragonhound3"
     assert config.destinations["patreon"].url.endswith("AtlasRealms")

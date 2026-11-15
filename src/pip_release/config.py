@@ -44,6 +44,8 @@ class Config:
     path: Path | None = None
     privacy: dict[str, Any] = field(default_factory=dict)
     feeds: list[FeedSource] = field(default_factory=list)
+    discover_owner: str | None = None  # GitHub user or org whose repos are checked by discover
+    discover_prefix: str = ""
 
 
 def resolve_config_path(explicit: str | None) -> Path:
@@ -74,6 +76,13 @@ def load_config(path: Path) -> Config:
         users.insert(0, single.strip())
     projects = _dedupe(_strings(pypi.get("projects") or []))
     ignore = _strings(pypi.get("ignore") or [])
+    discover = pypi.get("discover") or {}
+    if not isinstance(discover, dict):
+        raise ConfigError("pypi.discover must be a mapping")
+    owner = _optional_str(discover.get("github_owner"))
+    prefix = discover.get("prefix") or ""
+    if not isinstance(prefix, str):
+        raise ConfigError("pypi.discover.prefix must be a string")
     destinations = _destinations(data.get("destinations") or {})
     poll = data.get("poll") or {}
     store = data.get("store") or {}
@@ -93,6 +102,8 @@ def load_config(path: Path) -> Config:
         raise ConfigError(f"sources name platforms that aren't in destinations: {', '.join(unknown)}")
     return Config(
         feeds=feeds,
+        discover_owner=owner.strip() if owner else None,
+        discover_prefix=prefix.strip(),
         users=users,
         projects=projects,
         ignore=ignore,

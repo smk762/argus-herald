@@ -67,6 +67,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.store:
             config.store_path = Path(args.store)
         if args.command == "discover":
+            if args.check:
+                return cmd_discover_check(config, HttpClient(), os.environ)
             return cmd_discover(config)
         if args.command == "ui":
             return cmd_ui(config, args.host, args.port)
@@ -166,6 +168,51 @@ def cmd_discover(config: Config) -> int:
         print("List projects explicitly under pypi.projects.", file=sys.stderr)
         return 1
     return 0
+
+
+def cmd_discover_check(config: Config, http, env: Mapping[str, str]) -> int:
+    from pip_release.discover import check_projects
+
+    drift = check_projects(config, http, env)
+    for note in drift.notes:
+        print(f"# {note}", file=sys.stderr)
+    for name in drift.missing:
+        print(f"missing on PyPI: {name} (configured, but PyPI has no such project)")
+    if drift.unconfigured:
+        print("not tracked (add to pypi.projects; the first poll baselines them, nothing old is drafted):")
+        for name, where in sorted(drift.unconfigured.items()):
+            print(f"  - {name}    # {where}")
+    if drift.clean:
+        print(f"OK: {len(config.projects)} configured projects, no drift.")
+        return 0
+    return 1
+
+
+DISCOVER_KEY = "discover_checked_at"
+DISCOVER_EVERY = 24 * 3600
+
+
+def _discover_daily(config: Config, store: Store, http: HttpClient) -> None:
+    """From the watcher: check for drift once a day and raise a desktop notice when found."""
+    if not (config.discover_owner or config.users):
+        return
+    last = store.get_meta(DISCOVER_KEY)
+    now = time.time()
+    if last and now - float(last) < DISCOVER_EVERY:
+        return
+    from pip_release.discover import check_projects
+
+    try:
+        drift = check_projects(config, http, os.environ)
+    except (HttpError, OSError, ValueError) as exc:
+        log.warning("discover check failed: %s", exc)
+        return
+    store.set_meta(DISCOVER_KEY, str(now))
+    if drift.clean:
+        return
+    names = [*drift.unconfigured, *(f"{n} (missing on PyPI)" for n in drift.missing)]
+    log.warning("project drift: %s", ", ".join(names))
+    _notify_text("Tracked projects have drifted", "\n".join(names[:6]) + "\nRun: pip-release discover --check")
 
 
 def cmd_platforms(
@@ -286,15 +333,17 @@ def _mark_reminder(store: Store, now: datetime | None = None) -> None:
 
 
 def _desktop_notify(drafts: list[Draft], *, still_waiting: bool = False) -> None:
-    flag = (os.environ.get("PIP_RELEASE_DESKTOP_NOTIFY") or "1").strip().lower()
-    if flag in {"0", "false", "no", "off"}:
-        return
     review = (os.environ.get("PIP_RELEASE_UI_URL") or "").strip()
     notice = desktop_notice(drafts, review, still_waiting=still_waiting)
+    if notice is not None:
+        _notify_text(*notice)
+
+
+def _notify_text(summary: str, body: str) -> None:
+    flag = (os.environ.get("PIP_RELEASE_DESKTOP_NOTIFY") or "1").strip().lower()
     binary = shutil.which("notify-send")
-    if notice is None or not binary:
+    if flag in {"0", "false", "no", "off"} or not binary:
         return
-    summary, body = notice
     try:
         subprocess.run(
             [
@@ -316,6 +365,7 @@ def cmd_watch(config: Config, store: Store, http: HttpClient, publishers: list[P
     while True:
         try:
             cmd_poll(config, store, http, publishers)
+            _discover_daily(config, store, http)
         except (ConfigError, ReviewError, HttpError, OSError, ValueError) as exc:
             log.error("%s", exc)
             _heartbeat(config)
@@ -521,7 +571,11 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--example", choices=("dragonhound",), help="Use the dragonhound fixture")
     init.add_argument("--force", action="store_true", help="Replace an existing config.yaml")
 
-    sub.add_parser("discover", help="Print projects from a PyPI user profile")
+    discover = sub.add_parser("discover", help="Print projects from a PyPI user profile")
+    discover.add_argument(
+        "--check", action="store_true",
+        help="Compare the configured projects with PyPI and GitHub; exit 1 on drift",
+    )
     sub.add_parser("poll", help="Check PyPI once")
     sub.add_parser("watch", help="Poll on the configured interval")
     baseline = sub.add_parser(
