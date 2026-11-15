@@ -20,6 +20,7 @@ from pip_release.models import (
     PENDING,
     PUBLISHED,
     PUBLISHING,
+    KINDS,
     POST_KINDS,
     Draft,
     Post,
@@ -588,3 +589,65 @@ def _require_draft(store: Store, draft_id: int) -> Draft:
     if draft is None:
         raise ReviewError(f"No draft {draft_id}")
     return draft
+
+
+# ---- broadcasts made outside herald ----------------------------------------------------
+
+_PLATFORM = re.compile(r"^[a-z0-9][a-z0-9.-]{0,39}$")
+LOGGED_KINDS = (*KINDS, "other")
+# Free-text platform names that mean X, so their URLs are checked and normalised like X posts.
+_X_NAMES = {"x", "twitter"}
+
+
+def logged_fields(
+    *, platform: str, url: str, kind: str = "other", project: str = "", subject: str = "", text: str = "",
+    at: str | None = None,
+) -> dict[str, str]:
+    """Validate and normalise one logged broadcast."""
+    platform = platform.strip().lower()
+    if not _PLATFORM.match(platform):
+        raise ReviewError("Platform is a short name like reddit, hn, youtube or newsletter")
+    if kind not in LOGGED_KINDS:
+        raise ReviewError(f"Kind is one of: {', '.join(LOGGED_KINDS)}")
+    canonical = post_url("twitter" if platform in _X_NAMES else platform, url)
+    return {
+        "platform": "twitter" if platform in _X_NAMES else platform,
+        "url": canonical,
+        "kind": kind,
+        "project": project.strip(),
+        "subject": subject.strip()[:200],
+        "text": text.strip()[:5000],
+        "at": _utc(at) if at else datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+    }
+
+
+def _utc(value: str) -> str:
+    try:
+        if len(value.strip()) == 10:
+            stamp = datetime.fromisoformat(value.strip() + "T12:00:00")
+        else:
+            stamp = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ReviewError(f"--at must be an ISO date or timestamp, not {value!r}") from exc
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def log_broadcast(store: Store, **fields: str) -> int:
+    try:
+        return store.log_broadcast(**logged_fields(**fields))
+    except ValueError as exc:
+        raise ReviewError(str(exc)) from exc
+
+
+def edit_logged(store: Store, broadcast_id: int, **changes: str) -> None:
+    row = store.logged_broadcast(broadcast_id)
+    if row is None:
+        raise ReviewError(f"No logged broadcast {broadcast_id}")
+    merged = {k: row[k] for k in ("platform", "url", "kind", "project", "subject", "text", "at")}
+    merged.update({k: v for k, v in changes.items() if v is not None})
+    try:
+        store.update_logged(broadcast_id, **logged_fields(**merged))
+    except ValueError as exc:
+        raise ReviewError(str(exc)) from exc

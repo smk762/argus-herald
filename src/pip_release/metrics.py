@@ -164,7 +164,13 @@ def collect(
     if repos:
         if token:
             _run(report, metrics, "gh_traffic", lambda: collect_traffic(metrics, http, owner, repos, token))
-            _run(report, metrics, "gh_stars", lambda: collect_stars(metrics, http, owner, repos, token))
+            try:
+                _run(report, metrics, "gh_stars", lambda: collect_stars(metrics, http, owner, repos, token), reraise_denied=True)
+            except HttpError as exc:
+                report.skipped.append(
+                    f"GitHub star history: HTTP {exc.status} (GitHub limits stargazer lists to admins and collaborators; "
+                    "daily star counts are still kept)"
+                )
         else:
             report.skipped.append("GitHub traffic, referrers, paths and star history: GITHUB_TOKEN is not set")
     projects = tracked_projects(config)
@@ -173,10 +179,15 @@ def collect(
     return report
 
 
-def _run(report: Report, metrics: Metrics, name: str, job) -> None:
+def _run(report: Report, metrics: Metrics, name: str, job, *, reraise_denied: bool = False) -> None:
     try:
         detail = job()
-    except (HttpError, OSError, ValueError, KeyError) as exc:
+    except HttpError as exc:
+        if reraise_denied and exc.status in (401, 403):
+            raise
+        report.errors.append(f"{name}: {exc}")
+        return
+    except (OSError, ValueError, KeyError) as exc:
         report.errors.append(f"{name}: {exc}")
         return
     metrics.record_run(name, detail)
@@ -277,16 +288,32 @@ def collect_events(metrics: Metrics, store: Store, http: Http, packages: list[st
                     "at": ref.upload_time.replace("Z", "+00:00"),
                     "url": f"https://pypi.org/project/{package}/{ref.version}/", "detail": "",
                 })
-    broadcasts = 0
+    broadcasts: list[dict] = []
     for draft in store.list_drafts(status=PUBLISHED):
-        rows.append({
+        broadcasts.append({
             "kind": "broadcast", "source": draft.platform, "project": draft.project, "version": draft.version,
             "at": draft.updated_at, "url": draft.external_id or f"draft:{draft.id}",
-            "detail": json.dumps({"draft": draft.id, "kind": draft.kind, "subject": draft.label, "text": draft.body[:500]}),
+            "detail": json.dumps({"draft": draft.id, "kind": draft.kind, "subject": draft.label,
+                                  "text": draft.body[:500], "logged": False}),
         })
-        broadcasts += 1
+    for row in store.logged_broadcasts():
+        broadcasts.append({
+            "kind": "broadcast", "source": row["platform"], "project": row["project"], "version": "",
+            "at": row["at"], "url": row["url"],
+            "detail": json.dumps({"logged": row["id"], "kind": row["kind"], "subject": row["subject"],
+                                  "text": row["text"][:500]}),
+        })
     metrics.upsert("events", rows)
-    return f"{len(rows) - broadcasts} releases, {broadcasts} broadcasts"
+    # Broadcasts are rebuilt from their sources, so edits and deletions carry through.
+    with metrics.transaction():
+        metrics.conn.execute("DELETE FROM events WHERE kind = 'broadcast'")
+        metrics.conn.executemany(
+            "INSERT OR REPLACE INTO events (kind, source, project, version, at, url, detail) "
+            "VALUES (:kind, :source, :project, :version, :at, :url, :detail)",
+            broadcasts,
+        )
+    logged = sum(1 for b in broadcasts if '"logged": false' not in b["detail"])
+    return f"{len(rows)} releases, {len(broadcasts)} broadcasts ({logged} logged by hand)"
 
 
 def _hash(login: str) -> str:

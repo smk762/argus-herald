@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Logged posts{% endblock %}
+{% macro fields(v, prefix) %}
+<label for="{{ prefix }}platform">Platform</label>
+<input id="{{ prefix }}platform" name="platform" value="{{ v.platform or '' }}" placeholder="reddit, hn, youtube, newsletter" {% if prefix == 'new-' %}required{% endif %}>
+<label for="{{ prefix }}url">Post URL</label>
+<input id="{{ prefix }}url" name="url" type="url" value="{{ v.url or '' }}" placeholder="https://…" {% if prefix == 'new-' %}required{% endif %}>
+<label for="{{ prefix }}kind">Kind</label>
+<select id="{{ prefix }}kind" name="kind">{% for k in kinds %}<option value="{{ k }}"{% if k == (v.kind or 'other') %} selected{% endif %}>{{ k }}</option>{% endfor %}</select>
+<label for="{{ prefix }}project">Package, optional</label>
+<input id="{{ prefix }}project" name="project" value="{{ v.project or '' }}">
+<label for="{{ prefix }}subject">Label, optional</label>
+<input id="{{ prefix }}subject" name="subject" value="{{ v.subject or '' }}">
+<label for="{{ prefix }}at">Posted at (UTC), optional: defaults to now</label>
+<input id="{{ prefix }}at" name="at" value="{{ v.at or '' }}" placeholder="2026-12-07T09:30">
+<label for="{{ prefix }}text">What it said, optional</label>
+<textarea id="{{ prefix }}text" name="text" rows="3">{{ v.text or '' }}</textarea>
+{% endmacro %}
+{% block body %}
+<section class="lede">
+  <h1>Logged posts</h1>
+  <p>Posts you made yourself, outside herald: Reddit, Hacker News, YouTube, newsletters, link roundups. Logging them puts them on the metrics timeline next to herald's own posts, so a spike in visitors can be matched to a post.</p>
+</section>
+<article class="sheet">
+  <h2>Log a post</h2>
+  {% if error %}<p class="flash flash-bad" role="alert">{{ error }}</p>{% endif %}
+  <form method="post" action="/broadcasts" class="editor">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {{ fields(values, 'new-') }}
+    <div class="actions"><button type="submit" class="primary">Log it</button></div>
+  </form>
+</article>
+{% for row in rows %}
+<article class="release">
+  <header class="release-head">
+    <div>
+      <h2>{{ row.subject or row.platform }} <span class="kind">{{ row.platform }} · {{ row.kind }}</span></h2>
+      <a class="quiet" href="{{ row.url }}" target="_blank" rel="noopener noreferrer">{{ row.url }}</a>
+      <span class="quiet">{{ row.at[:16] }} UTC</span>
+    </div>
+    <form method="post" action="/broadcasts/delete/{{ row.id }}">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit" class="danger">Delete</button>
+    </form>
+  </header>
+  <details>
+    <summary>Edit</summary>
+    <form method="post" action="/broadcasts/edit/{{ row.id }}" class="editor">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      {{ fields(row, 'e' ~ row.id ~ '-') }}
+      <div class="actions"><button type="submit">Save</button></div>
+    </form>
+  </details>
+</article>
+{% endfor %}
+{% endblock %}

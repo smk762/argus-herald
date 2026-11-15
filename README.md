@@ -112,7 +112,21 @@ Without a `digest:` block (or with `mode: per_release`), every release gets its 
 
 Repos are the public, non-fork repos of `pypi.discover.github_owner` that start with `pypi.discover.prefix`. **GitHub keeps traffic for 14 days only**, so whatever isn't collected within that time is gone.
 
-The traffic and stargazer endpoints only answer to an account with write access to the repo. Use a fine-grained token limited to those repos with **Metadata: read** and **Administration: read**. If `collect` reports HTTP 403 for traffic, the token lacks that access. `--since 2026-11-01` keeps only PyPI download days from that date.
+The traffic endpoints only answer to an account with write access to the repo. A fine-grained token limited to those repos, with **Metadata: read** and **Administration: read**, works for traffic. GitHub is limiting stargazer lists to admins and collaborators, and with such a token they answer 403. That is reported as skipped, not as an error, and `gh_star_counts` still tracks stars per day. `--since 2026-11-01` keeps only PyPI download days from that date.
+
+### Posts made outside herald
+
+Some posts are always made by hand: Reddit, Hacker News, YouTube uploads, newsletter and link-roundup submissions. Log them so they appear on the metrics timeline next to herald's own posts:
+
+```bash
+pip-release log-broadcast --platform reddit --url https://www.reddit.com/r/gis/comments/… --kind demo --project argus-atlas
+pip-release log-broadcast --platform hn --url "https://news.ycombinator.com/item?id=…" --at 2027-01-05T15:00Z
+pip-release broadcasts                    # list
+pip-release log-broadcast --id 3 --subject "Show HN: atlas"   # edit
+pip-release broadcasts delete 3
+```
+
+`--platform` is any short name. `x` or `twitter` URLs are normalised like confirmed X posts. `--at` defaults to now, in UTC. The review UI has the same under **Logged posts**. Each `collect` rebuilds the broadcast events, so edits and deletions carry through.
 
 ## Posts that aren't releases
 

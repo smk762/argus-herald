@@ -29,7 +29,10 @@ from pip_release.privacy import Gate, GateUnavailable, load_gate, segments
 from pip_release.workflow import (
     PrivacyRefused,
     ReviewError,
+    LOGGED_KINDS,
     accept_hit,
+    edit_logged,
+    log_broadcast,
     approve,
     compose,
     confirm,
@@ -260,6 +263,48 @@ def create_app(
         _flash(request, "ok", f"Created {len(ids)} pending {noun}. Review and approve each one.")
         return RedirectResponse("/?status=pending", status_code=303)
 
+    async def broadcasts_page(request: Request) -> Response:
+        denied = _guard(request, state["token"])
+        if denied is not None:
+            return denied
+        with _store(config) as store:
+            rows = [dict(row) for row in store.logged_broadcasts()]
+        return _render(request, "broadcasts.html", rows=rows, kinds=LOGGED_KINDS, values={}, error="")
+
+    async def broadcast_action(request: Request) -> Response:
+        denied = _guard(request, state["token"])
+        if denied is not None:
+            return denied
+        form = await request.form()
+        if not _csrf_ok(request, form.get("csrf")):
+            return _expired()
+        action = request.path_params.get("action", "add")
+        target = request.path_params.get("target")
+        fields = {k: str(form.get(k) or "").strip() for k in ("platform", "url", "kind", "project", "subject", "text", "at")}
+        try:
+            with _store(config) as store:
+                if action == "add":
+                    log_broadcast(store, **{**fields, "kind": fields["kind"] or "other", "at": fields["at"] or None})
+                    message = f"Logged the {fields['platform']} post."
+                elif action == "edit":
+                    edit_logged(store, int(target), **{k: v for k, v in fields.items() if v})
+                    message = "Updated."
+                elif action == "delete":
+                    if not store.delete_logged(int(target)):
+                        raise ReviewError(f"No logged broadcast {target}")
+                    message = "Deleted."
+                else:
+                    raise ReviewError(f"Unknown action {action}")
+        except ReviewError as exc:
+            if action != "add":
+                _flash(request, "bad", str(exc))
+                return RedirectResponse("/broadcasts", status_code=303)
+            with _store(config) as store:
+                rows = [dict(row) for row in store.logged_broadcasts()]
+            return _render(request, "broadcasts.html", status_code=400, rows=rows, kinds=LOGGED_KINDS, values=fields, error=str(exc))
+        _flash(request, "ok", message)
+        return RedirectResponse("/broadcasts", status_code=303)
+
     async def digests_page(request: Request) -> Response:
         denied = _guard(request, state["token"])
         if denied is not None:
@@ -342,6 +387,9 @@ def create_app(
         Route("/login", login_form, methods=["GET"]),
         Route("/login", login_submit, methods=["POST"]),
         Route("/", queue, methods=["GET"]),
+        Route("/broadcasts", broadcasts_page, methods=["GET"]),
+        Route("/broadcasts", broadcast_action, methods=["POST"]),
+        Route("/broadcasts/{action:str}/{target:int}", broadcast_action, methods=["POST"]),
         Route("/digests", digests_page, methods=["GET"]),
         Route("/digests/{action:str}/{target:int}", digest_action, methods=["POST"]),
         Route("/compose", compose_form, methods=["GET"]),
