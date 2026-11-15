@@ -97,6 +97,23 @@ pip-release promote argus-lens==0.13.0 --site-page
 
 Without a `digest:` block (or with `mode: per_release`), every release gets its own drafts as before.
 
+## Metrics
+
+`pip-release collect` snapshots adoption metrics into `metrics.sqlite`, next to the queue. They stay on this machine. The watcher runs it once a day. Every write is an upsert, so running it again does no harm.
+
+| Table | From | Needs |
+| --- | --- | --- |
+| `gh_traffic` (daily views, uniques, clones) | GitHub traffic API | `GITHUB_TOKEN` |
+| `gh_referrers`, `gh_paths` (snapshot per day) | GitHub traffic API | `GITHUB_TOKEN` |
+| `gh_star_counts` (stars per repo per day) | GitHub repo list | nothing |
+| `gh_stars` (when each star was given; the stargazer is stored only as a hash) | GitHub stargazers API | `GITHUB_TOKEN` |
+| `pypi_downloads` (daily, without mirrors, last 180 days) | pypistats.org | nothing |
+| `events` (release times, and published posts with their URL) | PyPI JSON API and the review queue | nothing |
+
+Repos are the public, non-fork repos of `pypi.discover.github_owner` that start with `pypi.discover.prefix`. **GitHub keeps traffic for 14 days only**, so whatever isn't collected within that time is gone.
+
+The traffic and stargazer endpoints only answer to an account with write access to the repo. Use a fine-grained token limited to those repos with **Metadata: read** and **Administration: read**. If `collect` reports HTTP 403 for traffic, the token lacks that access. `--since 2026-11-01` keeps only PyPI download days from that date.
+
 ## Posts that aren't releases
 
 Demos, build notes, new pages and videos go through the same queue: one pending draft per destination, the privacy gate, approve, then publish or hand off.

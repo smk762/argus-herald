@@ -112,6 +112,8 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
         return cmd_reject(store, _ids(args, store), args.note)
     if args.command == "publish":
         return cmd_publish(config, store, by_id, http, _ids(args, store), args.dry_run, _gate(config))
+    if args.command == "collect":
+        return cmd_collect(config, store, http, args.since)
     if args.command == "digest":
         return cmd_digest(config, store, publishers, args)
     if args.command == "promote":
@@ -190,6 +192,53 @@ def cmd_discover_check(config: Config, http, env: Mapping[str, str]) -> int:
         print(f"OK: {len(config.projects)} configured projects, no drift.")
         return 0
     return 1
+
+
+def cmd_collect(config: Config, store: Store, http, since: str | None) -> int:
+    from datetime import date as _date
+
+    from pip_release.metrics import Metrics, collect, metrics_path
+
+    start = None
+    if since:
+        try:
+            start = _date.fromisoformat(since)
+        except ValueError as exc:
+            raise ReviewError("--since must be a date like 2026-11-01") from exc
+    metrics = Metrics(metrics_path(config))
+    try:
+        report = collect(config, store, metrics, http, os.environ, since=start)
+    finally:
+        metrics.close()
+    for line in report.lines:
+        print(line)
+    for line in report.skipped:
+        print(f"skipped {line}", file=sys.stderr)
+    for line in report.errors:
+        print(f"error {line}", file=sys.stderr)
+    return 1 if report.errors else 0
+
+
+COLLECT_KEY = "collected_at"
+COLLECT_EVERY = 24 * 3600
+
+
+def _collect_daily(config: Config, store: Store, http: HttpClient) -> None:
+    """From the watcher. GitHub keeps traffic for 14 days, so a daily run loses nothing."""
+    last = store.get_meta(COLLECT_KEY)
+    now = time.time()
+    if last and now - float(last) < COLLECT_EVERY:
+        return
+    from pip_release.metrics import Metrics, collect, metrics_path
+
+    metrics = Metrics(metrics_path(config))
+    try:
+        report = collect(config, store, metrics, http, os.environ)
+    finally:
+        metrics.close()
+    store.set_meta(COLLECT_KEY, str(now))
+    for line in report.errors:
+        log.warning("collect: %s", line)
 
 
 DISCOVER_KEY = "discover_checked_at"
@@ -370,6 +419,7 @@ def cmd_watch(config: Config, store: Store, http: HttpClient, publishers: list[P
         try:
             cmd_poll(config, store, http, publishers)
             _discover_daily(config, store, http)
+            _collect_daily(config, store, http)
         except (ConfigError, ReviewError, HttpError, OSError, ValueError) as exc:
             log.error("%s", exc)
             _heartbeat(config)
@@ -692,6 +742,9 @@ def _parser() -> argparse.ArgumentParser:
     publish.add_argument("--post", help="Every draft of one post, by post key")
     publish.add_argument("--approved", action="store_true", help="Every approved draft")
     publish.add_argument("--dry-run", action="store_true", help="Print the post and do not send it")
+
+    collect_cmd = sub.add_parser("collect", help="Snapshot GitHub, PyPI and broadcast metrics into metrics.sqlite")
+    collect_cmd.add_argument("--since", help="Only keep PyPI download days from this date (ISO)")
 
     digest_cmd = sub.add_parser("digest", help="Digest mode: the open window and past digests")
     digest_cmd.add_argument("action", nargs="?", default="status", choices=("status", "exclude", "include", "rebuild"))
