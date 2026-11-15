@@ -41,7 +41,11 @@ pip-release edit 1        # $EDITOR; the draft returns to pending
 pip-release approve 1
 pip-release publish 1
 pip-release publish --approved --dry-run
+pip-release baseline      # mark every current version seen, without drafting
+pip-release reset --reject-pending [--before 2026-11-15] [--yes]
 ```
+
+`baseline` does what the first poll does, on demand and for projects that are already tracked: every version on PyPI right now is marked seen, so the next `poll` drafts only what is released after it. `reset --reject-pending` rejects pending drafts with the note `stale backlog`. It shows the count per project and asks first unless `--yes` is given. Together they clear a backlog of old releases nobody wants announced.
 
 `pip-release watch` repeats `poll` on `poll.interval_seconds` (at least 60, default 1800). A new draft can also be posted as JSON to `PIP_RELEASE_REVIEW_WEBHOOK`. When `notify-send` is available, the same event raises a desktop notification that stays in the GNOME notification list. Set `PIP_RELEASE_DESKTOP_NOTIFY=0` to skip it. While any draft is still pending, that alert is repeated every 24 hours.
 

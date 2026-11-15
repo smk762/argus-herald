@@ -28,6 +28,8 @@ log = logging.getLogger(__name__)
 
 REMINDER_AFTER = timedelta(hours=24)
 REMINDER_KEY = "pending_reminder_at"
+BASELINE_KEY = "baselined_at"
+STALE_NOTE = "stale backlog"
 
 
 class ReviewError(Exception):
@@ -232,6 +234,48 @@ def notify_review(
     status, _body = send_json(http, url, payload)
     if status not in (200, 201, 202, 204):
         raise HttpError("POST", url, status)
+
+
+def rebaseline(
+    config: Config, store: Store, http: Http, projects: list[str] | None = None
+) -> list[PollEvent]:
+    """Mark every current version of each project as seen, without drafting.
+
+    Same effect as the first poll, on demand and for projects already baselined.
+    Records BASELINE_KEY when every project was read.
+    """
+    tracked = tracked_projects(config)
+    if projects:
+        known = {normalize_name(name): name for name in tracked}
+        unknown = [name for name in projects if normalize_name(name) not in known]
+        if unknown:
+            raise ReviewError(f"Not tracked: {', '.join(unknown)}")
+        targets = [known[normalize_name(name)] for name in projects]
+    else:
+        targets = tracked
+    if not targets:
+        raise ReviewError("No projects to baseline. Add pypi.projects.")
+    events: list[PollEvent] = []
+    started = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    for project in targets:
+        try:
+            versions = list_versions(http, project)
+        except (HttpError, OSError, ValueError) as exc:
+            events.append(PollEvent("error", project, detail=str(exc)))
+            continue
+        fresh = sum(1 for item in versions if not store.seen(project, item.version))
+        store.baseline(project, [item.version for item in versions])
+        events.append(
+            PollEvent(
+                "baseline",
+                project,
+                versions[-1].version if versions else None,
+                detail=f"{_version_count(len(versions))}, {fresh} newly marked seen",
+            )
+        )
+    if not any(event.kind == "error" for event in events):
+        store.set_meta(BASELINE_KEY, started)
+    return events
 
 
 def approve(store: Store, publisher: Publisher, draft_id: int, note: str | None) -> Draft:

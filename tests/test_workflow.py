@@ -13,11 +13,13 @@ from pip_release.platforms import (
 )
 from pip_release.store import Store
 from pip_release.workflow import (
+    BASELINE_KEY,
     ReviewError,
     approve,
     desktop_notice,
     poll,
     publish_draft,
+    rebaseline,
     reject,
     reminder_due,
 )
@@ -272,3 +274,50 @@ def test_reminder_is_due_after_24_hours():
     assert reminder_due(recent, now) is False
     due = (now - timedelta(hours=24)).isoformat()
     assert reminder_due(due, now) is True
+
+
+def test_rebaseline_marks_new_versions_seen_so_poll_drafts_nothing(tmp_path):
+    cfg = config(tmp_path)
+    store = Store(cfg.store_path)
+    http = FakeHttp(routes("0.1.0"))
+    poll(cfg, store, http, publishers())
+
+    http.payloads = routes("0.1.0", "0.2.0", "0.3.0")
+    events = rebaseline(cfg, store, http)
+    assert [(event.kind, event.version) for event in events] == [("baseline", "0.3.0")]
+    assert "2 newly marked seen" in events[0].detail
+    assert store.get_meta(BASELINE_KEY)
+    assert poll(cfg, store, http, publishers()) == []
+    assert store.list_drafts() == []
+
+    http.payloads = routes("0.1.0", "0.2.0", "0.3.0", "0.4.0")
+    assert [event.version for event in poll(cfg, store, http, publishers())] == ["0.4.0"]
+    store.close()
+
+
+def test_rebaseline_rejects_untracked_projects_and_skips_meta_on_error(tmp_path):
+    cfg = config(tmp_path)
+    store = Store(cfg.store_path)
+    with pytest.raises(ReviewError, match="Not tracked: argus-nope"):
+        rebaseline(cfg, store, FakeHttp({}), ["argus-nope"])
+    events = rebaseline(cfg, store, FakeHttp({}), ["Argus_Atlas"])
+    assert [event.kind for event in events] == ["error"]
+    assert store.get_meta(BASELINE_KEY) is None
+    store.close()
+
+
+def test_reject_pending_only_touches_pending_rows(tmp_path):
+    store = Store(tmp_path / "state.sqlite")
+    ids = [
+        store.add_draft(project="p", version=v, platform="twitter", title="", body="b", link="l")[0]
+        for v in ("1", "2", "3")
+    ]
+    store.transition(ids[2], (PENDING,), APPROVED)
+    store.conn.execute("UPDATE drafts SET created_at = '2026-10-01T00:00:00+00:00' WHERE id = ?", (ids[0],))
+    assert [d.id for d in store.pending_before("2026-11-01")] == [ids[0]]
+    assert [d.id for d in store.pending_before(None)] == ids[:2]
+    assert store.reject_pending(ids, "stale backlog") == 2
+    statuses = {d.id: (d.status, d.note) for d in store.list_drafts()}
+    assert statuses[ids[0]] == ("rejected", "stale backlog")
+    assert statuses[ids[2]] == (APPROVED, None)
+    store.close()
