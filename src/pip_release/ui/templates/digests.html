@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Digests{% endblock %}
+{% macro release_rows(rows, digest_id=None) %}
+<ul class="releases">
+  {% for r in rows %}
+  <li class="{{ 'excluded' if r.excluded }}">
+    <div>
+      <a href="{{ r.url }}">{{ r.project }} {{ r.version }}</a>
+      <span class="quiet">{{ r.released_at }}</span>
+      {% if r.suggested %}<span class="badge" title="Major or minor bump with something added">suggested headline</span>{% endif %}
+      {% if r.promoted %}<span class="badge badge-done">promoted</span>{% endif %}
+      {% if r.excluded %}<span class="badge badge-off">excluded</span>{% endif %}
+      {% if r.highlight %}<p class="excerpt">{{ r.highlight }}</p>{% endif %}
+    </div>
+    <div class="row-actions">
+      <form method="post" action="/digests/{{ 'include' if r.excluded else 'exclude' }}/{{ r.id }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit">{{ "Include" if r.excluded else "Drop from digest" }}</button>
+      </form>
+      {% if not r.promoted %}
+      <form method="post" action="/digests/promote/{{ r.id }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <label class="check"><input type="checkbox" name="site_page" value="1"> site page</label>
+        <button type="submit">Promote to its own post</button>
+      </form>
+      {% endif %}
+    </div>
+  </li>
+  {% else %}
+  <li class="quiet">No releases.</li>
+  {% endfor %}
+</ul>
+{% endmacro %}
+{% block body %}
+<section class="lede">
+  <h1>Digests</h1>
+  {% if enabled %}
+  <p>Releases are collected into windows. When a window closes, herald drafts one site page{% if site_dir %} in <code>{{ site_dir }}</code>{% endif %} and one post per destination. Promote a release to give it a post of its own; nothing is posted without approval.</p>
+  {% else %}
+  <p>Digest mode is off: each release gets its own drafts. Add a <code>digest:</code> block to the config to collect releases into windows instead.</p>
+  {% endif %}
+</section>
+{% if enabled %}
+<article class="release">
+  <header class="release-head"><div><h2>Open window <span>{{ open.label }}</span></h2><span class="quiet">closes {{ open.closes }} · {{ open.releases|length }} so far</span></div></header>
+  {{ release_rows(open.releases) }}
+</article>
+{% for d in past %}
+<article class="release">
+  <header class="release-head">
+    <div>
+      <h2>Digest <span>{{ d.label }}</span></h2>
+      <span class="quiet">{% if d.site_path %}page: <code>{{ d.site_path }}</code>{% else %}no page written{% endif %}</span>
+    </div>
+    <form method="post" action="/digests/rebuild/{{ d.id }}">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit" title="Refresh unedited drafts, and the page if nobody has edited it">Rebuild</button>
+    </form>
+  </header>
+  {% if d.error %}<p class="flash flash-bad" role="status">{{ d.error }}</p>{% endif %}
+  {% if d.drafts %}
+  <p>{% for draft in d.drafts %}<a href="/drafts/{{ draft.id }}">{{ draft.platform }} #{{ draft.id }}</a> <span class="status status-{{ draft.status }}">{{ draft.status }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  {% endif %}
+  {{ release_rows(d.releases, d.id) }}
+</article>
+{% endfor %}
+{% endif %}
+{% endblock %}

@@ -6,6 +6,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,18 @@ class Config:
     feeds: list[FeedSource] = field(default_factory=list)
     discover_owner: str | None = None  # GitHub user or org whose repos are checked by discover
     discover_prefix: str = ""
+    digest: "DigestSettings | None" = None  # None: one draft per release (per_release mode)
+
+
+@dataclass(frozen=True)
+class DigestSettings:
+    """Digest mode: releases are collected into windows instead of drafted one by one."""
+
+    anchor: date  # first day of the first window (UTC)
+    window_days: int = 14
+    site_url: str = ""  # where the site serves update pages, e.g. https://dragonhound.dev/updates/
+    site_dir: Path | None = None  # local checkout's content dir; herald writes pages there
+    platforms: tuple[str, ...] = ()  # empty: every enabled destination
 
 
 def resolve_config_path(explicit: str | None) -> Path:
@@ -100,7 +113,13 @@ def load_config(path: Path) -> Config:
     unknown = sorted({p for feed in feeds for p in feed.platforms} - set(destinations))
     if unknown:
         raise ConfigError(f"sources name platforms that aren't in destinations: {', '.join(unknown)}")
+    digest = _digest(data.get("digest"))
+    if digest:
+        unknown = sorted(set(digest.platforms) - set(destinations))
+        if unknown:
+            raise ConfigError(f"digest.platforms aren't in destinations: {', '.join(unknown)}")
     return Config(
+        digest=digest,
         feeds=feeds,
         discover_owner=owner.strip() if owner else None,
         discover_prefix=prefix.strip(),
@@ -221,6 +240,39 @@ def _destinations(value: Any) -> dict[str, Destination]:
             mode=mode,
         )
     return out
+
+
+def _digest(value: Any) -> DigestSettings | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ConfigError("digest must be a mapping")
+    mode = value.get("mode", "digest")
+    if mode not in ("digest", "per_release"):
+        raise ConfigError("digest.mode must be digest or per_release")
+    if mode == "per_release":
+        return None
+    raw_anchor = value.get("anchor")
+    try:
+        anchor = raw_anchor if isinstance(raw_anchor, date) else date.fromisoformat(str(raw_anchor))
+    except ValueError as exc:
+        raise ConfigError("digest.anchor must be a date like 2026-11-16") from exc
+    days = value.get("window_days", 14)
+    if not isinstance(days, int) or not 1 <= days <= 92:
+        raise ConfigError("digest.window_days must be a whole number of days, 1 to 92")
+    url = value.get("site_url") or ""
+    if not isinstance(url, str) or (url and not url.startswith("https://")):
+        raise ConfigError("digest.site_url must be an https:// URL")
+    site_dir = value.get("site_dir")
+    if site_dir is not None and not isinstance(site_dir, str):
+        raise ConfigError("digest.site_dir must be a path")
+    return DigestSettings(
+        anchor=anchor,
+        window_days=days,
+        site_url=(url.rstrip("/") + "/") if url else "",
+        site_dir=Path(site_dir).expanduser() if site_dir else None,
+        platforms=tuple(_strings(value.get("platforms") or [])),
+    )
 
 
 def _feeds(value: Any) -> list[FeedSource]:

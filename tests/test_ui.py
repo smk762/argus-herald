@@ -344,3 +344,31 @@ def test_compose_form_creates_a_post_group_in_the_queue(tmp_path):
         "/releases/approve", data={"csrf": _csrf(made.text), "post_key": post[0].post_key}, follow_redirects=True
     )
     assert "Approved 2 drafts for Realms demo" in approved.text
+
+
+def test_digests_page_lists_releases_and_actions(tmp_path):
+    from pip_release.config import DigestSettings
+    from datetime import date
+
+    app, config = _app(tmp_path)
+    off = TestClient(app).get("/digests")
+    assert "Digest mode is off" in off.text
+
+    config.digest = DigestSettings(anchor=date(2026, 11, 16), site_url="https://example.org/updates/", site_dir=tmp_path)
+    store = Store(config.store_path)
+    store.mark_seen("argus-lens", "0.12.0")
+    store.add_release(project="argus-lens", version="0.13.0", released_at="2026-11-18T00:00:00+00:00",
+                      summary="", notes="### Added\n- Caption facets\n", url="https://pypi.org/project/argus-lens/0.13.0/")
+    digest_id = store.create_digest("2026-11-16", "2026-11-29", "2026-11-30T00:00:00+00:00")
+    rid = store.release("argus-lens", "0.13.0")["id"]
+    store.close()
+    client = TestClient(app)
+    page = client.get("/digests")
+    assert "16–29 Nov 2026" in page.text and "suggested headline" in page.text and "Caption facets" in page.text
+
+    rebuilt = client.post(f"/digests/rebuild/{digest_id}", data={"csrf": _csrf(page.text)}, follow_redirects=True)
+    assert "Rebuilt: 2 new drafts" in rebuilt.text and (tmp_path / "2026-11-30-digest.md").exists()
+    dropped = client.post(f"/digests/exclude/{rid}", data={"csrf": _csrf(rebuilt.text)}, follow_redirects=True)
+    assert "Excluded argus-lens 0.13.0. Rebuild" in dropped.text and "badge-off" in dropped.text
+    promoted = client.post(f"/digests/promote/{rid}", data={"csrf": _csrf(dropped.text)}, follow_redirects=True)
+    assert "Promoted argus-lens 0.13.0: 2 headline drafts." in promoted.text
