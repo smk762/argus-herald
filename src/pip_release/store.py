@@ -57,6 +57,19 @@ CREATE TABLE IF NOT EXISTS releases (
     digest_id INTEGER REFERENCES digests(id),
     UNIQUE (source, project, version)
 );
+-- Posts made outside herald (Reddit, Hacker News, YouTube, newsletters). They never had a draft.
+CREATE TABLE IF NOT EXISTS logged_broadcasts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL,
+    url TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL DEFAULT 'other',
+    project TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL DEFAULT '',
+    at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS feed_sources (
     source TEXT PRIMARY KEY,
     baselined_at TEXT NOT NULL
@@ -298,6 +311,47 @@ class Store:
             (title, body, _now(), draft_id),
         )
         return bool(cur.rowcount)
+
+    # ---- broadcasts made outside herald ------------------------------------------------
+
+    _LOGGED = ("platform", "url", "kind", "project", "subject", "text", "at")
+
+    def log_broadcast(self, **fields: str) -> int:
+        if set(fields) != set(self._LOGGED):
+            raise ValueError(f"log_broadcast needs exactly {self._LOGGED}")
+        now = _now()
+        try:
+            cur = self.conn.execute(
+                f"INSERT INTO logged_broadcasts ({', '.join(self._LOGGED)}, created_at, updated_at) "
+                f"VALUES ({', '.join('?' for _ in self._LOGGED)}, ?, ?)",
+                (*(fields[k] for k in self._LOGGED), now, now),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"{fields['url']} is already logged") from exc
+        return int(cur.lastrowid)
+
+    def logged_broadcasts(self) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM logged_broadcasts ORDER BY at DESC, id DESC").fetchall()
+
+    def logged_broadcast(self, broadcast_id: int) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM logged_broadcasts WHERE id = ?", (broadcast_id,)).fetchone()
+
+    def update_logged(self, broadcast_id: int, **fields: str) -> bool:
+        unknown = set(fields) - set(self._LOGGED)
+        if unknown or not fields:
+            raise ValueError(f"Unknown fields: {unknown}")
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        try:
+            cur = self.conn.execute(
+                f"UPDATE logged_broadcasts SET {sets}, updated_at = ? WHERE id = ?",
+                (*fields.values(), _now(), broadcast_id),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"{fields.get('url')} is already logged") from exc
+        return bool(cur.rowcount)
+
+    def delete_logged(self, broadcast_id: int) -> bool:
+        return bool(self.conn.execute("DELETE FROM logged_broadcasts WHERE id = ?", (broadcast_id,)).rowcount)
 
     def feed_baselined(self, source: str) -> bool:
         row = self.conn.execute("SELECT 1 FROM feed_sources WHERE source = ?", (source,)).fetchone()

@@ -372,3 +372,19 @@ def test_digests_page_lists_releases_and_actions(tmp_path):
     assert "Excluded argus-lens 0.13.0. Rebuild" in dropped.text and "badge-off" in dropped.text
     promoted = client.post(f"/digests/promote/{rid}", data={"csrf": _csrf(dropped.text)}, follow_redirects=True)
     assert "Promoted argus-lens 0.13.0: 2 headline drafts." in promoted.text
+
+
+def test_logged_posts_page_add_edit_delete(tmp_path):
+    app, config = _app(tmp_path)
+    client = TestClient(app)
+    page = client.get("/broadcasts")
+    bad = client.post("/broadcasts", data={"csrf": _csrf(page.text), "platform": "reddit", "url": "http://x.org"})
+    assert bad.status_code == 400 and "plain https://" in bad.text and 'value="reddit"' in bad.text
+    added = client.post("/broadcasts", data={"csrf": _csrf(bad.text), "platform": "reddit",
+                                             "url": "https://www.reddit.com/r/gis/comments/abc/", "kind": "demo",
+                                             "subject": "r/gis post"}, follow_redirects=True)
+    assert "Logged the reddit post." in added.text and "r/gis post" in added.text
+    edited = client.post("/broadcasts/edit/1", data={"csrf": _csrf(added.text), "subject": "Atlas on r/gis"}, follow_redirects=True)
+    assert "Atlas on r/gis" in edited.text
+    deleted = client.post("/broadcasts/delete/1", data={"csrf": _csrf(edited.text)}, follow_redirects=True)
+    assert "Deleted." in deleted.text and "Atlas on r/gis" not in deleted.text

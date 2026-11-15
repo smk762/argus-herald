@@ -33,7 +33,10 @@ from pip_release.workflow import (
     PollEvent,
     PrivacyRefused,
     ReviewError,
+    LOGGED_KINDS,
     accept_hit,
+    edit_logged,
+    log_broadcast,
     gate_hits,
     approve,
     compose,
@@ -112,6 +115,10 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
         return cmd_reject(store, _ids(args, store), args.note)
     if args.command == "publish":
         return cmd_publish(config, store, by_id, http, _ids(args, store), args.dry_run, _gate(config))
+    if args.command == "log-broadcast":
+        return cmd_log_broadcast(store, args)
+    if args.command == "broadcasts":
+        return cmd_broadcasts(store, args)
     if args.command == "collect":
         return cmd_collect(config, store, http, args.since)
     if args.command == "digest":
@@ -192,6 +199,40 @@ def cmd_discover_check(config: Config, http, env: Mapping[str, str]) -> int:
         print(f"OK: {len(config.projects)} configured projects, no drift.")
         return 0
     return 1
+
+
+def cmd_log_broadcast(store: Store, args: argparse.Namespace) -> int:
+    fields = {"platform": args.platform, "url": args.url, "kind": args.kind, "project": args.project,
+              "subject": args.subject, "text": args.text, "at": args.at}
+    if args.id:
+        edit_logged(store, args.id, **fields)
+        print(f"Updated logged broadcast {args.id}.")
+        return 0
+    if not args.platform or not args.url:
+        raise ReviewError("--platform and --url are required (or --id to edit one)")
+    defaults = {"kind": "other", "project": "", "subject": "", "text": ""}
+    broadcast_id = log_broadcast(store, **{k: (v if v is not None else defaults.get(k)) for k, v in fields.items()})
+    row = store.logged_broadcast(broadcast_id)
+    print(f"Logged #{broadcast_id}: {row['platform']} {row['url']} at {row['at']}")
+    return 0
+
+
+def cmd_broadcasts(store: Store, args: argparse.Namespace) -> int:
+    if args.action == "delete":
+        if not args.ids:
+            raise ReviewError("Name the logged broadcast ids to delete")
+        for broadcast_id in args.ids:
+            if not store.delete_logged(broadcast_id):
+                raise ReviewError(f"No logged broadcast {broadcast_id}")
+            print(f"Deleted logged broadcast {broadcast_id}.")
+        return 0
+    rows = store.logged_broadcasts()
+    if not rows:
+        print("No broadcasts logged by hand.")
+    for row in rows:
+        label = f"  {row['subject']}" if row["subject"] else ""
+        print(f"#{row['id']:<4} {row['at'][:16]}  {row['platform']:<12} {row['kind']:<9} {row['url']}{label}")
+    return 0
 
 
 def cmd_collect(config: Config, store: Store, http, since: str | None) -> int:
@@ -742,6 +783,20 @@ def _parser() -> argparse.ArgumentParser:
     publish.add_argument("--post", help="Every draft of one post, by post key")
     publish.add_argument("--approved", action="store_true", help="Every approved draft")
     publish.add_argument("--dry-run", action="store_true", help="Print the post and do not send it")
+
+    logb = sub.add_parser("log-broadcast", help="Record a post made outside herald (Reddit, HN, YouTube, ...)")
+    logb.add_argument("--platform", help="Short name: reddit, hn, youtube, newsletter, x, ...")
+    logb.add_argument("--url", help="The live post")
+    logb.add_argument("--kind", choices=LOGGED_KINDS)
+    logb.add_argument("--project", help="The package it was about, if one")
+    logb.add_argument("--subject", help="Short label")
+    logb.add_argument("--text", help="What it said, for the dashboard")
+    logb.add_argument("--at", help="When it was posted (ISO date or timestamp; default now, UTC)")
+    logb.add_argument("--id", type=int, help="Edit this logged broadcast instead of adding one")
+
+    bcasts = sub.add_parser("broadcasts", help="List or delete broadcasts logged by hand")
+    bcasts.add_argument("action", nargs="?", default="list", choices=("list", "delete"))
+    bcasts.add_argument("ids", nargs="*", type=int)
 
     collect_cmd = sub.add_parser("collect", help="Snapshot GitHub, PyPI and broadcast metrics into metrics.sqlite")
     collect_cmd.add_argument("--since", help="Only keep PyPI download days from this date (ISO)")
