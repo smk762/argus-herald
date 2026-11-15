@@ -119,3 +119,26 @@ def test_parse_cutoff_normalises_to_utc():
     assert parse_cutoff("2026-11-15") == "2026-11-15"
     assert parse_cutoff("2026-11-15T05:00:00-05:00") == "2026-11-15T10:00:00+00:00"
     assert parse_cutoff("2026-11-15T10:00:00Z") == "2026-11-15T10:00:00+00:00"
+
+
+def test_check_and_accept_and_fail_closed(tmp_path, capsys, monkeypatch):
+    from pip_release.store import Store
+
+    base, path = _seeded(tmp_path)
+    store = Store(path)
+    store.update_text(1, "t", "reach me at bob@corp.test", ("pending",))
+    store.close()
+
+    assert main([*base, "check"]) == 1
+    out = capsys.readouterr().out
+    assert "email address" in out and "pip-release accept 1 'email:bob@corp.test'" in out
+    assert main([*base, "approve", "1"]) == 1
+    assert "Refused by the privacy gate" in capsys.readouterr().err
+
+    assert main([*base, "accept", "1", "email:bob@corp.test", "--note", "public address"]) == 0
+    assert main([*base, "check", "1"]) == 0
+    assert main([*base, "approve", "1"]) == 0
+
+    monkeypatch.setenv("PIP_RELEASE_OPSEC_DENYLIST", str(tmp_path / "gone.txt"))
+    assert main([*base, "approve", "2"]) == 2
+    assert "deny-list is missing" in capsys.readouterr().err

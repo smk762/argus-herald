@@ -40,6 +40,7 @@ class Config:
     interval_seconds: int = 1800
     store_path: Path = field(default_factory=lambda: Path(".pip-release/state.sqlite"))
     path: Path | None = None
+    privacy: dict[str, Any] = field(default_factory=dict)
 
 
 def resolve_config_path(explicit: str | None) -> Path:
@@ -73,8 +74,9 @@ def load_config(path: Path) -> Config:
     destinations = _destinations(data.get("destinations") or {})
     poll = data.get("poll") or {}
     store = data.get("store") or {}
-    if not isinstance(poll, dict) or not isinstance(store, dict):
-        raise ConfigError("poll and store must be mappings")
+    privacy = data.get("privacy") or {}
+    if not isinstance(poll, dict) or not isinstance(store, dict) or not isinstance(privacy, dict):
+        raise ConfigError("poll, store and privacy must be mappings")
     interval = int(poll.get("interval_seconds") or 1800)
     if interval < 60:
         interval = 60
@@ -90,6 +92,7 @@ def load_config(path: Path) -> Config:
         interval_seconds=interval,
         store_path=store_path,
         path=path,
+        privacy=privacy,
     )
 
 

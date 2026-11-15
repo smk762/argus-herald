@@ -11,6 +11,7 @@ from pip_release.platforms import (
     TwitterPublisher,
     load_publishers,
 )
+from pip_release.privacy import load_gate
 from pip_release.store import Store
 from pip_release.workflow import (
     BASELINE_KEY,
@@ -163,14 +164,14 @@ def test_publish_requires_approval_and_patreon_is_a_handoff(tmp_path):
     patreon = next(draft for draft in store.list_drafts() if draft.platform == "patreon")
     twitter = next(draft for draft in store.list_drafts() if draft.platform == "twitter")
     with pytest.raises(ReviewError, match="Approve"):
-        publish_draft(store, PatreonPublisher(), patreon, {}, http)
-    approve(store, PatreonPublisher(), patreon.id, None)
-    result = publish_draft(store, PatreonPublisher(), store.get(patreon.id), {}, http)
+        publish_draft(store, PatreonPublisher(), patreon, {}, http, gate=load_gate({}))
+    approve(store, PatreonPublisher(), patreon.id, None, gate=load_gate({}))
+    result = publish_draft(store, PatreonPublisher(), store.get(patreon.id), {}, http, gate=load_gate({}))
     assert result.handed_off is True
     assert store.get(patreon.id).status == HANDED_OFF
     assert http.calls[-1][0] == "GET"
 
-    approve(store, TwitterPublisher(), twitter.id, None)
+    approve(store, TwitterPublisher(), twitter.id, None, gate=load_gate({}))
     http.payloads[("POST", "https://api.x.com/2/tweets")] = (
         201,
         {"data": {"id": "99"}},
@@ -181,7 +182,7 @@ def test_publish_requires_approval_and_patreon_is_a_handoff(tmp_path):
         "X_ACCESS_TOKEN": "t",
         "X_ACCESS_TOKEN_SECRET": "ts",
     }
-    posted = publish_draft(store, TwitterPublisher("api"), store.get(twitter.id), env, http)
+    posted = publish_draft(store, TwitterPublisher("api"), store.get(twitter.id), env, http, gate=load_gate({}))
     assert posted.external_id == "99"
     assert store.get(twitter.id).status == PUBLISHED
     method, url, _body, headers = http.calls[-1]
@@ -202,7 +203,7 @@ def test_rejected_draft_is_not_pending(tmp_path):
     reject(store, draft.id, "not this one")
     assert store.get(draft.id).status != PENDING
     with pytest.raises(ReviewError):
-        approve(store, TwitterPublisher(), draft.id, None)
+        approve(store, TwitterPublisher(), draft.id, None, gate=load_gate({}))
     store.close()
 
 
@@ -332,14 +333,14 @@ def _approved_twitter(tmp_path):
     http.payloads = routes("0.1.0", "0.2.0")
     poll(cfg, store, http, publishers())
     draft = next(d for d in store.list_drafts() if d.platform == "twitter")
-    approve(store, TwitterPublisher(), draft.id, None)
+    approve(store, TwitterPublisher(), draft.id, None, gate=load_gate({}))
     return store, http, draft
 
 
 def test_manual_x_hands_off_without_calling_the_api(tmp_path):
     store, http, draft = _approved_twitter(tmp_path)
     calls = len(http.calls)
-    result = publish_draft(store, TwitterPublisher(), store.get(draft.id), {}, http)
+    result = publish_draft(store, TwitterPublisher(), store.get(draft.id), {}, http, gate=load_gate({}))
     assert result.handed_off and len(http.calls) == calls
     assert store.get(draft.id).status == HANDED_OFF
     link = TwitterPublisher().handoff_url(store.get(draft.id))
@@ -354,7 +355,7 @@ def test_manual_x_hands_off_without_calling_the_api(tmp_path):
 
 def test_confirm_rejects_bad_post_urls_and_url_can_be_added_later(tmp_path):
     store, http, draft = _approved_twitter(tmp_path)
-    publish_draft(store, TwitterPublisher(), store.get(draft.id), {}, http)
+    publish_draft(store, TwitterPublisher(), store.get(draft.id), {}, http, gate=load_gate({}))
     for bad in ("http://x.com/a/status/1", "https://evil.example/a/status/1", "https://x.com/a/likes"):
         with pytest.raises(ReviewError):
             confirm(store, draft.id, bad)

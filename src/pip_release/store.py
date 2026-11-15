@@ -21,6 +21,13 @@ CREATE TABLE IF NOT EXISTS seen (
     seen_at TEXT NOT NULL,
     PRIMARY KEY (project, version)
 );
+CREATE TABLE IF NOT EXISTS gate_accepts (
+    draft_id INTEGER NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    note TEXT NOT NULL,
+    accepted_at TEXT NOT NULL,
+    PRIMARY KEY (draft_id, key)
+);
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -200,6 +207,19 @@ class Store:
         if cur.rowcount != 1:
             return None
         return self.get(draft_id)
+
+    def accept_hit(self, draft_id: int, key: str, note: str) -> None:
+        self.conn.execute(
+            "INSERT INTO gate_accepts (draft_id, key, note, accepted_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(draft_id, key) DO UPDATE SET note = excluded.note, accepted_at = excluded.accepted_at",
+            (draft_id, key, note, _now()),
+        )
+
+    def accepted(self, draft_id: int) -> dict[str, str]:
+        rows = self.conn.execute(
+            "SELECT key, note FROM gate_accepts WHERE draft_id = ? ORDER BY accepted_at", (draft_id,)
+        ).fetchall()
+        return {row["key"]: row["note"] for row in rows}
 
     def pending_before(self, before: str | None = None) -> list[Draft]:
         """Pending drafts, optionally only those created before an ISO date or timestamp."""

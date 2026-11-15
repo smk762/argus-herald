@@ -24,13 +24,17 @@ from pip_release.config import (
 )
 from pip_release.http import HttpClient, HttpError
 from pip_release.models import APPROVED, PENDING, Draft
+from pip_release.privacy import Gate, GateUnavailable, load_gate
 from pip_release.platforms import Publisher, configured_publishers, load_publishers
 from pip_release.pypi import ProfileUnavailable, discover_projects
 from pip_release.store import Store
 from pip_release.textutil import plain_to_html
 from pip_release.workflow import (
     PollEvent,
+    PrivacyRefused,
     ReviewError,
+    accept_hit,
+    gate_hits,
     approve,
     confirm,
     edit_draft,
@@ -70,7 +74,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _dispatch(args, config, store)
         finally:
             store.close()
-    except (ConfigError, ReviewError, ProfileUnavailable) as exc:
+    except (ConfigError, ReviewError, ProfileUnavailable, GateUnavailable) as exc:
         print(exc, file=sys.stderr)
         return 2
     except KeyboardInterrupt:
@@ -100,11 +104,17 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
     if args.command == "edit":
         return cmd_edit(store, by_id, args.id)
     if args.command == "approve":
-        return cmd_approve(store, by_id, _ids(args, store), args.note)
+        return cmd_approve(store, by_id, _ids(args, store), args.note, _gate(config))
     if args.command == "reject":
         return cmd_reject(store, _ids(args, store), args.note)
     if args.command == "publish":
-        return cmd_publish(config, store, by_id, http, _ids(args, store), args.dry_run)
+        return cmd_publish(config, store, by_id, http, _ids(args, store), args.dry_run, _gate(config))
+    if args.command == "check":
+        return cmd_check(store, _gate(config), args.ids)
+    if args.command == "accept":
+        accept_hit(store, _gate(config), args.id, args.key, args.note)
+        print(f"Accepted {args.key!r} for draft {args.id}.")
+        return 0
     if args.command == "confirm":
         return cmd_confirm(store, args.id, args.url)
     raise ReviewError(f"Unknown command {args.command}")
@@ -351,12 +361,38 @@ def cmd_approve(
     publishers: Mapping[str, Publisher],
     ids: list[int],
     note: str | None,
+    gate: Gate,
 ) -> int:
+    refused = False
     for draft_id in ids:
         draft = _one(store, draft_id)
-        approve(store, _publisher(publishers, draft.platform), draft_id, note)
+        try:
+            approve(store, _publisher(publishers, draft.platform), draft_id, note, gate=gate)
+        except PrivacyRefused as exc:
+            print(f"Draft {draft_id}: {exc}", file=sys.stderr)
+            refused = True
+            continue
         print(f"Approved {draft_id}.")
-    return 0
+    return 1 if refused else 0
+
+
+def cmd_check(store: Store, gate: Gate, ids: list[int]) -> int:
+    drafts = [_one(store, i) for i in ids] if ids else [
+        *store.list_drafts(status=PENDING), *store.list_drafts(status=APPROVED)
+    ]
+    found = False
+    for draft in drafts:
+        hits = gate_hits(store, gate, draft)
+        if not hits:
+            continue
+        found = True
+        print(f"#{draft.id} {draft.project} {draft.version} {draft.platform}")
+        for hit in hits:
+            print(f"  {hit.label:<24} {hit.field}[{hit.start}:{hit.end}] {hit.match!r}")
+            print(f"  {'':<24} accept: pip-release accept {draft.id} {hit.key!r} --note '...'")
+    if not found:
+        print(f"No privacy hits in {len(drafts)} draft(s).")
+    return 1 if found else 0
 
 
 def cmd_reject(store: Store, ids: list[int], note: str | None) -> int:
@@ -373,6 +409,7 @@ def cmd_publish(
     http: HttpClient,
     ids: list[int],
     dry_run: bool,
+    gate: Gate,
 ) -> int:
     failed = False
     for draft_id in ids:
@@ -386,7 +423,7 @@ def cmd_publish(
             print()
             continue
         try:
-            result = publish_draft(store, publisher, draft, os.environ, http)
+            result = publish_draft(store, publisher, draft, os.environ, http, gate=gate)
         except (ReviewError, OSError, ValueError, HttpError) as exc:
             print(f"Draft {draft_id} failed: {exc}", file=sys.stderr)
             failed = True
@@ -497,10 +534,25 @@ def _parser() -> argparse.ArgumentParser:
     publish.add_argument("--approved", action="store_true", help="Every approved draft")
     publish.add_argument("--dry-run", action="store_true", help="Print the post and do not send it")
 
+    check = sub.add_parser("check", help="Run the privacy gate over drafts (default: pending and approved)")
+    check.add_argument("ids", nargs="*", type=int)
+
+    accept = sub.add_parser("accept", help="Let one privacy hit through for one draft")
+    accept.add_argument("id", type=int)
+    accept.add_argument("key", help="The hit's key, as printed by check, e.g. 'email:a@b.org'")
+    accept.add_argument("--note", required=True, help="Why it is safe to publish")
+
     confirm_cmd = sub.add_parser("confirm", help="Mark a manual handoff (X, Patreon) as published")
     confirm_cmd.add_argument("id", type=int)
     confirm_cmd.add_argument("--url", help="The live post's URL, kept for analytics")
     return parser
+
+
+def _gate(config: Config) -> Gate:
+    gate = load_gate(config.privacy, os.environ)
+    for warning in gate.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    return gate
 
 
 def _selected(config: Config) -> list[Publisher]:

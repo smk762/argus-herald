@@ -23,7 +23,18 @@ from pip_release.models import APPROVED, FAILED, HANDED_OFF, PENDING, PUBLISHING
 from pip_release.platforms import Publisher, configured_publishers
 from pip_release.store import Store
 from pip_release.textutil import plain_to_html
-from pip_release.workflow import ReviewError, approve, confirm, edit_draft, publish_draft, reject
+from pip_release.privacy import Gate, GateUnavailable, load_gate, segments
+from pip_release.workflow import (
+    PrivacyRefused,
+    ReviewError,
+    accept_hit,
+    approve,
+    confirm,
+    edit_draft,
+    gate_hits,
+    publish_draft,
+    reject,
+)
 
 _ROOT = Path(__file__).resolve().parent
 _OPEN = {PENDING, APPROVED, FAILED, HANDED_OFF, PUBLISHING}
@@ -196,6 +207,7 @@ def create_app(
                 return _render(request, "missing.html", draft_id=draft_id, status_code=404)
             publisher = state["publishers"].get(draft.platform)
             page = _draft_context(config, draft, publisher)
+            page.update(_gate_context(store, state, draft))
         return _render(request, "draft.html", **page)
 
     async def save(request: Request) -> Response:
@@ -213,6 +225,9 @@ def create_app(
     async def confirm_one(request: Request) -> Response:
         return await _act(request, state, "confirm")
 
+    async def accept_one(request: Request) -> Response:
+        return await _act(request, state, "accept")
+
     async def approve_release(request: Request) -> Response:
         denied = _guard(request, state["token"])
         if denied is not None:
@@ -222,7 +237,10 @@ def create_app(
             return _expired()
         project = str(form.get("project") or "")
         version = str(form.get("version") or "")
+        refused: list[str] = []
+        count = 0
         try:
+            gate = _gate(state)
             with _store(config) as store:
                 pending = [
                     draft
@@ -231,12 +249,24 @@ def create_app(
                 ]
                 for draft in pending:
                     publisher = _publisher(state["publishers"], draft.platform)
-                    approve(store, publisher, draft.id, None)
-        except (ReviewError, ValueError) as exc:
+                    try:
+                        approve(store, publisher, draft.id, None, gate=gate)
+                    except PrivacyRefused:
+                        refused.append(draft.platform)
+                        continue
+                    count += 1
+        except (ReviewError, ValueError, GateUnavailable) as exc:
             _flash(request, "bad", str(exc))
             return RedirectResponse(f"/?status=open", status_code=303)
-        count = len(pending)
         noun = "draft" if count == 1 else "drafts"
+        if refused:
+            _flash(
+                request,
+                "bad",
+                f"Approved {count} {noun} for {project} {version}. The privacy gate refused "
+                f"{', '.join(refused)}: open each draft to see why.",
+            )
+            return RedirectResponse("/?status=pending", status_code=303)
         _flash(request, "ok", f"Approved {count} {noun} for {project} {version}.")
         return RedirectResponse("/?status=approved", status_code=303)
 
@@ -250,6 +280,7 @@ def create_app(
         Route("/drafts/{draft_id:int}/reject", reject_one, methods=["POST"]),
         Route("/drafts/{draft_id:int}/publish", publish_one, methods=["POST"]),
         Route("/drafts/{draft_id:int}/confirm", confirm_one, methods=["POST"]),
+        Route("/drafts/{draft_id:int}/accept", accept_one, methods=["POST"]),
         Route("/releases/approve", approve_release, methods=["POST"]),
         Mount("/static", app=StaticFiles(directory=str(_ROOT / "static")), name="static"),
     ]
@@ -283,7 +314,10 @@ async def _act(request: Request, state: dict, action: str) -> Response:
                 raise ReviewError(f"No draft {draft_id}")
             publisher = _publisher(state["publishers"], draft.platform)
             message = _perform(store, publisher, draft, form, action, state, config)
-    except (ReviewError, ValueError, HttpError, OSError) as exc:
+    except PrivacyRefused:
+        _flash(request, "bad", "The privacy gate refused this draft. Each hit is marked below.")
+        return RedirectResponse(f"/drafts/{draft_id}", status_code=303)
+    except (ReviewError, ValueError, HttpError, OSError, GateUnavailable) as exc:
         _flash(request, "bad", str(exc))
         return RedirectResponse(f"/drafts/{draft_id}", status_code=303)
     _flash(request, "ok", message)
@@ -300,9 +334,13 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
         confirmed = confirm(store, draft.id, url)
         where = " with its post URL" if confirmed.external_id else ""
         return f"Marked {draft.project} {draft.version} published on {publisher.label}{where}."
+    if action == "accept":
+        key = str(form.get("key") or "")
+        accept_hit(store, _gate(state), draft.id, key, note)
+        return "Accepted that hit for this draft."
     if action == "publish":
         client = state["http"] or HttpClient()
-        result = publish_draft(store, publisher, draft, state["env"], client)
+        result = publish_draft(store, publisher, draft, state["env"], client, gate=_gate(state))
         if result.handed_off:
             return f"{draft.project} {draft.version} is ready to post on {publisher.label}."
         return result.detail
@@ -312,7 +350,7 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
         draft = edit_draft(store, publisher, draft.id, title, body)
     if action == "save":
         return "Saved. This draft is pending approval."
-    approve(store, publisher, draft.id, note)
+    approve(store, publisher, draft.id, note, gate=_gate(state))
     return f"Approved {draft.platform} for {draft.project} {draft.version}."
 
 
@@ -341,6 +379,27 @@ def _draft_context(config: Config, draft: Draft, publisher: Publisher | None) ->
         "can_confirm": draft.status == HANDED_OFF,
         "can_add_url": draft.status == "published" and not draft.external_id and bool(publisher and publisher.manual),
         "handoff": handoff,
+    }
+
+
+def _gate(state: dict) -> Gate:
+    """Loaded per action, so an edited deny-list applies without a restart."""
+    return load_gate(state["config"].privacy, state["env"])
+
+
+def _gate_context(store: Store, state: dict, draft: Draft) -> dict:
+    try:
+        gate = _gate(state)
+    except GateUnavailable as exc:
+        return {"gate_error": str(exc), "gate_warnings": [], "hits": [], "marked": None, "accepted": {}}
+    hits = gate_hits(store, gate, draft) if draft.status not in {"rejected", "published"} else []
+    body_hits = [hit for hit in hits if hit.field == "body"]
+    return {
+        "gate_error": None,
+        "gate_warnings": gate.warnings,
+        "hits": hits,
+        "marked": segments(draft.body, body_hits) if body_hits else None,
+        "accepted": store.accepted(draft.id),
     }
 
 

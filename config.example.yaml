@@ -21,6 +21,11 @@ destinations:
     name: YourCampaign
     url: https://www.patreon.com/c/YourCampaign
 
+privacy:
+  # The deny-list itself is a private file: ~/.config/pip-release/opsec-denylist.txt
+  allow_addresses: []
+  patterns: {}
+
 poll:
   interval_seconds: 1800
 
