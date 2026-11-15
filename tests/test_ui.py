@@ -319,3 +319,28 @@ def test_bulk_approve_skips_refused_drafts(tmp_path):
     store = Store(config.store_path)
     assert (store.get(1).status, store.get(2).status) == ("pending", "approved")
     store.close()
+
+
+def test_compose_form_creates_a_post_group_in_the_queue(tmp_path):
+    app, config = _app(tmp_path)
+    client = TestClient(app)
+    form = client.get("/compose")
+    assert 'name="platform" value="twitter" checked' in form.text
+    missing = client.post("/compose", data={"csrf": _csrf(form.text), "kind": "demo", "text": "Hex map clip"}, follow_redirects=True)
+    assert "Pick at least one destination" in missing.text and "Hex map clip" in missing.text
+    made = client.post(
+        "/compose",
+        data={"csrf": _csrf(missing.text), "kind": "demo", "subject": "Realms demo", "text": "Hex map clip",
+              "link": "https://example.org/realms", "platform": ["twitter", "patreon"]},
+        follow_redirects=True,
+    )
+    assert "Created 2 pending drafts" in made.text
+    assert "Realms demo" in made.text and 'class="kind">demo<' in made.text
+    store = Store(config.store_path)
+    post = [d for d in store.list_drafts() if d.kind == "demo"]
+    store.close()
+    assert len(post) == 2 and post[0].post_key == post[1].post_key
+    approved = client.post(
+        "/releases/approve", data={"csrf": _csrf(made.text), "post_key": post[0].post_key}, follow_redirects=True
+    )
+    assert "Approved 2 drafts for Realms demo" in approved.text

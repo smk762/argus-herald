@@ -20,8 +20,9 @@ from starlette.middleware.sessions import SessionMiddleware
 from pip_release.config import Config, Destination
 from pip_release.http import Http, HttpClient, HttpError
 from pip_release.models import APPROVED, FAILED, HANDED_OFF, PENDING, PUBLISHING, STATUSES, Draft
+from pip_release.models import POST_KINDS, Post
 from pip_release.platforms import Publisher, configured_publishers
-from pip_release.store import Store
+from pip_release.store import Store, release_key
 from pip_release.textutil import plain_to_html
 from pip_release.privacy import Gate, GateUnavailable, load_gate, segments
 from pip_release.workflow import (
@@ -29,6 +30,7 @@ from pip_release.workflow import (
     ReviewError,
     accept_hit,
     approve,
+    compose,
     confirm,
     edit_draft,
     gate_hits,
@@ -222,6 +224,41 @@ def create_app(
     async def publish_one(request: Request) -> Response:
         return await _act(request, state, "publish")
 
+    async def compose_form(request: Request) -> Response:
+        denied = _guard(request, state["token"])
+        if denied is not None:
+            return denied
+        return _render(request, "compose.html", error="", **_compose_context(state, {}))
+
+    async def compose_submit(request: Request) -> Response:
+        denied = _guard(request, state["token"])
+        if denied is not None:
+            return denied
+        form = await request.form()
+        if not _csrf_ok(request, form.get("csrf")):
+            return _expired()
+        chosen = [str(item) for item in form.getlist("platform")]
+        enabled = _enabled(state)
+        targets = [p for p in enabled if p.id in chosen]
+        post = Post(
+            kind=str(form.get("kind") or "demo"),
+            subject=str(form.get("subject") or "").strip(),
+            text=str(form.get("text") or "").strip(),
+            link=str(form.get("link") or "").strip(),
+            title=str(form.get("title") or "").strip(),
+        )
+        try:
+            if not targets:
+                raise ReviewError("Pick at least one destination")
+            with _store(config) as store:
+                ids = compose(store, targets, post)
+        except ReviewError as exc:
+            values = {**{k: str(form.get(k) or "") for k in ("kind", "subject", "text", "link", "title")}, "platforms": chosen}
+            return _render(request, "compose.html", status_code=400, error=str(exc), **_compose_context(state, values))
+        noun = "draft" if len(ids) == 1 else "drafts"
+        _flash(request, "ok", f"Created {len(ids)} pending {noun}. Review and approve each one.")
+        return RedirectResponse("/?status=pending", status_code=303)
+
     async def confirm_one(request: Request) -> Response:
         return await _act(request, state, "confirm")
 
@@ -235,8 +272,10 @@ def create_app(
         form = await request.form()
         if not _csrf_ok(request, form.get("csrf")):
             return _expired()
-        project = str(form.get("project") or "")
-        version = str(form.get("version") or "")
+        post_key = str(form.get("post_key") or "")
+        if not post_key and form.get("project") and form.get("version"):
+            # A queue page rendered before post keys existed.
+            post_key = release_key(str(form.get("project")), str(form.get("version")))
         refused: list[str] = []
         count = 0
         try:
@@ -244,7 +283,7 @@ def create_app(
             with _store(config) as store:
                 pending = [
                     draft
-                    for draft in store.list_drafts(project=project, version=version)
+                    for draft in (store.list_drafts(post_key=post_key) if post_key else [])
                     if draft.status == PENDING
                 ]
                 for draft in pending:
@@ -259,21 +298,24 @@ def create_app(
             _flash(request, "bad", str(exc))
             return RedirectResponse(f"/?status=open", status_code=303)
         noun = "draft" if count == 1 else "drafts"
+        label = pending[0].label if pending else post_key
         if refused:
             _flash(
                 request,
                 "bad",
-                f"Approved {count} {noun} for {project} {version}. The privacy gate refused "
+                f"Approved {count} {noun} for {label}. The privacy gate refused "
                 f"{', '.join(refused)}: open each draft to see why.",
             )
             return RedirectResponse("/?status=pending", status_code=303)
-        _flash(request, "ok", f"Approved {count} {noun} for {project} {version}.")
+        _flash(request, "ok", f"Approved {count} {noun} for {label}.")
         return RedirectResponse("/?status=approved", status_code=303)
 
     routes = [
         Route("/login", login_form, methods=["GET"]),
         Route("/login", login_submit, methods=["POST"]),
         Route("/", queue, methods=["GET"]),
+        Route("/compose", compose_form, methods=["GET"]),
+        Route("/compose", compose_submit, methods=["POST"]),
         Route("/drafts/{draft_id:int}", draft_page, methods=["GET"]),
         Route("/drafts/{draft_id:int}/save", save, methods=["POST"]),
         Route("/drafts/{draft_id:int}/approve", approve_one, methods=["POST"]),
@@ -328,12 +370,12 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
     note = str(form.get("note") or "").strip() or None
     if action == "reject":
         reject(store, draft.id, note)
-        return f"Rejected {draft.platform} for {draft.project} {draft.version}."
+        return f"Rejected {draft.platform} for {draft.label}."
     if action == "confirm":
         url = str(form.get("url") or "").strip() or None
         confirmed = confirm(store, draft.id, url)
         where = " with its post URL" if confirmed.external_id else ""
-        return f"Marked {draft.project} {draft.version} published on {publisher.label}{where}."
+        return f"Marked {draft.label} published on {publisher.label}{where}."
     if action == "accept":
         key = str(form.get("key") or "")
         accept_hit(store, _gate(state), draft.id, key, note)
@@ -342,7 +384,7 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
         client = state["http"] or HttpClient()
         result = publish_draft(store, publisher, draft, state["env"], client, gate=_gate(state))
         if result.handed_off:
-            return f"{draft.project} {draft.version} is ready to post on {publisher.label}."
+            return f"{draft.label} is ready to post on {publisher.label}."
         return result.detail
     title = str(form.get("title") if form.get("title") is not None else draft.title)
     body = str(form.get("body") if form.get("body") is not None else draft.body)
@@ -351,7 +393,7 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
     if action == "save":
         return "Saved. This draft is pending approval."
     approve(store, publisher, draft.id, note, gate=_gate(state))
-    return f"Approved {draft.platform} for {draft.project} {draft.version}."
+    return f"Approved {draft.platform} for {draft.label}."
 
 
 def _draft_context(config: Config, draft: Draft, publisher: Publisher | None) -> dict:
@@ -379,6 +421,25 @@ def _draft_context(config: Config, draft: Draft, publisher: Publisher | None) ->
         "can_confirm": draft.status == HANDED_OFF,
         "can_add_url": draft.status == "published" and not draft.external_id and bool(publisher and publisher.manual),
         "handoff": handoff,
+    }
+
+
+def _enabled(state: dict) -> list[Publisher]:
+    config: Config = state["config"]
+    return [
+        publisher
+        for name, destination in config.destinations.items()
+        if destination.enabled and (publisher := state["publishers"].get(name)) is not None
+    ]
+
+
+def _compose_context(state: dict, values: dict) -> dict:
+    enabled = _enabled(state)
+    chosen = values.get("platforms") or [p.id for p in enabled]
+    return {
+        "kinds": POST_KINDS,
+        "destinations": [{"id": p.id, "label": p.label, "checked": p.id in chosen} for p in enabled],
+        "values": {"kind": "demo", **values},
     }
 
 
@@ -415,12 +476,15 @@ def _select(store: Store, status: str) -> list[Draft]:
 
 def _groups(drafts: list[Draft]) -> list[dict]:
     groups: list[dict] = []
-    index: dict[tuple[str, str], dict] = {}
+    index: dict[str, dict] = {}
     for draft in drafts:
-        key = (draft.project, draft.version)
+        key = draft.post_key
         group = index.get(key)
         if group is None:
             group = {
+                "post_key": key,
+                "kind": draft.kind,
+                "label": draft.label,
                 "project": draft.project,
                 "version": draft.version,
                 "link": draft.link,

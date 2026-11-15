@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pip_release.feeds import FeedSource, youtube_feed_url
+
 _SECRET_KEY = re.compile(
     r"(secret|token|password|webhook|api[_-]?key|access[_-]?key|credential)",
     re.IGNORECASE,
@@ -41,6 +43,7 @@ class Config:
     store_path: Path = field(default_factory=lambda: Path(".pip-release/state.sqlite"))
     path: Path | None = None
     privacy: dict[str, Any] = field(default_factory=dict)
+    feeds: list[FeedSource] = field(default_factory=list)
 
 
 def resolve_config_path(explicit: str | None) -> Path:
@@ -84,7 +87,12 @@ def load_config(path: Path) -> Config:
     env_store = os.environ.get("PIP_RELEASE_STORE")
     if env_store:
         store_path = Path(env_store)
+    feeds = _feeds(data.get("sources") or {})
+    unknown = sorted({p for feed in feeds for p in feed.platforms} - set(destinations))
+    if unknown:
+        raise ConfigError(f"sources name platforms that aren't in destinations: {', '.join(unknown)}")
     return Config(
+        feeds=feeds,
         users=users,
         projects=projects,
         ignore=ignore,
@@ -202,6 +210,38 @@ def _destinations(value: Any) -> dict[str, Destination]:
             mode=mode,
         )
     return out
+
+
+def _feeds(value: Any) -> list[FeedSource]:
+    """`sources.site` (an Atom feed of the site's updates) and `sources.youtube` (a channel)."""
+    if not isinstance(value, dict):
+        raise ConfigError("sources must be a mapping")
+    unknown = sorted(set(value) - {"site", "youtube"})
+    if unknown:
+        raise ConfigError(f"Unknown sources: {', '.join(unknown)}. Known: site, youtube")
+    feeds: list[FeedSource] = []
+    for name, raw in value.items():
+        if not isinstance(raw, dict):
+            raise ConfigError(f"sources.{name} must be a mapping")
+        if raw.get("enabled") is False:
+            continue
+        platforms = tuple(_strings(raw.get("platforms") or []))
+        if name == "site":
+            url = raw.get("feed")
+            if not isinstance(url, str) or not url.startswith("https://"):
+                raise ConfigError("sources.site.feed must be an https:// Atom feed URL")
+            categories = tuple(c.lower() for c in _strings(raw.get("categories") or ["note"]))
+            feeds.append(FeedSource("site", url.strip(), "note", categories, platforms))
+        else:
+            channel = raw.get("channel_id")
+            if not isinstance(channel, str):
+                raise ConfigError("sources.youtube.channel_id must be a string")
+            try:
+                url = youtube_feed_url(channel.strip())
+            except ValueError as exc:
+                raise ConfigError(str(exc)) from exc
+            feeds.append(FeedSource("youtube", url, "video", (), platforms))
+    return feeds
 
 
 def _optional_str(value: Any) -> str | None:

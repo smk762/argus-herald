@@ -142,3 +142,16 @@ def test_check_and_accept_and_fail_closed(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("PIP_RELEASE_OPSEC_DENYLIST", str(tmp_path / "gone.txt"))
     assert main([*base, "approve", "2"]) == 2
     assert "deny-list is missing" in capsys.readouterr().err
+
+
+def test_compose_reads_stdin_and_drafts_each_destination(tmp_path, capsys, monkeypatch):
+    import io
+
+    base, path = _seeded(tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO("A build note about provenance.\n"))
+    code = main([*base, "compose", "-", "--kind", "note", "--link", "https://example.org/n", "--subject", "Provenance"])
+    assert code == 0
+    assert "drafted #3 patreon" in capsys.readouterr().out
+    assert main([*base, "drafts", "--status", "pending"]) == 0
+    assert "note     Provenance" in capsys.readouterr().out
+    assert main([*base, "compose", "x", "--platform", "twitter"]) == 2

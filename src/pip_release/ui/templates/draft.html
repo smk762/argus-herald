@@ -1,15 +1,16 @@
 {% extends "base.html" %}
-{% block title %}{{ draft.project }} {{ draft.version }}{% endblock %}
+{% block title %}{{ draft.label }}{% endblock %}
 {% block body %}
 <p class="back"><a href="/?status=open">Back to review</a></p>
 <article class="sheet">
   <header class="sheet-head">
     <div>
       <p class="kicker">{{ label }}</p>
-      <h1>{{ draft.project }} {{ draft.version }}</h1>
+      <h1>{{ draft.label }}</h1>
       <p class="meta">
         <span class="status status-{{ draft.status }}">{{ status_label }}</span>
-        <a href="{{ draft.link }}">Release page</a>
+        {% if draft.kind != "release" %}<span class="kind">{{ draft.kind }}</span>{% endif %}
+        {% if draft.link %}<a href="{{ draft.link }}">{{ "Release page" if draft.kind == "release" else "Link" }}</a>{% endif %}
         {% if draft.edited %}<span>Edited</span>{% endif %}
       </p>
     </div>

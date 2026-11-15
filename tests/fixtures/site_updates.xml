@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>tag:example.org,2026:updates</id>
+  <title>Updates</title>
+  <updated>2026-11-20T00:00:00.000Z</updated>
+  <entry>
+    <id>tag:example.org,2026:updates/2026-11-15-digest</id>
+    <title>Digest: first one</title>
+    <link rel="alternate" type="text/html" href="https://example.org/updates/2026-11-15-digest/" />
+    <published>2026-11-15T00:00:00.000Z</published>
+    <category term="digest" />
+    <summary>What shipped.</summary>
+  </entry>
+  <entry>
+    <id>tag:example.org,2026:updates/2026-11-20-curator-numbers</id>
+    <title>Curator's numbers</title>
+    <link rel="alternate" type="text/html" href="https://example.org/updates/2026-11-20-curator-numbers/" />
+    <published>2026-11-20T00:00:00.000Z</published>
+    <category term="note" />
+    <summary>How the curator scores a dataset.</summary>
+  </entry>
+</feed>

@@ -13,6 +13,10 @@ HANDED_OFF = "handed_off"
 PUBLISHING = "publishing"
 
 STATUSES = (PENDING, APPROVED, REJECTED, PUBLISHED, FAILED, HANDED_OFF, PUBLISHING)
+
+# What a draft announces. `release` is one PyPI version; the rest are posts not tied to one.
+KINDS = ("release", "digest", "headline", "demo", "note", "video", "page")
+POST_KINDS = ("demo", "note", "video", "page")
 DRAFT_FIELDS = {"title", "body", "edited", "note", "external_id", "error"}
 
 
@@ -42,6 +46,17 @@ class Rendered:
 
 
 @dataclass(frozen=True)
+class Post:
+    """Content that isn't one release: a demo, a build note, a video, a page."""
+
+    kind: str
+    subject: str  # short label for the queue, e.g. the video title
+    text: str  # what the post says, before the link
+    link: str
+    title: str = ""  # for platforms with titles (Patreon); defaults to the subject
+
+
+@dataclass(frozen=True)
 class Draft:
     id: int
     project: str
@@ -57,6 +72,16 @@ class Draft:
     note: str | None
     external_id: str | None
     error: str | None
+    kind: str = "release"
+    post_key: str = ""
+    subject: str = ""
+
+    @property
+    def label(self) -> str:
+        """How the queue names this draft's content."""
+        if self.subject:
+            return self.subject
+        return f"{self.project} {self.version}".strip()
 
 
 @dataclass(frozen=True)

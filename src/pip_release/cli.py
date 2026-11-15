@@ -23,7 +23,7 @@ from pip_release.config import (
     resolve_config_path,
 )
 from pip_release.http import HttpClient, HttpError
-from pip_release.models import APPROVED, PENDING, Draft
+from pip_release.models import APPROVED, PENDING, POST_KINDS, Draft, Post
 from pip_release.privacy import Gate, GateUnavailable, load_gate
 from pip_release.platforms import Publisher, configured_publishers, load_publishers
 from pip_release.pypi import ProfileUnavailable, discover_projects
@@ -36,6 +36,7 @@ from pip_release.workflow import (
     accept_hit,
     gate_hits,
     approve,
+    compose,
     confirm,
     edit_draft,
     desktop_notice,
@@ -109,6 +110,8 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
         return cmd_reject(store, _ids(args, store), args.note)
     if args.command == "publish":
         return cmd_publish(config, store, by_id, http, _ids(args, store), args.dry_run, _gate(config))
+    if args.command == "compose":
+        return cmd_compose(store, publishers, args)
     if args.command == "check":
         return cmd_check(store, _gate(config), args.ids)
     if args.command == "accept":
@@ -229,7 +232,7 @@ def cmd_reset(store: Store, before: str | None, yes: bool, note: str) -> int:
         print(f"No pending drafts{scope}.")
         return 0
     print(f"{len(drafts)} pending drafts{scope}:")
-    for project, count in sorted(Counter(draft.project for draft in drafts).items()):
+    for project, count in sorted(Counter(draft.label for draft in drafts).items()):
         print(f"  {project:<24} {count}")
     created = sorted(draft.created_at for draft in drafts)
     print(f"  oldest {created[0]}, newest {created[-1]}")
@@ -324,11 +327,12 @@ def cmd_drafts(store: Store, status: str | None) -> int:
     if not drafts:
         print("No drafts.")
         return 0
-    print(f"{'ID':<6}{'PROJECT':<20}{'VERSION':<16}{'PLATFORM':<12}{'STATUS':<14}EDITED")
+    print(f"{'ID':<6}{'KIND':<9}{'CONTENT':<36}{'PLATFORM':<12}{'STATUS':<14}EDITED")
     for draft in drafts:
         edited = "yes" if draft.edited else "no"
+        label = draft.label if len(draft.label) <= 34 else draft.label[:31] + "..."
         print(
-            f"{draft.id:<6}{draft.project:<20}{draft.version:<16}"
+            f"{draft.id:<6}{draft.kind:<9}{label:<36}"
             f"{draft.platform:<12}{draft.status:<14}{edited}"
         )
     return 0
@@ -376,6 +380,33 @@ def cmd_approve(
     return 1 if refused else 0
 
 
+def cmd_compose(store: Store, publishers: list[Publisher], args: argparse.Namespace) -> int:
+    text = args.text
+    if text == "-" or (text is None and not sys.stdin.isatty()):
+        text = sys.stdin.read()
+    post = Post(
+        kind=args.kind,
+        subject=(args.subject or "").strip(),
+        text=(text or "").strip(),
+        link=(args.link or "").strip(),
+        title=(args.title or "").strip(),
+    )
+    if args.platforms:
+        known = {p.id for p in publishers}
+        missing = [p for p in args.platforms if p not in known]
+        if missing:
+            raise ReviewError(f"Not enabled: {', '.join(missing)}")
+        publishers = [p for p in publishers if p.id in args.platforms]
+    ids = compose(store, publishers, post)
+    for draft_id in ids:
+        draft = store.get(draft_id)
+        if draft:
+            print(f"drafted #{draft.id} {draft.platform}")
+    if ids:
+        print("Review, edit and approve them like any draft.")
+    return 0
+
+
 def cmd_check(store: Store, gate: Gate, ids: list[int]) -> int:
     drafts = [_one(store, i) for i in ids] if ids else [
         *store.list_drafts(status=PENDING), *store.list_drafts(status=APPROVED)
@@ -386,7 +417,7 @@ def cmd_check(store: Store, gate: Gate, ids: list[int]) -> int:
         if not hits:
             continue
         found = True
-        print(f"#{draft.id} {draft.project} {draft.version} {draft.platform}")
+        print(f"#{draft.id} {draft.label} {draft.platform}")
         for hit in hits:
             print(f"  {hit.label:<24} {hit.field}[{hit.start}:{hit.end}] {hit.match!r}")
             print(f"  {'':<24} accept: pip-release accept {draft.id} {hit.key!r} --note '...'")
@@ -526,13 +557,27 @@ def _parser() -> argparse.ArgumentParser:
         command = sub.add_parser(name, help=help_text)
         command.add_argument("ids", nargs="*", type=int)
         command.add_argument("--release", help="project==version")
+        command.add_argument("--post", help="Every draft of one post, by post key")
         command.add_argument("--note")
 
     publish = sub.add_parser("publish", help="Publish approved drafts")
     publish.add_argument("ids", nargs="*", type=int)
     publish.add_argument("--release", help="project==version")
+    publish.add_argument("--post", help="Every draft of one post, by post key")
     publish.add_argument("--approved", action="store_true", help="Every approved draft")
     publish.add_argument("--dry-run", action="store_true", help="Print the post and do not send it")
+
+    compose_cmd = sub.add_parser(
+        "compose", help="Draft a post that isn't a release (demo, build note, video, page)"
+    )
+    compose_cmd.add_argument("text", nargs="?", help="The post text, or - to read stdin")
+    compose_cmd.add_argument("--kind", choices=POST_KINDS, default="demo")
+    compose_cmd.add_argument("--link", help="https:// link the post points to")
+    compose_cmd.add_argument("--subject", help="Short label for the review queue")
+    compose_cmd.add_argument("--title", help="Title, for platforms that have one (Patreon)")
+    compose_cmd.add_argument(
+        "--platform", dest="platforms", action="append", help="Only this destination (repeatable)"
+    )
 
     check = sub.add_parser("check", help="Run the privacy gate over drafts (default: pending and approved)")
     check.add_argument("ids", nargs="*", type=int)
@@ -580,9 +625,12 @@ def _ids(args: argparse.Namespace, store: Store) -> list[int]:
             raise ReviewError("--release must look like project==version")
         project, version = release.split("==", 1)
         ids.extend(draft.id for draft in store.list_drafts(project=project, version=version))
+    post_key = getattr(args, "post", None)
+    if post_key:
+        ids.extend(draft.id for draft in store.list_drafts(post_key=post_key))
     deduped = list(dict.fromkeys(ids))
     if not deduped:
-        raise ReviewError("Name a draft id, --release, or --approved.")
+        raise ReviewError("Name a draft id, --release, --post, or --approved.")
     return deduped
 
 
@@ -611,7 +659,7 @@ def _format_event(event: PollEvent) -> str:
 
 
 def _print_draft(draft: Draft) -> None:
-    print(f"#{draft.id}  {draft.project} {draft.version}  {draft.platform}  {draft.status}")
+    print(f"#{draft.id}  {draft.kind}  {draft.label}  {draft.platform}  {draft.status}")
     if draft.title:
         print(f"title: {draft.title}")
     print()
@@ -627,7 +675,7 @@ def _handoff(draft: Draft, destination: Destination | None, publisher: Publisher
     if link:
         return f"Open in {publisher.label}:\n{link}\n\nText:\n{draft.body}\n"
     where = (destination.url if destination and destination.url else "https://www.patreon.com")
-    title = draft.title or f"{draft.project} {draft.version}"
+    title = draft.title or draft.label
     return (
         f"Paste this into {where}\n\n"
         f"Title:\n{title}\n\n"
