@@ -19,6 +19,22 @@ pip-release init --example dragonhound
 
 PyPI documents per-project RSS, not a feed of one user's projects, and the profile page often answers with a client challenge. `pip-release discover` prints project names when the profile is readable. Otherwise keep the explicit `pypi.projects` list.
 
+`pip-release discover --check` looks for drift and exits 1 when it finds any, so it can run in CI. The watcher also runs it once a day and raises a desktop notice. It checks that:
+
+- every configured name exists on PyPI;
+- the PyPI profile, when it's readable, lists nothing that isn't configured;
+- every public, non-fork repo of `pypi.discover.github_owner` whose name starts with `pypi.discover.prefix` and declares a `[project] name` in its `pyproject.toml` that is on PyPI is configured. PyPI can't list projects by prefix, so GitHub is how new packages are found.
+
+```yaml
+pypi:
+  projects: [argus-atlas, …]
+  discover:
+    github_owner: smk762
+    prefix: argus-
+```
+
+`GITHUB_TOKEN` is optional and only raises the API rate limit. A project added to `pypi.projects` is baselined on the next poll (or right away with `pip-release baseline <name>`), so its old versions are never drafted.
+
 ## Review
 
 Open the queue in a browser:

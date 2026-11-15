@@ -6,6 +6,9 @@ pypi:
   projects:
     - your-project
   ignore: []
+  # discover:            # pip-release discover --check also reads these GitHub repos
+  #   github_owner: your-github-user
+  #   prefix: your-prefix-
 
 destinations:
   twitter:

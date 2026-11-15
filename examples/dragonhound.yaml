@@ -12,7 +12,15 @@ pypi:
     - argus-forge
     - argus-proof
     - argus-curator
+    - argus-darkroom
+    - argus-survey
+    - argus-mask
+    - argus-mint
   ignore: []
+  # discover --check: argus-* repos on GitHub that publish to PyPI must be listed above
+  discover:
+    github_owner: smk762
+    prefix: argus-
 
 destinations:
   twitter:
