@@ -35,6 +35,7 @@ from pip_release.workflow import (
     ReviewError,
     LOGGED_KINDS,
     accept_hit,
+    attach_media,
     edit_logged,
     log_broadcast,
     gate_hits,
@@ -115,6 +116,8 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
         return cmd_reject(store, _ids(args, store), args.note)
     if args.command == "publish":
         return cmd_publish(config, store, by_id, http, _ids(args, store), args.dry_run, _gate(config))
+    if args.command == "media":
+        return cmd_media(config, store, args)
     if args.command == "log-broadcast":
         return cmd_log_broadcast(store, args)
     if args.command == "broadcasts":
@@ -126,7 +129,7 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
     if args.command == "promote":
         return cmd_promote(config, store, publishers, args)
     if args.command == "compose":
-        return cmd_compose(store, publishers, args)
+        return cmd_compose(config, store, publishers, args)
     if args.command == "check":
         return cmd_check(store, _gate(config), args.ids)
     if args.command == "accept":
@@ -199,6 +202,33 @@ def cmd_discover_check(config: Config, http, env: Mapping[str, str]) -> int:
         print(f"OK: {len(config.projects)} configured projects, no drift.")
         return 0
     return 1
+
+
+def cmd_media(config: Config, store: Store, args: argparse.Namespace) -> int:
+    if args.action == "add":
+        if len(args.args) != 2 or not args.alt:
+            raise ReviewError("Usage: pip-release media add <draft id> <file> --alt '...' [--all-drafts]")
+        draft_id, path = int(args.args[0]), Path(args.args[1]).expanduser()
+        ids = attach_media(store, config.media_root, draft_id, path, args.alt, all_drafts=args.all_drafts)
+        item = store.media_item(ids[0])
+        print(f"Attached {path.name} as {item['kind']} to {len(ids)} draft(s); removed: {item['removed']}")
+        return 0
+    if args.action == "list":
+        for item in store.media(int(args.args[0])):
+            print(f"#{item['id']:<4} {item['kind']:<6} {item['bytes'] // 1000:>7} kB  {item['name']}")
+            print(f"      alt: {item['alt'] or '(missing)'}   removed: {item['removed']}")
+        return 0
+    if args.action == "alt":
+        if len(args.args) != 2 or not store.set_alt(int(args.args[0]), args.args[1].strip()):
+            raise ReviewError("Usage: pip-release media alt <media id> 'text'")
+        print("Saved.")
+        return 0
+    if args.action == "remove":
+        if not args.args or not store.remove_media(int(args.args[0])):
+            raise ReviewError("Usage: pip-release media remove <media id>")
+        print("Removed.")
+        return 0
+    raise ReviewError(f"Unknown media action {args.action}")
 
 
 def cmd_log_broadcast(store: Store, args: argparse.Namespace) -> int:
@@ -485,7 +515,7 @@ def cmd_drafts(store: Store, status: str | None) -> int:
 
 def cmd_show(store: Store, draft_id: int) -> int:
     draft = _one(store, draft_id)
-    _print_draft(draft)
+    _print_draft(draft, store.media(draft_id))
     return 0
 
 
@@ -525,7 +555,7 @@ def cmd_approve(
     return 1 if refused else 0
 
 
-def cmd_compose(store: Store, publishers: list[Publisher], args: argparse.Namespace) -> int:
+def cmd_compose(config: Config, store: Store, publishers: list[Publisher], args: argparse.Namespace) -> int:
     text = args.text
     if text == "-" or (text is None and not sys.stdin.isatty()):
         text = sys.stdin.read()
@@ -542,7 +572,13 @@ def cmd_compose(store: Store, publishers: list[Publisher], args: argparse.Namesp
         if missing:
             raise ReviewError(f"Not enabled: {', '.join(missing)}")
         publishers = [p for p in publishers if p.id in args.platforms]
+    media = list(zip(args.media or [], args.alt or []))
+    if len(args.media or []) != len(args.alt or []):
+        raise ReviewError("Give one --alt for each --media, in the same order")
     ids = compose(store, publishers, post)
+    if ids and media:
+        for path, alt in media:
+            attach_media(store, config.media_root, ids[0], Path(path).expanduser(), alt, all_drafts=True)
     for draft_id in ids:
         draft = store.get(draft_id)
         if draft:
@@ -676,6 +712,8 @@ def cmd_publish(
         if result.handed_off:
             current = store.get(draft_id) or draft
             print(_handoff(current, config.destinations.get(draft.platform), publisher))
+            for item in store.media(draft_id):
+                print(f"Attach: {item['path']}\n  alt text: {item['alt']}")
     return 1 if failed else 0
 
 
@@ -820,6 +858,14 @@ def _parser() -> argparse.ArgumentParser:
     compose_cmd.add_argument(
         "--platform", dest="platforms", action="append", help="Only this destination (repeatable)"
     )
+    compose_cmd.add_argument("--media", action="append", help="Image, GIF or clip to attach (repeatable)")
+    compose_cmd.add_argument("--alt", action="append", help="Alt text for each --media, in order")
+
+    media_cmd = sub.add_parser("media", help="Attach images, GIFs or clips to a draft (metadata is stripped)")
+    media_cmd.add_argument("action", choices=("add", "list", "alt", "remove"))
+    media_cmd.add_argument("args", nargs="*", help="add: <draft id> <file>; list: <draft id>; alt: <media id> 'text'; remove: <media id>")
+    media_cmd.add_argument("--alt", help="Alt text (required for add)")
+    media_cmd.add_argument("--all-drafts", action="store_true", help="Attach to every draft of the same post")
 
     check = sub.add_parser("check", help="Run the privacy gate over drafts (default: pending and approved)")
     check.add_argument("ids", nargs="*", type=int)
@@ -904,7 +950,7 @@ def _format_event(event: PollEvent) -> str:
     return f"error {event.project}: {event.detail}"
 
 
-def _print_draft(draft: Draft) -> None:
+def _print_draft(draft: Draft, media: list[dict] | None = None) -> None:
     print(f"#{draft.id}  {draft.kind}  {draft.label}  {draft.platform}  {draft.status}")
     if draft.title:
         print(f"title: {draft.title}")
@@ -914,6 +960,8 @@ def _print_draft(draft: Draft) -> None:
         print(f"\nerror: {draft.error}")
     if draft.note:
         print(f"\nnote: {draft.note}")
+    for item in media or []:
+        print(f"\nmedia #{item['id']} {item['kind']}: {item['path']}\n  alt: {item['alt'] or '(missing)'}")
 
 
 def _handoff(draft: Draft, destination: Destination | None, publisher: Publisher | None = None) -> str:

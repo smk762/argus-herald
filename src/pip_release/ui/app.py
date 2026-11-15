@@ -12,7 +12,7 @@ from urllib.parse import quote, urlsplit
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
@@ -31,6 +31,8 @@ from pip_release.workflow import (
     ReviewError,
     LOGGED_KINDS,
     accept_hit,
+    attach_media,
+    media_problems,
     edit_logged,
     log_broadcast,
     approve,
@@ -214,6 +216,7 @@ def create_app(
             publisher = state["publishers"].get(draft.platform)
             page = _draft_context(config, draft, publisher)
             page.update(_gate_context(store, state, draft))
+            page.update(_media_context(store, config, draft, publisher))
         return _render(request, "draft.html", **page)
 
     async def save(request: Request) -> Response:
@@ -332,6 +335,64 @@ def create_app(
         _flash(request, "ok", message)
         return RedirectResponse("/digests", status_code=303)
 
+    async def media_file(request: Request) -> Response:
+        denied = _guard(request, state["token"])
+        if denied is not None:
+            return denied
+        with _store(config) as store:
+            item = store.media_item(int(request.path_params["media_id"]))
+        root = (config.media_root / "clean").resolve()
+        path = Path(item["path"]).resolve() if item else None
+        if path is None or root not in path.parents or not path.is_file():
+            return Response("Not found", status_code=404)
+        return FileResponse(path, headers={"Cache-Control": "private, max-age=300"})
+
+    async def media_add(request: Request) -> Response:
+        denied = _guard(request, state["token"])
+        if denied is not None:
+            return denied
+        form = await request.form(max_files=1)
+        if not _csrf_ok(request, form.get("csrf")):
+            return _expired()
+        draft_id = int(request.path_params["draft_id"])
+        try:
+            source, name = await _media_source(config, form)
+            with _store(config) as store:
+                ids = attach_media(store, config.media_root, draft_id, source, str(form.get("alt") or ""),
+                                   all_drafts=form.get("all_drafts") == "1", name=name)
+                item = store.media_item(ids[0])
+        except (ReviewError, OSError) as exc:
+            _flash(request, "bad", str(exc))
+            return RedirectResponse(f"/drafts/{draft_id}", status_code=303)
+        where = f" to {len(ids)} drafts" if len(ids) > 1 else ""
+        _flash(request, "ok", f"Attached {name}{where}. Metadata removed: {item['removed']}.")
+        return RedirectResponse(f"/drafts/{draft_id}", status_code=303)
+
+    async def media_edit(request: Request) -> Response:
+        denied = _guard(request, state["token"])
+        if denied is not None:
+            return denied
+        form = await request.form()
+        if not _csrf_ok(request, form.get("csrf")):
+            return _expired()
+        media_id = int(request.path_params["media_id"])
+        with _store(config) as store:
+            item = store.media_item(media_id)
+            if item is None:
+                return Response("Not found", status_code=404)
+            draft = store.get(item["draft_id"])
+            if draft is None or draft.status not in (PENDING, APPROVED, FAILED):
+                _flash(request, "bad", "This draft's media can't change now.")
+            elif request.path_params["action"] == "remove":
+                store.remove_media(media_id)
+                _flash(request, "ok", f"Removed {item['name']}.")
+            else:
+                store.set_alt(media_id, str(form.get("alt") or "").strip())
+                if draft.status == APPROVED:
+                    store.transition(draft.id, (APPROVED,), PENDING)
+                _flash(request, "ok", "Alt text saved.")
+        return RedirectResponse(f"/drafts/{item['draft_id']}", status_code=303)
+
     async def confirm_one(request: Request) -> Response:
         return await _act(request, state, "confirm")
 
@@ -401,6 +462,9 @@ def create_app(
         Route("/drafts/{draft_id:int}/publish", publish_one, methods=["POST"]),
         Route("/drafts/{draft_id:int}/confirm", confirm_one, methods=["POST"]),
         Route("/drafts/{draft_id:int}/accept", accept_one, methods=["POST"]),
+        Route("/drafts/{draft_id:int}/media", media_add, methods=["POST"]),
+        Route("/media/{media_id:int}", media_file, methods=["GET"]),
+        Route("/media/{media_id:int}/{action:str}", media_edit, methods=["POST"]),
         Route("/releases/approve", approve_release, methods=["POST"]),
         Mount("/static", app=StaticFiles(directory=str(_ROOT / "static")), name="static"),
     ]
@@ -570,6 +634,63 @@ def _digest_perform(state: dict, config: Config, action: str, target: int, form)
             extra = f" Site page: {status}." if status else ""
             return f"Promoted {row['project']} {row['version']}: {len(ids)} headline drafts.{extra}"
     raise ReviewError(f"Unknown action {action}")
+
+
+MAX_UPLOAD = 600 * 1024 * 1024
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _library(config: Config) -> list[str]:
+    """Files in the media folder that can be picked (not the cleaned or uploaded copies)."""
+    from pip_release.media import GIF_EXT, IMAGE_EXT, VIDEO_EXT
+
+    root = config.media_root
+    if not root.is_dir():
+        return []
+    allowed = set(IMAGE_EXT) | GIF_EXT | VIDEO_EXT
+    return sorted(p.name for p in root.iterdir() if p.is_file() and p.suffix.lower() in allowed)
+
+
+async def _media_source(config: Config, form) -> tuple[Path, str]:
+    upload = form.get("file")
+    root = config.media_root
+    if upload is not None and getattr(upload, "filename", ""):
+        name = _SAFE_NAME.sub("-", Path(upload.filename).name).strip("-") or "upload"
+        target_dir = root / "uploads"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{secrets.token_hex(4)}-{name}"
+        written = 0
+        with target.open("wb") as handle:
+            while chunk := await upload.read(1024 * 1024):
+                written += len(chunk)
+                if written > MAX_UPLOAD:
+                    break
+                handle.write(chunk)
+        if written > MAX_UPLOAD:
+            target.unlink(missing_ok=True)
+            raise ReviewError(f"Uploads are limited to {MAX_UPLOAD // (1024 * 1024)} MB")
+        return target, name
+    picked = str(form.get("library") or "")
+    if picked:
+        path = (root / picked).resolve()
+        if path.parent != root.resolve() or not path.is_file():
+            raise ReviewError("Pick a file from the media folder")
+        return path, path.name
+    raise ReviewError("Upload a file or pick one from the media folder")
+
+
+def _media_context(store: Store, config: Config, draft: Draft, publisher: Publisher | None) -> dict:
+    media = store.media(draft.id)
+    problems = media_problems(store, publisher, draft) if publisher and media else []
+    limits = publisher.media_limits if publisher else None
+    return {
+        "media": media,
+        "media_problems": problems,
+        "media_supported": limits is not None,
+        "library": _library(config),
+        "media_dir": str(config.media_root),
+        "siblings": len(store.list_drafts(post_key=draft.post_key)) > 1,
+    }
 
 
 def _enabled(state: dict) -> list[Publisher]:

@@ -25,6 +25,19 @@ CREATE TABLE IF NOT EXISTS seen (
     seen_at TEXT NOT NULL,
     PRIMARY KEY (source, project, version)
 );
+-- Files attached to a draft. `path` is the cleaned copy (metadata stripped); only it is posted.
+CREATE TABLE IF NOT EXISTS draft_media (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id INTEGER NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL DEFAULT 0,
+    kind TEXT NOT NULL,
+    path TEXT NOT NULL,
+    name TEXT NOT NULL,
+    alt TEXT NOT NULL DEFAULT '',
+    bytes INTEGER NOT NULL,
+    removed TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS gate_accepts (
     draft_id INTEGER NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
     key TEXT NOT NULL,
@@ -494,6 +507,33 @@ class Store:
         if cur.rowcount != 1:
             return None
         return self.get(draft_id)
+
+    def add_media(self, draft_id: int, *, kind: str, path: str, name: str, alt: str, size: int, removed: str) -> int:
+        position = self.conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM draft_media WHERE draft_id = ?", (draft_id,)
+        ).fetchone()[0]
+        cur = self.conn.execute(
+            "INSERT INTO draft_media (draft_id, position, kind, path, name, alt, bytes, removed, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (draft_id, position, kind, path, name, alt, size, removed, _now()),
+        )
+        return int(cur.lastrowid)
+
+    def media(self, draft_id: int) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM draft_media WHERE draft_id = ? ORDER BY position, id", (draft_id,)
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def media_item(self, media_id: int) -> dict | None:
+        row = self.conn.execute("SELECT * FROM draft_media WHERE id = ?", (media_id,)).fetchone()
+        return dict(row) if row else None
+
+    def set_alt(self, media_id: int, alt: str) -> bool:
+        return bool(self.conn.execute("UPDATE draft_media SET alt = ? WHERE id = ?", (alt, media_id)).rowcount)
+
+    def remove_media(self, media_id: int) -> bool:
+        return bool(self.conn.execute("DELETE FROM draft_media WHERE id = ?", (media_id,)).rowcount)
 
     def accept_hit(self, draft_id: int, key: str, note: str) -> None:
         self.conn.execute(

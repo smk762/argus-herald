@@ -388,3 +388,32 @@ def test_logged_posts_page_add_edit_delete(tmp_path):
     assert "Atlas on r/gis" in edited.text
     deleted = client.post("/broadcasts/delete/1", data={"csrf": _csrf(edited.text)}, follow_redirects=True)
     assert "Deleted." in deleted.text and "Atlas on r/gis" not in deleted.text
+
+
+def test_media_upload_alt_serve_and_handoff(tmp_path):
+    from io import BytesIO
+    from PIL import Image
+
+    app, config = _app(tmp_path)
+    client = TestClient(app)
+    page = client.get("/drafts/1")
+    assert "Add an image, GIF or clip" in page.text
+    buf = BytesIO()
+    exif = Image.Exif()
+    exif[0x010F] = "PhoneMaker"
+    Image.new("RGB", (16, 16), (0, 90, 0)).save(buf, "JPEG", exif=exif)
+    added = client.post("/drafts/1/media", data={"csrf": _csrf(page.text), "alt": "", "all_drafts": "1"},
+                        files={"file": ("my photo.jpg", buf.getvalue(), "image/jpeg")}, follow_redirects=True)
+    assert "Attached my-photo.jpg to 2 drafts. Metadata removed: EXIF" in added.text
+    assert "my-photo.jpg needs alt text" in added.text and 'formaction="/drafts/1/approve" disabled' in added.text
+    store = Store(config.store_path)
+    media_id = store.media(1)[0]["id"]
+    store.close()
+    served = client.get(f"/media/{media_id}")
+    assert served.status_code == 200 and b"PhoneMaker" not in served.content
+    saved = client.post(f"/media/{media_id}/alt", data={"csrf": _csrf(added.text), "alt": "A green square"}, follow_redirects=True)
+    assert "Alt text saved." in saved.text and "needs alt text" not in saved.text
+    client.post("/drafts/1/approve", data={"csrf": _csrf(saved.text)}, follow_redirects=True)
+    published = client.post("/drafts/1/publish", data={"csrf": _csrf(client.get("/drafts/1").text)}, follow_redirects=True)
+    assert "Attach these files" in published.text and f'href="/media/{media_id}" download="my-photo.jpg"' in published.text
+    assert client.get("/media/99999").status_code == 404

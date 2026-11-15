@@ -11,6 +11,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 from pip_release.config import Config, Destination
 from pip_release.http import Http, send_json
+from pip_release.media import PATREON_LIMITS, X_LIMITS, MediaLimits
 from pip_release.models import Draft, Post, PublishResult, Release, Rendered
 from pip_release.oauth1 import authorization_header
 from pip_release.textutil import fit_body, fit_weighted, html_text, weighted_length
@@ -25,6 +26,8 @@ class Publisher(ABC):
     label: str
     # True when publish hands the text to a person instead of posting it.
     manual: bool = False
+    # What a post can carry. None: this publisher can't attach media.
+    media_limits: MediaLimits | None = None
 
     def configure(self, destination: Destination | None) -> "Publisher":
         """Return a publisher set up for this destination. Most need nothing."""
@@ -81,10 +84,13 @@ class TwitterPublisher(Publisher):
     id = "twitter"
     label = "Twitter / X"
     limit = 280
+    media_limits = X_LIMITS
 
     def __init__(self, mode: str = "manual") -> None:
         self.mode = mode
         self.manual = mode == "manual"
+        # The API path posts text only; media goes with the manual handoff.
+        self.media_limits = X_LIMITS if self.manual else None
 
     def configure(self, destination: Destination | None) -> "TwitterPublisher":
         mode = (destination.mode if destination else None) or "manual"
@@ -241,6 +247,7 @@ class PatreonPublisher(Publisher):
     label = "Patreon"
     limit = 10000
     manual = True
+    media_limits = PATREON_LIMITS
 
     def render(self, release: Release) -> Rendered:
         head = _headline(release)
