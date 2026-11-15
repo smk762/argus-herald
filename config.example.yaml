@@ -14,6 +14,12 @@ destinations:
   twitter:
     enabled: true
     username: your-x-username
+    # audience:                    # optional; every destination can have one
+    #   description: who follows this account
+    #   tone: plain and specific
+    #   packages: [your-pkg-*]       # or {include: [...], exclude: [...]}; default: everything
+    #   hashtags: [python]           # appended while they fit (X: at most 2)
+    #   link_placement: reply        # body (default) or reply (X, Bluesky, Mastodon)
     mode: manual  # Open in X link, posted by a person. `api` posts with the X API (billed per post).
   discord:
     enabled: false

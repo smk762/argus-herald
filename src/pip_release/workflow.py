@@ -55,7 +55,7 @@ class PrivacyRefused(ReviewError):
 
 def draft_fields(draft: Draft) -> dict[str, str]:
     """The text of a draft the privacy gate reads."""
-    return {"title": draft.title, "body": draft.body, "link": draft.link}
+    return {"title": draft.title, "body": draft.body, "link": draft.link, "reply": draft.reply}
 
 
 def gate_hits(store: Store, gate: Gate, draft: Draft) -> list[Hit]:
@@ -263,13 +263,17 @@ def poll_github(
 
 
 def _drafts_for(store: Store, publishers: list[Publisher], release: Release) -> list[int]:
+    """Per-release drafts, for the destinations whose audience wants this package."""
     ids: list[int] = []
     for publisher in publishers:
+        if not publisher.wants([release.project]):
+            continue
         rendered = publisher.render(release)
         publisher.validate(rendered.title, rendered.body)
+        rendered, reply = publisher.shape(rendered, release.url)
         draft_id, created = store.add_draft(
             project=release.project, version=release.version, platform=publisher.id,
-            title=rendered.title, body=rendered.body, link=release.url,
+            title=rendered.title, body=rendered.body, link=release.url, reply=reply,
         )
         if created:
             ids.append(draft_id)
@@ -353,7 +357,7 @@ def compose(
     key = post_key or f"post:{uuid4().hex[:12]}"
     ids: list[int] = []
     for publisher in publishers:
-        rendered = publisher.render_post(post)
+        rendered, reply = publisher.shape(publisher.render_post(post), post.link.strip())
         draft_id, created = store.add_draft(
             kind=post.kind,
             post_key=key,
@@ -362,6 +366,7 @@ def compose(
             title=rendered.title,
             body=rendered.body,
             link=post.link.strip(),
+            reply=reply,
         )
         if created:
             ids.append(draft_id)
@@ -453,22 +458,8 @@ def _draft_release(
         log.warning("Release notes for %s %s were skipped", project, version, exc_info=True)
         notes = ""
     release = replace(release, notes=notes)
-    ids: list[int] = []
-    labels: list[str] = []
-    for publisher in publishers:
-        rendered = publisher.render(release)
-        publisher.validate(rendered.title, rendered.body)
-        draft_id, created = store.add_draft(
-            project=project,
-            version=version,
-            platform=publisher.id,
-            title=rendered.title,
-            body=rendered.body,
-            link=release.url,
-        )
-        if created:
-            ids.append(draft_id)
-            labels.append(f"{publisher.id} #{draft_id}")
+    ids = _drafts_for(store, publishers, release)
+    labels = [f"#{draft_id}" for draft_id in ids]
     store.mark_seen(project, version)
     if not ids:
         return PollEvent("skip", project, version, detail="drafts already existed")
@@ -619,11 +610,13 @@ def reject(store: Store, draft_id: int, note: str | None) -> Draft:
 
 
 def edit_draft(
-    store: Store, publisher: Publisher, draft_id: int, title: str, body: str
+    store: Store, publisher: Publisher, draft_id: int, title: str, body: str, reply: str | None = None
 ) -> Draft:
     draft = _require_draft(store, draft_id)
     publisher.validate(title, body)
-    updated = store.update_text(draft_id, title, body, (PENDING, APPROVED, FAILED))
+    if reply:
+        publisher.validate("", reply)
+    updated = store.update_text(draft_id, title, body, (PENDING, APPROVED, FAILED), reply=reply)
     if updated is None:
         raise ReviewError(f"Draft {draft_id} is {draft.status} and cannot be edited")
     return updated

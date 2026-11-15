@@ -29,9 +29,33 @@ class Destination:
     name: str | None = None
     url: str | None = None
     mode: str | None = None  # twitter: "manual" (default) or "api"
+    audience: "Audience | None" = None
+
+
+@dataclass(frozen=True)
+class Audience:
+    """Who follows a destination, and what they get."""
+
+    description: str = ""  # shown to the reviewer; read by assisted drafting
+    include: tuple[str, ...] = ()  # package globs; empty: every package
+    exclude: tuple[str, ...] = ()
+    tone: str = ""
+    hashtags: tuple[str, ...] = ()
+    link_placement: str = "body"  # body | reply
+
+    def wants(self, package: str) -> bool:
+        from fnmatch import fnmatchcase
+
+        name = package.lower()
+        if self.include and not any(fnmatchcase(name, g.lower()) for g in self.include):
+            return False
+        return not any(fnmatchcase(name, g.lower()) for g in self.exclude)
 
 
 MODES = ("manual", "api")
+PLACEMENTS = ("body", "reply")
+# Destinations that can post a link as a reply to the post (manual X; Bluesky and Mastodon later).
+REPLY_CAPABLE = {"twitter", "bluesky", "mastodon"}
 
 
 @dataclass
@@ -260,8 +284,43 @@ def _destinations(value: Any) -> dict[str, Destination]:
             name=_optional_str(raw.get("name")),
             url=url.strip() if isinstance(url, str) else None,
             mode=mode,
+            audience=_audience(str(key), raw.get("audience"), mode),
         )
     return out
+
+
+def _audience(key: str, value: Any, mode: str | None) -> Audience | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ConfigError(f"destinations.{key}.audience must be a mapping")
+    packages = value.get("packages") or {}
+    if isinstance(packages, list):
+        packages = {"include": packages}
+    if not isinstance(packages, dict):
+        raise ConfigError(f"destinations.{key}.audience.packages must be a list or include/exclude lists")
+    placement = value.get("link_placement", "body")
+    if placement not in PLACEMENTS:
+        raise ConfigError(f"destinations.{key}.audience.link_placement must be body or reply")
+    if placement == "reply" and (key not in REPLY_CAPABLE or (key == "twitter" and mode == "api")):
+        raise ConfigError(f"destinations.{key} can't put the link in a reply; use link_placement: body")
+    tags = []
+    for tag in _strings(value.get("hashtags") or []):
+        clean = tag.strip().lstrip("#")
+        if not re.match(r"^\w{1,60}$", clean):
+            raise ConfigError(f"destinations.{key}.audience.hashtags: {tag!r} isn't a hashtag")
+        tags.append(clean)
+    for field_name in ("description", "tone"):
+        if not isinstance(value.get(field_name, ""), str):
+            raise ConfigError(f"destinations.{key}.audience.{field_name} must be text")
+    return Audience(
+        description=value.get("description", "").strip(),
+        include=tuple(_strings(packages.get("include") or [])),
+        exclude=tuple(_strings(packages.get("exclude") or [])),
+        tone=value.get("tone", "").strip(),
+        hashtags=tuple(tags),
+        link_placement=placement,
+    )
 
 
 def _github(value: Any) -> GitHubSource | None:

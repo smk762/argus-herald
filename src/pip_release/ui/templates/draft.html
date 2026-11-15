@@ -22,6 +22,14 @@
   <p class="note">{{ draft.note }}</p>
   {% endif %}
   {% set blocked = gate_error or hits or media_problems %}
+  {% if audience and (audience.description or audience.tone or audience.include or audience.link_placement == "reply") %}
+  <aside class="audience" aria-label="Audience">
+    {% if audience.description %}<p><strong>Audience:</strong> {{ audience.description }}</p>{% endif %}
+    {% if audience.tone %}<p><strong>Tone:</strong> {{ audience.tone }}</p>{% endif %}
+    {% if audience.include %}<p><strong>Packages:</strong> {{ audience.include|join(", ") }}{% if audience.exclude %}, not {{ audience.exclude|join(", ") }}{% endif %}</p>{% endif %}
+    {% if audience.link_placement == "reply" %}<p><strong>Link:</strong> goes in a reply, so the post itself stays visual-first.</p>{% endif %}
+  </aside>
+  {% endif %}
   {% if gate_error %}
   <section class="privacy privacy-bad" role="alert">
     <h2>Privacy gate unavailable</h2>
@@ -70,6 +78,7 @@
     </p>
     <label for="handoff-text">Text</label>
     <textarea id="handoff-text" readonly rows="6">{{ handoff.text }}</textarea>
+    {% if draft.reply %}<p class="hint">After you post it and paste its URL below, you'll get a second step to post the link as a reply.</p>{% endif %}
     {% include "attach_list.html" %}
     {% include "confirm_form.html" %}
   </section>
@@ -85,6 +94,16 @@
     {% include "attach_list.html" %}
     {% include "confirm_form.html" %}
   </section>
+  {% elif reply_url and draft.status == "published" %}
+  <section class="handoff">
+    <h2>Post the link as a reply</h2>
+    <p>Your post is up. Reply to it with the link so the post itself stays clean.</p>
+    <p class="actions">
+      <a class="button primary" href="{{ reply_url }}" target="_blank" rel="noopener noreferrer">Open reply in X</a>
+      <button type="button" class="copy" data-copy="reply-text">Copy reply</button>
+    </p>
+    <textarea id="reply-text" readonly rows="2">{{ draft.reply }}</textarea>
+  </section>
   {% elif can_add_url %}
   <section class="handoff">
     <h2>Add the post URL</h2>
@@ -99,6 +118,10 @@
     <input id="title" name="title" value="{{ draft.title }}" maxlength="300" {% if not can_edit %}readonly{% endif %}>
     {% else %}
     <input type="hidden" name="title" value="{{ draft.title }}">
+    {% endif %}
+    {% if draft.reply or (audience and audience.link_placement == "reply") %}
+    <label for="reply">Reply (posted under the post)</label>
+    <textarea id="reply" name="reply" rows="2" {% if not can_edit %}readonly{% endif %}>{{ draft.reply }}</textarea>
     {% endif %}
     <label for="body">Post</label>
     <textarea id="body" name="body" rows="14" {% if not can_edit %}readonly{% endif %}>{{ draft.body }}</textarea>

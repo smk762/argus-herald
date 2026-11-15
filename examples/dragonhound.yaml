@@ -27,10 +27,14 @@ destinations:
     enabled: true
     username: dragonhound3
     mode: manual
+    audience:
+      link_placement: reply   # the post stays visual-first; the link goes in a self-reply
   patreon:
     enabled: true
     name: AtlasRealms
     url: https://www.patreon.com/c/AtlasRealms
+    audience:
+      packages: [argus-atlas, argus-realms]   # only digests and posts that touch these
   discord:
     enabled: false
   telegram:

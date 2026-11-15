@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     note TEXT,
     external_id TEXT,
     error TEXT,
+    reply TEXT NOT NULL DEFAULT '',
     UNIQUE (post_key, platform)
 );
 """
@@ -147,6 +148,9 @@ class Store:
         self.conn.executescript(_SCHEMA)
         self._migrate_drafts()
         self.conn.executescript(_DRAFTS.format(name="drafts"))
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(drafts)")}
+        if "reply" not in columns:
+            self.conn.execute("ALTER TABLE drafts ADD COLUMN reply TEXT NOT NULL DEFAULT ''")
 
     def _migrate_sources(self) -> None:
         """Add a source column to projects and seen (keys were PyPI names only)."""
@@ -255,6 +259,7 @@ class Store:
         kind: str = "release",
         post_key: str | None = None,
         subject: str = "",
+        reply: str = "",
     ) -> tuple[int, bool]:
         """Insert a pending draft. Returns (id, created); an existing (post_key, platform) is kept."""
         if post_key is None:
@@ -265,11 +270,11 @@ class Store:
         cur = self.conn.execute(
             """
             INSERT OR IGNORE INTO drafts (
-                kind, post_key, subject, project, version, platform, title, body, link,
+                kind, post_key, subject, project, version, platform, title, body, link, reply,
                 status, edited, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
             """,
-            (kind, post_key, subject, project, version, platform, title, body, link, now, now),
+            (kind, post_key, subject, project, version, platform, title, body, link, reply, now, now),
         )
         self.conn.commit()
         if cur.rowcount:
@@ -361,11 +366,12 @@ class Store:
         sets = ", ".join(f"{key} = ?" for key in fields)
         self.conn.execute(f"UPDATE digests SET {sets} WHERE id = ?", (*fields.values(), digest_id))
 
-    def refresh_text(self, draft_id: int, title: str, body: str) -> bool:
+    def refresh_text(self, draft_id: int, title: str, body: str, reply: str = "") -> bool:
         """Replace a pending draft's text only if a person hasn't edited it."""
         cur = self.conn.execute(
-            "UPDATE drafts SET title = ?, body = ?, updated_at = ? WHERE id = ? AND status = 'pending' AND edited = 0",
-            (title, body, _now(), draft_id),
+            "UPDATE drafts SET title = ?, body = ?, reply = ?, updated_at = ? "
+            "WHERE id = ? AND status = 'pending' AND edited = 0",
+            (title, body, reply, _now(), draft_id),
         )
         return bool(cur.rowcount)
 
@@ -575,17 +581,12 @@ class Store:
         return changed
 
     def update_text(
-        self, draft_id: int, title: str, body: str, from_statuses: tuple[str, ...]
+        self, draft_id: int, title: str, body: str, from_statuses: tuple[str, ...], reply: str | None = None
     ) -> Draft | None:
-        return self.transition(
-            draft_id,
-            from_statuses,
-            "pending",
-            title=title,
-            body=body,
-            edited=1,
-            error=None,
-        )
+        fields: dict[str, object] = {"title": title, "body": body, "edited": 1, "error": None}
+        if reply is not None:
+            fields["reply"] = reply
+        return self.transition(draft_id, from_statuses, "pending", **fields)
 
 
 def _draft(row: sqlite3.Row) -> Draft:
@@ -607,4 +608,5 @@ def _draft(row: sqlite3.Row) -> Draft:
         kind=row["kind"],
         post_key=row["post_key"],
         subject=row["subject"],
+        reply=row["reply"],
     )

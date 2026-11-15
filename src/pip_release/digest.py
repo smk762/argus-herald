@@ -327,7 +327,6 @@ def build_digest(
     included = [r for r in store.releases(digest_id=digest_id) if not r["excluded"]]
     if not included:
         return [], "no releases in this window; nothing drafted"
-    picks = notable(store, included)
     link = page_url(settings, window.slug)
     subject = f"Digest {period_label(window)}"
     targets = [p for p in publishers if not settings.platforms or p.id in settings.platforms]
@@ -335,13 +334,19 @@ def build_digest(
     existing = {d.platform: d for d in store.list_drafts(post_key=post_key)}
     created: list[int] = []
     for publisher in targets:
-        rendered = render_for(publisher, lambda n: social_text(window, included, picks, n), link, subject)
+        # Each destination's post covers only the packages its audience wants.
+        mine = [r for r in included if publisher.wants([r["project"]])]
+        if not mine:
+            continue
+        picks = notable(store, mine)
+        rendered = render_for(publisher, lambda n, mine=mine, picks=picks: social_text(window, mine, picks, n), link, subject)
+        rendered, reply = publisher.shape(rendered, link)
         if publisher.id in existing:
-            store.refresh_text(existing[publisher.id].id, rendered.title, rendered.body)
+            store.refresh_text(existing[publisher.id].id, rendered.title, rendered.body, reply)
             continue
         draft_id, made = store.add_draft(
             kind="digest", post_key=post_key, subject=subject, platform=publisher.id,
-            title=rendered.title, body=rendered.body, link=link,
+            title=rendered.title, body=rendered.body, link=link, reply=reply,
         )
         if made:
             created.append(draft_id)
@@ -362,11 +367,13 @@ def promote(
     post_key = f"headline:{row['project']}=={row['version']}"
     created: list[int] = []
     for publisher in publishers:
-        rendered = publisher.render(release)
+        if not publisher.wants([row["project"]]):
+            continue
+        rendered, reply = publisher.shape(publisher.render(release), row["url"])
         draft_id, made = store.add_draft(
             kind="headline", post_key=post_key, subject=f"{row['project']} {row['version']}",
             project=row["project"], version=row["version"], platform=publisher.id,
-            title=rendered.title, body=rendered.body, link=row["url"],
+            title=rendered.title, body=rendered.body, link=row["url"], reply=reply,
         )
         if made:
             created.append(draft_id)
