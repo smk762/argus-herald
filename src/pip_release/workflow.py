@@ -330,7 +330,13 @@ def close_digests(
             gate: Gate | None = load_gate(config.privacy)
         except GateUnavailable:
             gate = None
-        ids, status = build_digest(store, settings, publishers, digest_id, gate)
+        from pip_release.drafting import configured_backend
+        from pip_release.http import HttpClient
+
+        backend, warning = configured_backend(config.drafting, os.environ, HttpClient())
+        ids, status = build_digest(store, settings, publishers, digest_id, gate, backend)
+        if warning:
+            status = f"{status}; {warning}"
         events.append(PollEvent("digest", f"digest {window.start}", str(window.period_to), detail=status, draft_ids=ids))
     return events
 

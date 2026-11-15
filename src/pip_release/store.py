@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     external_id TEXT,
     error TEXT,
     reply TEXT NOT NULL DEFAULT '',
+    drafted_by TEXT NOT NULL DEFAULT 'template',
     UNIQUE (post_key, platform)
 );
 """
@@ -151,6 +152,8 @@ class Store:
         columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(drafts)")}
         if "reply" not in columns:
             self.conn.execute("ALTER TABLE drafts ADD COLUMN reply TEXT NOT NULL DEFAULT ''")
+        if "drafted_by" not in columns:
+            self.conn.execute("ALTER TABLE drafts ADD COLUMN drafted_by TEXT NOT NULL DEFAULT 'template'")
 
     def _migrate_sources(self) -> None:
         """Add a source column to projects and seen (keys were PyPI names only)."""
@@ -260,6 +263,7 @@ class Store:
         post_key: str | None = None,
         subject: str = "",
         reply: str = "",
+        drafted_by: str = "template",
     ) -> tuple[int, bool]:
         """Insert a pending draft. Returns (id, created); an existing (post_key, platform) is kept."""
         if post_key is None:
@@ -270,11 +274,11 @@ class Store:
         cur = self.conn.execute(
             """
             INSERT OR IGNORE INTO drafts (
-                kind, post_key, subject, project, version, platform, title, body, link, reply,
+                kind, post_key, subject, project, version, platform, title, body, link, reply, drafted_by,
                 status, edited, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
             """,
-            (kind, post_key, subject, project, version, platform, title, body, link, reply, now, now),
+            (kind, post_key, subject, project, version, platform, title, body, link, reply, drafted_by, now, now),
         )
         self.conn.commit()
         if cur.rowcount:
@@ -366,12 +370,16 @@ class Store:
         sets = ", ".join(f"{key} = ?" for key in fields)
         self.conn.execute(f"UPDATE digests SET {sets} WHERE id = ?", (*fields.values(), digest_id))
 
-    def refresh_text(self, draft_id: int, title: str, body: str, reply: str = "") -> bool:
-        """Replace a pending draft's text only if a person hasn't edited it."""
+    def refresh_text(
+        self, draft_id: int, title: str, body: str, reply: str = "", drafted_by: str = "template",
+        note: str | None = None, *, force: bool = False,
+    ) -> bool:
+        """Replace a pending draft's text only if a person hasn't edited it (or force)."""
+        edited = "" if force else " AND edited = 0"
         cur = self.conn.execute(
-            "UPDATE drafts SET title = ?, body = ?, reply = ?, updated_at = ? "
-            "WHERE id = ? AND status = 'pending' AND edited = 0",
-            (title, body, reply, _now(), draft_id),
+            "UPDATE drafts SET title = ?, body = ?, reply = ?, drafted_by = ?, note = ?, edited = 0, updated_at = ? "
+            f"WHERE id = ? AND status = 'pending'{edited}",
+            (title, body, reply, drafted_by, note, _now(), draft_id),
         )
         return bool(cur.rowcount)
 
@@ -541,6 +549,9 @@ class Store:
     def remove_media(self, media_id: int) -> bool:
         return bool(self.conn.execute("DELETE FROM draft_media WHERE id = ?", (media_id,)).rowcount)
 
+    def set_note(self, draft_id: int, note: str | None) -> None:
+        self.conn.execute("UPDATE drafts SET note = ? WHERE id = ?", (note, draft_id))
+
     def accept_hit(self, draft_id: int, key: str, note: str) -> None:
         self.conn.execute(
             "INSERT INTO gate_accepts (draft_id, key, note, accepted_at) VALUES (?, ?, ?, ?) "
@@ -609,4 +620,5 @@ def _draft(row: sqlite3.Row) -> Draft:
         post_key=row["post_key"],
         subject=row["subject"],
         reply=row["reply"],
+        drafted_by=row["drafted_by"],
     )

@@ -42,6 +42,7 @@ class Audience:
     tone: str = ""
     hashtags: tuple[str, ...] = ()
     link_placement: str = "body"  # body | reply
+    emoji: bool = False  # whether assisted drafts may use emoji
 
     def wants(self, package: str) -> bool:
         from fnmatch import fnmatchcase
@@ -74,10 +75,28 @@ class Config:
     digest: "DigestSettings | None" = None  # None: one draft per release (per_release mode)
     github: "GitHubSource | None" = None
     media_dir: Path | None = None  # where attachments and their cleaned copies live
+    drafting: "DraftingSettings" = field(default_factory=lambda: DraftingSettings())
 
     @property
     def media_root(self) -> Path:
         return self.media_dir or self.store_path.parent / "media"
+
+
+@dataclass(frozen=True)
+class DraftingSettings:
+    """Who writes the first draft of digest and headline posts. A person always reviews it."""
+
+    backend: str = "template"  # template | openai_compatible | anthropic
+    model: str = ""  # default model; env PIP_RELEASE_LLM_MODEL wins for openai_compatible
+    models: tuple[tuple[str, str], ...] = ()  # per task: (("digest", "..."), ("headline", "..."))
+    timeout: int = 90
+    effort: str = "low"  # anthropic only
+
+    def model_for(self, task: str, fallback: str = "") -> str:
+        return dict(self.models).get(task) or self.model or fallback
+
+
+DRAFTING_BACKENDS = ("template", "openai_compatible", "anthropic")
 
 
 @dataclass(frozen=True)
@@ -154,6 +173,7 @@ def load_config(path: Path) -> Config:
     if unknown:
         raise ConfigError(f"sources name platforms that aren't in destinations: {', '.join(unknown)}")
     github = _github(data.get("github"))
+    drafting = _drafting(data.get("drafting"))
     media = data.get("media") or {}
     if not isinstance(media, dict) or not isinstance(media.get("dir", ""), str):
         raise ConfigError("media must be a mapping with an optional dir path")
@@ -163,6 +183,7 @@ def load_config(path: Path) -> Config:
         if unknown:
             raise ConfigError(f"digest.platforms aren't in destinations: {', '.join(unknown)}")
     return Config(
+        drafting=drafting,
         media_dir=Path(media["dir"]).expanduser() if media.get("dir") else None,
         github=github,
         digest=digest,
@@ -320,7 +341,35 @@ def _audience(key: str, value: Any, mode: str | None) -> Audience | None:
         tone=value.get("tone", "").strip(),
         hashtags=tuple(tags),
         link_placement=placement,
+        emoji=bool(value.get("emoji", False)),
     )
+
+
+def _drafting(value: Any) -> DraftingSettings:
+    if value is None:
+        return DraftingSettings()
+    if not isinstance(value, dict):
+        raise ConfigError("drafting must be a mapping")
+    backend = value.get("backend", "template")
+    if backend not in DRAFTING_BACKENDS:
+        raise ConfigError(f"drafting.backend must be one of {', '.join(DRAFTING_BACKENDS)}")
+    models = value.get("models") or {}
+    if not isinstance(models, dict) or not all(isinstance(v, str) for v in models.values()):
+        raise ConfigError("drafting.models maps a task (digest, headline) to a model name")
+    unknown = set(models) - {"digest", "headline"}
+    if unknown:
+        raise ConfigError(f"drafting.models: unknown tasks {', '.join(sorted(unknown))}")
+    timeout = value.get("timeout", 90)
+    if not isinstance(timeout, int) or not 5 <= timeout <= 600:
+        raise ConfigError("drafting.timeout is seconds, 5 to 600")
+    effort = value.get("effort", "low")
+    if effort not in ("low", "medium", "high", "xhigh", "max"):
+        raise ConfigError("drafting.effort must be low, medium, high, xhigh or max")
+    model = value.get("model", "")
+    if not isinstance(model, str):
+        raise ConfigError("drafting.model must be a model name")
+    return DraftingSettings(backend=backend, model=model.strip(), models=tuple(sorted(models.items())),
+                            timeout=timeout, effort=effort)
 
 
 def _github(value: Any) -> GitHubSource | None:

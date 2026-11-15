@@ -438,3 +438,12 @@ def test_reply_is_editable_and_x_shows_the_reply_step(tmp_path):
     done = client.post("/drafts/1/confirm", data={"csrf": _csrf(published.text), "url": "https://x.com/dragonhound3/status/55"},
                        follow_redirects=True)
     assert "Post the link as a reply" in done.text and "in_reply_to=55" in done.text
+
+
+def test_regenerate_is_only_for_digest_and_headline_drafts(tmp_path):
+    app, config = _app(tmp_path)
+    client = TestClient(app)
+    page = client.get("/drafts/1")
+    assert "/drafts/1/regenerate" not in page.text  # a release draft has no Regenerate button
+    result = client.post("/drafts/1/regenerate", data={"csrf": _csrf(page.text)}, follow_redirects=True)
+    assert "Only digest and headline drafts can be regenerated" in result.text

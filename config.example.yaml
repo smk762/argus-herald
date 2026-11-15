@@ -57,6 +57,11 @@ privacy:
 #   site_url: https://example.org/updates/
 #   site_dir: ../my-site/src/content/updates   # herald writes <window end>-digest.md here, draft: true
 
+# Optional: a model writes the first draft of digest and headline posts.
+# drafting:
+#   backend: openai_compatible   # with PIP_RELEASE_LLM_BASE_URL and PIP_RELEASE_LLM_MODEL in .env
+#   # backend: anthropic         # pip install 'pip-release[claude]'; model defaults to claude-opus-5-5
+
 poll:
   interval_seconds: 1800
 
