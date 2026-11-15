@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from importlib.metadata import entry_points
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
-from pip_release.config import Config, Destination
+from pip_release.config import Audience, Config, Destination
 from pip_release.http import Http, send_json
 from pip_release.media import PATREON_LIMITS, X_LIMITS, MediaLimits
 from pip_release.models import Draft, Post, PublishResult, Release, Rendered
@@ -28,10 +29,47 @@ class Publisher(ABC):
     manual: bool = False
     # What a post can carry. None: this publisher can't attach media.
     media_limits: MediaLimits | None = None
+    # Hashtags appended from the audience profile, at most this many.
+    max_hashtags: int = 0
+    audience: Audience | None = None
 
     def configure(self, destination: Destination | None) -> "Publisher":
-        """Return a publisher set up for this destination. Most need nothing."""
+        """Return a publisher set up for this destination."""
+        self.audience = destination.audience if destination else None
         return self
+
+    def wants(self, packages: list[str]) -> bool:
+        """Whether this destination's audience wants content about any of these packages.
+        Content with no package (a video, a build note) goes everywhere."""
+        if self.audience is None or not packages:
+            return True
+        return any(self.audience.wants(p) for p in packages)
+
+    def fits(self, title: str, body: str) -> bool:
+        try:
+            self.validate(title, body)
+        except ValueError:
+            return False
+        return True
+
+    def shape(self, rendered: Rendered, link: str) -> tuple[Rendered, str]:
+        """Apply the audience: move the link to a reply, add hashtags while they fit.
+        Returns (rendered, reply text)."""
+        audience = self.audience
+        if audience is None:
+            return rendered, ""
+        body, reply = rendered.body, ""
+        if audience.link_placement == "reply" and link and link in body:
+            body = re.sub(r"\n*" + re.escape(link) + r"\s*", "\n", body).strip()
+            reply = link
+        tags = [f"#{t}" for t in audience.hashtags[: self.max_hashtags]]
+        while tags:
+            candidate = f"{body}\n\n{' '.join(tags)}"
+            if self.fits(rendered.title, candidate):
+                body = candidate
+                break
+            tags.pop()
+        return Rendered(title=rendered.title, body=body), reply
 
     def handoff_url(self, draft: Draft) -> str | None:
         """Where a person posts a manual draft, if the platform has a prefilled link."""
@@ -85,6 +123,7 @@ class TwitterPublisher(Publisher):
     label = "Twitter / X"
     limit = 280
     media_limits = X_LIMITS
+    max_hashtags = 2
 
     def __init__(self, mode: str = "manual") -> None:
         self.mode = mode
@@ -94,7 +133,16 @@ class TwitterPublisher(Publisher):
 
     def configure(self, destination: Destination | None) -> "TwitterPublisher":
         mode = (destination.mode if destination else None) or "manual"
-        return self if mode == self.mode else TwitterPublisher(mode)
+        publisher = self if mode == self.mode else TwitterPublisher(mode)
+        publisher.audience = destination.audience if destination else None
+        return publisher
+
+    def reply_url(self, draft: Draft) -> str | None:
+        """Intent for the self-reply that carries the link, once the post's URL is known."""
+        match = re.search(r"/status/(\d+)", draft.external_id or "")
+        if not draft.reply or not match:
+            return None
+        return f"https://x.com/intent/post?in_reply_to={match.group(1)}&text=" + quote(draft.reply, safe="")
 
     def handoff_url(self, draft: Draft) -> str | None:
         return intent_url(draft.body)
@@ -197,6 +245,7 @@ class TelegramPublisher(Publisher):
     id = "telegram"
     label = "Telegram"
     limit = 4096
+    max_hashtags = 3
 
     def render(self, release: Release) -> Rendered:
         head = _headline(release)

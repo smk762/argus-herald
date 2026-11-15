@@ -17,7 +17,7 @@ STATUSES = (PENDING, APPROVED, REJECTED, PUBLISHED, FAILED, HANDED_OFF, PUBLISHI
 # What a draft announces. `release` is one PyPI version; the rest are posts not tied to one.
 KINDS = ("release", "digest", "headline", "demo", "note", "video", "page")
 POST_KINDS = ("demo", "note", "video", "page")
-DRAFT_FIELDS = {"title", "body", "edited", "note", "external_id", "error"}
+DRAFT_FIELDS = {"title", "body", "reply", "edited", "note", "external_id", "error"}
 
 
 @dataclass(frozen=True)
@@ -75,6 +75,7 @@ class Draft:
     kind: str = "release"
     post_key: str = ""
     subject: str = ""
+    reply: str = ""  # posted as a reply to the post (the link, when the audience wants it there)
 
     @property
     def label(self) -> str:

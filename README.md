@@ -168,6 +168,29 @@ sources:
 
 Feeds are read on every `poll`, so the watcher picks them up too. Drafts from a feed are keyed by the item's id, so a feed entry is never drafted twice.
 
+## Audiences
+
+Each destination can describe who follows it and what they should get:
+
+```yaml
+destinations:
+  twitter:
+    audience:
+      description: Crypto and AI-image people
+      tone: plain and specific, visual first
+      hashtags: [gis]               # appended while they fit; X takes at most 2
+      link_placement: reply         # body (default) or reply
+  patreon:
+    audience:
+      packages: [argus-atlas, argus-realms]   # or {include: [...], exclude: [...]}, globs allowed
+```
+
+- **Packages:** a destination only gets digests, headline posts and per-release drafts about packages it wants. A digest window with nothing for that audience produces no draft there, and a mixed digest is counted and summarised for that audience's packages only. Posts without a package, such as videos and build notes, go everywhere.
+- **`link_placement: reply`:** keeps the post visual-first. The link moves into the draft's **Reply** field. On X, once you confirm the post's URL, herald offers **Open reply in X**, a reply intent under your post with the link filled in. Bluesky and Mastodon will post the reply themselves. Only those three can use `reply`.
+- **`description` and `tone`:** shown on each draft for the reviewer, and passed to assisted drafting when that lands.
+
+`pip-release platforms` prints each audience.
+
 ## Media
 
 Any draft can carry images, GIFs or short clips, and each one needs alt text. On a draft's review page, upload a file or pick one from the media folder (`.pip-release/media/` by default, or `media: {dir: …}`), and optionally attach it to every draft of the same post. From the shell:

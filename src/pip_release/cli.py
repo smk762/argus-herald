@@ -357,6 +357,20 @@ def cmd_platforms(
         account = f"  {who}" if who else ""
         how = "  manual" if publisher.manual and destination.enabled else ""
         print(f"{publisher.label:<16} {state:<10}{account}{how}{extra}")
+        audience = destination.audience
+        if audience:
+            bits = []
+            if audience.include or audience.exclude:
+                bits.append("packages " + ", ".join(audience.include or ("*",)) + (f" not {', '.join(audience.exclude)}" if audience.exclude else ""))
+            if audience.link_placement == "reply":
+                bits.append("link in reply")
+            if audience.hashtags:
+                bits.append(" ".join(f"#{t}" for t in audience.hashtags))
+            if audience.tone:
+                bits.append(f"tone: {audience.tone}")
+            if audience.description:
+                bits.append(audience.description)
+            print(f"{'':<16} audience: {'; '.join(bits)}")
     return 0
 
 
@@ -718,9 +732,14 @@ def cmd_publish(
 
 
 def cmd_confirm(store: Store, draft_id: int, url: str | None = None) -> int:
+    from pip_release.platforms import TwitterPublisher
+
     draft = confirm(store, draft_id, url)
     where = f" at {draft.external_id}" if draft.external_id else ""
     print(f"Marked {draft_id} published{where}.")
+    reply = TwitterPublisher().reply_url(draft) if draft.platform == "twitter" else None
+    if reply:
+        print(f"Now post the link as a reply:\n{reply}")
     if not draft.external_id:
         print(
             f"No post URL recorded. Add it later with: pip-release confirm {draft_id} --url <post url>",
@@ -967,7 +986,8 @@ def _print_draft(draft: Draft, media: list[dict] | None = None) -> None:
 def _handoff(draft: Draft, destination: Destination | None, publisher: Publisher | None = None) -> str:
     link = publisher.handoff_url(draft) if publisher else None
     if link:
-        return f"Open in {publisher.label}:\n{link}\n\nText:\n{draft.body}\n"
+        then = ("\nThen confirm with --url; you'll get a link to post the reply:\n" + draft.reply + "\n") if draft.reply else ""
+        return f"Open in {publisher.label}:\n{link}\n\nText:\n{draft.body}\n{then}"
     where = (destination.url if destination and destination.url else "https://www.patreon.com")
     title = draft.title or draft.label
     return (

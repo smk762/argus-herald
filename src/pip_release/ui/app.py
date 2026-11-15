@@ -530,8 +530,9 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
         return result.detail
     title = str(form.get("title") if form.get("title") is not None else draft.title)
     body = str(form.get("body") if form.get("body") is not None else draft.body)
-    if title != draft.title or body != draft.body:
-        draft = edit_draft(store, publisher, draft.id, title, body)
+    reply = str(form.get("reply")).strip() if form.get("reply") is not None else draft.reply
+    if title != draft.title or body != draft.body or reply != draft.reply:
+        draft = edit_draft(store, publisher, draft.id, title, body, reply)
     if action == "save":
         return "Saved. This draft is pending approval."
     approve(store, publisher, draft.id, note, gate=_gate(state))
@@ -562,6 +563,8 @@ def _draft_context(config: Config, draft: Draft, publisher: Publisher | None) ->
         "can_reject": draft.status not in {"rejected", "published"},
         "can_confirm": draft.status == HANDED_OFF,
         "can_add_url": draft.status == "published" and not draft.external_id and bool(publisher and publisher.manual),
+        "audience": publisher.audience if publisher else None,
+        "reply_url": publisher.reply_url(draft) if publisher and hasattr(publisher, "reply_url") else None,
         "handoff": handoff,
     }
 

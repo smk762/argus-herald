@@ -417,3 +417,24 @@ def test_media_upload_alt_serve_and_handoff(tmp_path):
     published = client.post("/drafts/1/publish", data={"csrf": _csrf(client.get("/drafts/1").text)}, follow_redirects=True)
     assert "Attach these files" in published.text and f'href="/media/{media_id}" download="my-photo.jpg"' in published.text
     assert client.get("/media/99999").status_code == 404
+
+
+def test_reply_is_editable_and_x_shows_the_reply_step(tmp_path):
+    from pip_release.config import Audience
+
+    app, config = _app(tmp_path)
+    store = Store(config.store_path)
+    store.conn.execute("UPDATE drafts SET reply = 'https://pypi.org/project/argus-atlas/0.2.0/' WHERE id = 1")
+    store.close()
+    client = TestClient(app)
+    page = client.get("/drafts/1")
+    assert 'name="reply"' in page.text
+    saved = client.post("/drafts/1/save", data={"csrf": _csrf(page.text), "title": "", "body": "Painted coastlines",
+                                                "reply": "More: https://example.org/a"}, follow_redirects=True)
+    assert "More: https://example.org/a" in saved.text
+    client.post("/drafts/1/approve", data={"csrf": _csrf(saved.text)}, follow_redirects=True)
+    published = client.post("/drafts/1/publish", data={"csrf": _csrf(client.get("/drafts/1").text)}, follow_redirects=True)
+    assert "a second step to post the link as a reply" in published.text
+    done = client.post("/drafts/1/confirm", data={"csrf": _csrf(published.text), "url": "https://x.com/dragonhound3/status/55"},
+                       follow_redirects=True)
+    assert "Post the link as a reply" in done.text and "in_reply_to=55" in done.text

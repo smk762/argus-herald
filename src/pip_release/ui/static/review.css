@@ -281,3 +281,6 @@ select { font: inherit; padding: 0.35rem 0.5rem; border: 1px solid var(--line); 
 .thumb-video { display: inline-flex; align-items: center; justify-content: center; height: 68px; color: var(--muted); }
 .media-body { flex: 1; min-width: 220px; }
 .attach h3 { font-size: 1rem; margin-bottom: 0.2rem; }
+
+.audience { margin: 0.8rem 0; padding: 0.5rem 0.9rem; border-left: 3px solid var(--teal); background: #f3f8f6; font-size: 0.92rem; }
+.audience p { margin: 0.2rem 0; }
