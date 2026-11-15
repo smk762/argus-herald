@@ -16,6 +16,7 @@ from pip_release.workflow import (
     BASELINE_KEY,
     ReviewError,
     approve,
+    confirm,
     desktop_notice,
     poll,
     publish_draft,
@@ -180,7 +181,7 @@ def test_publish_requires_approval_and_patreon_is_a_handoff(tmp_path):
         "X_ACCESS_TOKEN": "t",
         "X_ACCESS_TOKEN_SECRET": "ts",
     }
-    posted = publish_draft(store, TwitterPublisher(), store.get(twitter.id), env, http)
+    posted = publish_draft(store, TwitterPublisher("api"), store.get(twitter.id), env, http)
     assert posted.external_id == "99"
     assert store.get(twitter.id).status == PUBLISHED
     method, url, _body, headers = http.calls[-1]
@@ -321,3 +322,61 @@ def test_reject_pending_only_touches_pending_rows(tmp_path):
     assert statuses[ids[0]] == ("rejected", "stale backlog")
     assert statuses[ids[2]] == (APPROVED, None)
     store.close()
+
+
+def _approved_twitter(tmp_path):
+    cfg = config(tmp_path)
+    store = Store(cfg.store_path)
+    http = FakeHttp(routes("0.1.0"))
+    poll(cfg, store, http, publishers())
+    http.payloads = routes("0.1.0", "0.2.0")
+    poll(cfg, store, http, publishers())
+    draft = next(d for d in store.list_drafts() if d.platform == "twitter")
+    approve(store, TwitterPublisher(), draft.id, None)
+    return store, http, draft
+
+
+def test_manual_x_hands_off_without_calling_the_api(tmp_path):
+    store, http, draft = _approved_twitter(tmp_path)
+    calls = len(http.calls)
+    result = publish_draft(store, TwitterPublisher(), store.get(draft.id), {}, http)
+    assert result.handed_off and len(http.calls) == calls
+    assert store.get(draft.id).status == HANDED_OFF
+    link = TwitterPublisher().handoff_url(store.get(draft.id))
+    assert link.startswith("https://x.com/intent/post?text=argus-atlas%200.2.0")
+    assert "%2F%2Fpypi.org" in link
+
+    confirmed = confirm(store, draft.id, "https://twitter.com/dragonhound3/status/1234567890?s=20")
+    assert confirmed.status == PUBLISHED
+    assert confirmed.external_id == "https://x.com/dragonhound3/status/1234567890"
+    store.close()
+
+
+def test_confirm_rejects_bad_post_urls_and_url_can_be_added_later(tmp_path):
+    store, http, draft = _approved_twitter(tmp_path)
+    publish_draft(store, TwitterPublisher(), store.get(draft.id), {}, http)
+    for bad in ("http://x.com/a/status/1", "https://evil.example/a/status/1", "https://x.com/a/likes"):
+        with pytest.raises(ReviewError):
+            confirm(store, draft.id, bad)
+    assert store.get(draft.id).status == HANDED_OFF
+    confirm(store, draft.id)
+    assert store.get(draft.id).external_id is None
+    later = confirm(store, draft.id, "https://x.com/dragonhound3/status/42")
+    assert later.external_id == "https://x.com/dragonhound3/status/42"
+    with pytest.raises(ReviewError):
+        confirm(store, draft.id, "https://x.com/dragonhound3/status/43")
+    store.close()
+
+
+def test_twitter_mode_comes_from_the_destination(tmp_path):
+    from pip_release.config import Destination
+    from pip_release.platforms import configured_publishers
+
+    assert TwitterPublisher().configure(Destination(mode="api")).manual is False
+    assert TwitterPublisher().configure(None).manual is True
+    assert TwitterPublisher("api").missing_secrets({}) and not TwitterPublisher().missing_secrets({})
+    assert configured_publishers(config(tmp_path))["twitter"].manual is True
+    path = tmp_path / "bad.yaml"
+    path.write_text("pypi: {projects: [a]}\ndestinations:\n  twitter: {mode: auto}\n", encoding="utf-8")
+    with pytest.raises(Exception, match="mode must be one of"):
+        load_config(path)

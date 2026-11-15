@@ -11,6 +11,7 @@ destinations:
   twitter:
     enabled: true
     username: your-x-username
+    mode: manual  # Open in X link, posted by a person. `api` posts with the X API (billed per post).
   discord:
     enabled: false
   telegram:

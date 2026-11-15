@@ -25,6 +25,10 @@ class Destination:
     username: str | None = None
     name: str | None = None
     url: str | None = None
+    mode: str | None = None  # twitter: "manual" (default) or "api"
+
+
+MODES = ("manual", "api")
 
 
 @dataclass
@@ -184,11 +188,15 @@ def _destinations(value: Any) -> dict[str, Destination]:
         url = raw.get("url")
         if url is not None and not isinstance(url, str):
             raise ConfigError(f"destinations.{key}.url must be a string")
+        mode = raw.get("mode")
+        if mode is not None and mode not in MODES:
+            raise ConfigError(f"destinations.{key}.mode must be one of {', '.join(MODES)}")
         out[str(key)] = Destination(
             enabled=bool(raw.get("enabled", True)),
             username=_optional_str(raw.get("username")),
             name=_optional_str(raw.get("name")),
             url=url.strip() if isinstance(url, str) else None,
+            mode=mode,
         )
     return out
 

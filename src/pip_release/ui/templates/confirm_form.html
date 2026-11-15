@@ -1,0 +1,6 @@
+<form method="post" action="/drafts/{{ draft.id }}/confirm" class="confirm-form">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label for="post-url">Post URL{% if draft.platform != "twitter" %}, optional{% endif %}</label>
+  <input id="post-url" name="url" type="url" inputmode="url" placeholder="{% if draft.platform == 'twitter' %}https://x.com/user/status/123…{% else %}https://…{% endif %}">
+  <button type="submit" class="primary">{% if can_add_url %}Save URL{% else %}I published this on {{ label }}{% endif %}</button>
+</form>

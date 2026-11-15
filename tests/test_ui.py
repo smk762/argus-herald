@@ -225,3 +225,27 @@ def test_cli_refuses_a_public_ui_without_a_token(tmp_path, capsys):
 
 def store_body() -> str:
     return "argus-atlas 0.2.0 is out.\n\nhttps://pypi.org/project/argus-atlas/0.2.0/"
+
+
+def test_x_draft_hands_off_to_an_intent_link_and_records_the_post_url(tmp_path):
+    app, config = _app(tmp_path)
+    client = TestClient(app)
+    page = client.get("/drafts/1")
+    body = Store(config.store_path).get(1).body
+    client.post("/drafts/1/approve", data={"csrf": _csrf(page.text), "title": "", "body": body}, follow_redirects=True)
+    publish = client.post("/drafts/1/publish", data={"csrf": _csrf(client.get("/drafts/1").text)}, follow_redirects=True)
+    assert "ready to post on Twitter / X" in publish.text
+    assert 'href="https://x.com/intent/post?text=' in publish.text
+    assert 'data-copy="handoff-text"' in publish.text
+
+    bad = client.post("/drafts/1/confirm", data={"csrf": _csrf(publish.text), "url": "https://example.com/x"}, follow_redirects=True)
+    assert "https://x.com/&lt;user&gt;/status/&lt;id&gt;" in bad.text
+    good = client.post(
+        "/drafts/1/confirm",
+        data={"csrf": _csrf(bad.text), "url": "https://x.com/dragonhound3/status/777"},
+        follow_redirects=True,
+    )
+    assert "with its post URL" in good.text
+    store = Store(config.store_path)
+    assert (store.get(1).status, store.get(1).external_id) == ("published", "https://x.com/dragonhound3/status/777")
+    store.close()

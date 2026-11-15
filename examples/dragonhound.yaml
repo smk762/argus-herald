@@ -18,6 +18,7 @@ destinations:
   twitter:
     enabled: true
     username: dragonhound3
+    mode: manual
   patreon:
     enabled: true
     name: AtlasRealms

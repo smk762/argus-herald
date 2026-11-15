@@ -24,7 +24,7 @@ from pip_release.config import (
 )
 from pip_release.http import HttpClient, HttpError
 from pip_release.models import APPROVED, PENDING, Draft
-from pip_release.platforms import Publisher, load_publishers
+from pip_release.platforms import Publisher, configured_publishers, load_publishers
 from pip_release.pypi import ProfileUnavailable, discover_projects
 from pip_release.store import Store
 from pip_release.textutil import plain_to_html
@@ -79,7 +79,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
     publishers = _selected(config)
-    by_id = {item.id: item for item in load_publishers()}
+    by_id = configured_publishers(config)
     http = HttpClient()
     if args.command == "platforms":
         return cmd_platforms(config, by_id, os.environ)
@@ -106,7 +106,7 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
     if args.command == "publish":
         return cmd_publish(config, store, by_id, http, _ids(args, store), args.dry_run)
     if args.command == "confirm":
-        return cmd_confirm(store, args.id)
+        return cmd_confirm(store, args.id, args.url)
     raise ReviewError(f"Unknown command {args.command}")
 
 
@@ -171,7 +171,8 @@ def cmd_platforms(
         missing = publisher.missing_secrets(env) if destination.enabled else []
         extra = f"  missing {', '.join(missing)}" if missing else ""
         account = f"  {who}" if who else ""
-        print(f"{publisher.label:<16} {state:<10}{account}{extra}")
+        how = "  manual" if publisher.manual and destination.enabled else ""
+        print(f"{publisher.label:<16} {state:<10}{account}{how}{extra}")
     return 0
 
 
@@ -392,13 +393,20 @@ def cmd_publish(
             continue
         print(result.detail)
         if result.handed_off:
-            print(_handoff(store.get(draft_id) or draft, config.destinations.get(draft.platform)))
+            current = store.get(draft_id) or draft
+            print(_handoff(current, config.destinations.get(draft.platform), publisher))
     return 1 if failed else 0
 
 
-def cmd_confirm(store: Store, draft_id: int) -> int:
-    confirm(store, draft_id)
-    print(f"Marked {draft_id} published.")
+def cmd_confirm(store: Store, draft_id: int, url: str | None = None) -> int:
+    draft = confirm(store, draft_id, url)
+    where = f" at {draft.external_id}" if draft.external_id else ""
+    print(f"Marked {draft_id} published{where}.")
+    if not draft.external_id:
+        print(
+            f"No post URL recorded. Add it later with: pip-release confirm {draft_id} --url <post url>",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -489,13 +497,14 @@ def _parser() -> argparse.ArgumentParser:
     publish.add_argument("--approved", action="store_true", help="Every approved draft")
     publish.add_argument("--dry-run", action="store_true", help="Print the post and do not send it")
 
-    confirm_cmd = sub.add_parser("confirm", help="Mark a Patreon handoff as published")
+    confirm_cmd = sub.add_parser("confirm", help="Mark a manual handoff (X, Patreon) as published")
     confirm_cmd.add_argument("id", type=int)
+    confirm_cmd.add_argument("--url", help="The live post's URL, kept for analytics")
     return parser
 
 
 def _selected(config: Config) -> list[Publisher]:
-    known = {item.id: item for item in load_publishers()}
+    known = configured_publishers(config)
     selected: list[Publisher] = []
     for name, destination in config.destinations.items():
         if name not in known:
@@ -561,7 +570,10 @@ def _print_draft(draft: Draft) -> None:
         print(f"\nnote: {draft.note}")
 
 
-def _handoff(draft: Draft, destination: Destination | None) -> str:
+def _handoff(draft: Draft, destination: Destination | None, publisher: Publisher | None = None) -> str:
+    link = publisher.handoff_url(draft) if publisher else None
+    if link:
+        return f"Open in {publisher.label}:\n{link}\n\nText:\n{draft.body}\n"
     where = (destination.url if destination and destination.url else "https://www.patreon.com")
     title = draft.title or f"{draft.project} {draft.version}"
     return (
