@@ -352,14 +352,15 @@ def sync_broadcasts(metrics: Metrics, store: Store) -> str:
             "kind": "broadcast", "source": draft.platform, "project": draft.project, "version": draft.version,
             "at": draft.updated_at, "url": draft.external_id or f"draft:{draft.id}",
             "detail": json.dumps({"draft": draft.id, "kind": draft.kind, "subject": draft.label,
-                                  "text": draft.body[:500], "logged": False, "drafted_by": draft.drafted_by}),
+                                  "text": draft.body[:500], "logged": False, "drafted_by": draft.drafted_by,
+                                  "post": draft.post_key, "media": len(store.media(draft.id))}),
         })
     for row in store.logged_broadcasts():
         broadcasts.append({
             "kind": "broadcast", "source": row["platform"], "project": row["project"], "version": "",
             "at": row["at"], "url": row["url"],
             "detail": json.dumps({"logged": row["id"], "kind": row["kind"], "subject": row["subject"],
-                                  "text": row["text"][:500]}),
+                                  "text": row["text"][:500], "post": f"logged:{row['id']}", "media": 0}),
         })
     # Broadcasts are rebuilt from their sources, so edits and deletions carry through.
     with metrics.transaction():

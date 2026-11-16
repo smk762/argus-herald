@@ -110,7 +110,7 @@ def test_backend_config_and_urls(tmp_path):
 
 
 def test_anthropic_request_shape_and_refusal(monkeypatch):
-    import anthropic
+    anthropic = pytest.importorskip("anthropic")  # the optional claude extra
 
     calls = []
 

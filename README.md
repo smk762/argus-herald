@@ -127,6 +127,18 @@ Repos are the public, non-fork repos of `pypi.discover.github_owner` that start 
 
 The traffic endpoints only answer to an account with write access to the repo. A fine-grained token limited to those repos, with **Metadata: read** and **Administration: read**, works for traffic. GitHub is limiting stargazer lists to admins and collaborators, and with such a token they answer 403. That is reported as skipped, not as an error, and `gh_star_counts` still tracks stars per day. `--since 2026-11-01` keeps only PyPI download days from that date.
 
+### Dashboard
+
+`/dashboard` in the review UI (same sign-in) asks one question of the metrics: do announcements move adoption, and which platform and format does it best? It reads `metrics.sqlite` on this machine and nothing leaves it unless you export a CSV. The charts are inline SVG, with no CDN, in light and dark.
+
+- **Timeline:** PyPI downloads, GitHub views, unique visitors, clones, new stars and site visits on one shared time axis, each with a 7-day mean. Grey lines mark releases; coloured ones mark posts (hover for the text, click to open it). Linear or log scale, for the suite or one package.
+- **Followers** per platform.
+- **GitHub referrers:** unique visitors by source (X, Bluesky, Mastodon, Reddit, Hacker News, search, your own site, other), stacked.
+- **Broadcasts:** one row per post, with engagement at 24h and 7d and the change in downloads, views, stars and that platform's referrers. The change compares the 72 hours from the post with the median day of the 14 days before. These are associations, not effects; rows whose window overlaps another post are greyed out. Sort by any column; filter by platform, format, media, drafting backend, or herald vs logged by hand.
+- **Platforms by week:** posts, engagement, referrer uniques and follower change. Weeks start on the digest anchor's weekday (Monday by default); change it in the filters.
+
+Every table has a CSV link with the page's filters applied.
+
 ### Followers
 
 `collect` also records audience size per platform per day in `account_metrics`:
