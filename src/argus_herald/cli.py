@@ -909,7 +909,8 @@ def _release_ref(store: Store, ref: str):
     if "==" not in ref:
         raise ReviewError("Name a release as project==version")
     project, version = ref.split("==", 1)
-    row = store.release(project, version)
+    # A project that isn't on the PyPI list may still have a GitHub release (sources.github).
+    row = store.release(project, version) or store.release(project, version, source="github")
     if row is None:
         raise ReviewError(f"{ref} isn't a collected release (digest mode collects releases as they're seen)")
     return row
