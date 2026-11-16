@@ -67,5 +67,11 @@ export const PATHS = [
   "/digests",
   "/broadcasts",
   "/drafts/999",
+  "/dashboard",
+  "/dashboard?days=30&scale=log",
+  "/dashboard?days=365&project=argus-lens",
+  "/dashboard?platform=bluesky&sort=e7&dir=asc",
+  "/dashboard?kind=digest&media=yes&week=sun",
+  "/dashboard?logged=yes&drafted=openai_compatible",
   ...Array.from({ length: 12 }, (_, i) => `/drafts/${i + 1}`),
 ];

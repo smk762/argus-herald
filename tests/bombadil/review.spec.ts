@@ -208,6 +208,55 @@ export const reviewActions = actions(() => {
 
 export const jump = actions(() => PATHS.map((path) => goto(path)));
 
+
+// ---- dashboard -----------------------------------------------------------------------------
+
+const dash = extract((state) => {
+  const doc = state.document;
+  if (state.window.location.pathname !== "/dashboard") return null;
+  const broken = Array.from(doc.querySelectorAll("svg.chart path, svg.chart line, svg.chart text")).filter((el) =>
+    /NaN|undefined|Infinity/.test(
+      (el.getAttribute("d") ?? "") + (el.getAttribute("x1") ?? "") + (el.getAttribute("y1") ?? "") + (el.textContent ?? ""),
+    ),
+  ).length;
+  const tips = Array.from(doc.querySelectorAll<HTMLElement>("[data-crosshair]")).map((box) => {
+    const tip = box.querySelector<HTMLElement>(".tooltip");
+    return {
+      visible: tip !== null && !tip.hidden,
+      rows: tip ? tip.querySelectorAll(".tip-row").length : 0,
+      charts: box.querySelectorAll("svg.chart[data-values]").length,
+      date: tip?.querySelector(".tip-date")?.textContent ?? "",
+    };
+  });
+  const text = doc.body.innerText;
+  return { broken, tips, rawMarkup: /<script|&lt;|undefined|NaN/.test(text) };
+});
+
+export const dashboardChartsAreWellFormed = always(() => dash.current === null || dash.current.broken === 0);
+
+// One tooltip, every series: a visible tooltip lists one row per chart in its section, and a date.
+export const tooltipListsEverySeries = always(
+  () => dash.current === null || dash.current.tips.every((t) => !t.visible || (t.rows === t.charts && t.date !== "")),
+);
+
+export const dashboardShowsNoRawValues = always(() => dash.current === null || !dash.current.rawMarkup);
+
+// Bombadil has no hover action: move the pointer over a chart the way a mouse would.
+const hoverChart = registerCustomAction("hoverChart", async (document, window, index: number, frac: number) => {
+  const charts = Array.from(document.querySelectorAll<SVGSVGElement>("svg.chart[data-values]"));
+  const svg = charts[index % Math.max(charts.length, 1)];
+  if (!svg) throw new Error("no chart");
+  svg.scrollIntoView({ block: "center" });
+  const box = svg.getBoundingClientRect();
+  svg.dispatchEvent(new window.PointerEvent("pointermove", {
+    bubbles: true, clientX: box.left + box.width * frac, clientY: box.top + box.height / 2,
+  }));
+});
+
+export const dashboardActions = actions(() =>
+  dash.current === null ? [] : [0, 2, 5, 6].flatMap((i) => [0.02, 0.5, 0.98].map((x) => hoverChart(i, x))),
+);
+
 export const explore = weighted([
   [40, localClicks],
   [15, inputs],
@@ -216,4 +265,5 @@ export const explore = weighted([
   [2, reload],
   [25, reviewActions],
   [10, jump],
+  [10, dashboardActions],
 ]);

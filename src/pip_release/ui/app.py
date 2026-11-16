@@ -232,6 +232,29 @@ def create_app(
     async def publish_one(request: Request) -> Response:
         return await _act(request, state, "publish")
 
+    async def dashboard_page(request: Request) -> Response:
+        denied = _guard(request, state["token"])
+        if denied is not None:
+            return denied
+        from pip_release.ui.dashboard_view import context
+
+        return _render(request, "dashboard.html", **context(config, dict(request.query_params)))
+
+    async def dashboard_csv(request: Request) -> Response:
+        denied = _guard(request, state["token"])
+        if denied is not None:
+            return denied
+        from pip_release.ui.dashboard_view import TABLES, export
+
+        table = request.path_params["table"]
+        if table not in TABLES:
+            return Response("Not found", status_code=404)
+        return Response(
+            export(config, table, dict(request.query_params)),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="herald-{table}.csv"', "Cache-Control": "no-store"},
+        )
+
     async def compose_form(request: Request) -> Response:
         denied = _guard(request, state["token"])
         if denied is not None:
@@ -458,6 +481,8 @@ def create_app(
         Route("/broadcasts", broadcasts_page, methods=["GET"]),
         Route("/broadcasts", broadcast_action, methods=["POST"]),
         Route("/broadcasts/{action:str}/{target:int}", broadcast_action, methods=["POST"]),
+        Route("/dashboard", dashboard_page, methods=["GET"]),
+        Route("/dashboard/{table:str}.csv", dashboard_csv, methods=["GET"]),
         Route("/digests", digests_page, methods=["GET"]),
         Route("/digests/{action:str}/{target:int}", digest_action, methods=["POST"]),
         Route("/compose", compose_form, methods=["GET"]),
