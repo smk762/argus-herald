@@ -127,6 +127,24 @@ Repos are the public, non-fork repos of `pypi.discover.github_owner` that start 
 
 The traffic endpoints only answer to an account with write access to the repo. A fine-grained token limited to those repos, with **Metadata: read** and **Administration: read**, works for traffic. GitHub is limiting stargazer lists to admins and collaborators, and with such a token they answer 403. That is reported as skipped, not as an error, and `gh_star_counts` still tracks stars per day. `--since 2026-11-01` keeps only PyPI download days from that date.
 
+### Followers
+
+`collect` also records audience size per platform per day in `account_metrics`:
+
+```yaml
+accounts:
+  bluesky: dragonhound.dev          # public profile API, no login
+  mastodon: "@name@instance.social" # public account lookup, no login
+  # youtube: UC…                    # defaults to sources.youtube; needs YOUTUBE_API_KEY
+```
+
+An account that doesn't exist yet is reported as skipped until it does. X has no free API for this, so enter its numbers by hand, for example from the analytics page each Sunday:
+
+```bash
+pip-release import x-account --date 2026-11-22 --followers 196 --following 410 --posts 2580
+pip-release followers     # latest count per platform, with the change over 7 days
+```
+
 ### Posts made outside herald
 
 Some posts are always made by hand: Reddit, Hacker News, YouTube uploads, newsletter and link-roundup submissions. Log them so they appear on the metrics timeline next to herald's own posts:

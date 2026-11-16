@@ -67,6 +67,11 @@ privacy:
 #   backend: openai_compatible   # with PIP_RELEASE_LLM_BASE_URL and PIP_RELEASE_LLM_MODEL in .env
 #   # backend: anthropic         # pip install 'pip-release[claude]'; model defaults to claude-opus-5-5
 
+# Follower counts recorded by collect (they needn't be destinations). X counts are imported by hand.
+# accounts:
+#   bluesky: dragonhound.dev
+#   mastodon: "@name@instance.social"
+
 poll:
   interval_seconds: 1800
 

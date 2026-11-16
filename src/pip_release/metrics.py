@@ -73,6 +73,12 @@ CREATE TABLE IF NOT EXISTS events (
     detail TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (kind, source, project, version, url)
 );
+-- Audience size per platform per day. X rows are entered or imported by hand (no paid API).
+CREATE TABLE IF NOT EXISTS account_metrics (
+    platform TEXT NOT NULL, account TEXT NOT NULL, date TEXT NOT NULL,
+    followers INTEGER, following INTEGER, posts INTEGER, source TEXT NOT NULL DEFAULT 'api',
+    PRIMARY KEY (platform, account, date)
+);
 CREATE TABLE IF NOT EXISTS runs (
     collector TEXT PRIMARY KEY, ran_at TEXT NOT NULL, detail TEXT NOT NULL
 );
@@ -173,6 +179,7 @@ def collect(
                 )
         else:
             report.skipped.append("GitHub traffic, referrers, paths and star history: GITHUB_TOKEN is not set")
+    _accounts(report, metrics, http, config, env)
     projects = tracked_projects(config)
     _run(report, metrics, "pypi_downloads", lambda: collect_downloads(metrics, http, projects, since))
     _run(report, metrics, "events", lambda: collect_events(metrics, store, http, projects))
@@ -314,6 +321,69 @@ def collect_events(metrics: Metrics, store: Store, http: Http, packages: list[st
         )
     logged = sum(1 for b in broadcasts if '"logged": false' not in b["detail"])
     return f"{len(rows)} releases, {len(broadcasts)} broadcasts ({logged} logged by hand)"
+
+
+def _accounts(report: Report, metrics: Metrics, http: Http, config: Config, env: Mapping[str, str]) -> None:
+    accounts = config.accounts
+    jobs = []
+    if accounts.bluesky:
+        jobs.append(("bluesky", accounts.bluesky, lambda: bluesky_counts(http, accounts.bluesky)))
+    if accounts.mastodon:
+        jobs.append(("mastodon", accounts.mastodon, lambda: mastodon_counts(http, *accounts.mastodon_parts)))
+    key = (env.get("YOUTUBE_API_KEY") or "").strip()
+    if accounts.youtube and key:
+        jobs.append(("youtube", accounts.youtube, lambda: youtube_counts(http, accounts.youtube, key)))
+    elif accounts.youtube:
+        report.skipped.append("YouTube subscribers: YOUTUBE_API_KEY is not set")
+    today = date.today().isoformat()
+    for platform, account, fetch in jobs:
+        try:
+            counts = fetch()
+        except HttpError as exc:
+            if exc.status in (400, 404):
+                report.skipped.append(f"{platform} account {account}: not found (yet)")
+            else:
+                report.errors.append(f"account_metrics {platform}: {exc}")
+            continue
+        except (OSError, ValueError, KeyError) as exc:
+            report.errors.append(f"account_metrics {platform}: {exc}")
+            continue
+        metrics.upsert("account_metrics", [{"platform": platform, "account": account, "date": today, **counts, "source": "api"}])
+        report.lines.append(f"account_metrics {platform}: {counts['followers']} followers")
+
+
+def bluesky_counts(http: Http, handle: str) -> dict:
+    url = f"https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor={quote(handle, safe='')}"
+    data = _get_json(http, url, {"Accept": "application/json"})
+    return {"followers": int(data["followersCount"]), "following": int(data.get("followsCount") or 0),
+            "posts": int(data.get("postsCount") or 0)}
+
+
+def mastodon_counts(http: Http, base: str, user: str) -> dict:
+    url = f"{base}/api/v1/accounts/lookup?acct={quote(user, safe='')}"
+    data = _get_json(http, url, {"Accept": "application/json"})
+    return {"followers": int(data["followers_count"]), "following": int(data.get("following_count") or 0),
+            "posts": int(data.get("statuses_count") or 0)}
+
+
+def youtube_counts(http: Http, channel_id: str, key: str) -> dict:
+    url = (f"https://www.googleapis.com/youtube/v3/channels?part=statistics&id={quote(channel_id, safe='')}"
+           f"&key={quote(key, safe='')}")
+    data = _get_json(http, url, {"Accept": "application/json"})
+    items = data.get("items") or []
+    if not items:
+        raise HttpError("GET", "youtube channels", 404)
+    stats = items[0].get("statistics") or {}
+    hidden = stats.get("hiddenSubscriberCount")
+    return {"followers": None if hidden else int(stats.get("subscriberCount") or 0), "following": None,
+            "posts": int(stats.get("videoCount") or 0)}
+
+
+def record_account(metrics: Metrics, platform: str, account: str, day: str,
+                   followers: int | None, following: int | None = None, posts: int | None = None) -> None:
+    """A row entered by hand (X has no free API for this)."""
+    metrics.upsert("account_metrics", [{"platform": platform, "account": account, "date": day, "followers": followers,
+                                        "following": following, "posts": posts, "source": "manual"}])
 
 
 def _hash(login: str) -> str:

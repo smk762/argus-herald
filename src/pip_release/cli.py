@@ -123,6 +123,10 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
         return cmd_log_broadcast(store, args)
     if args.command == "broadcasts":
         return cmd_broadcasts(store, args)
+    if args.command == "import":
+        return cmd_import(config, args)
+    if args.command == "followers":
+        return cmd_followers(config)
     if args.command == "collect":
         return cmd_collect(config, store, http, args.since)
     if args.command == "digest":
@@ -275,6 +279,63 @@ def cmd_broadcasts(store: Store, args: argparse.Namespace) -> int:
     for row in rows:
         label = f"  {row['subject']}" if row["subject"] else ""
         print(f"#{row['id']:<4} {row['at'][:16]}  {row['platform']:<12} {row['kind']:<9} {row['url']}{label}")
+    return 0
+
+
+def cmd_import(config: Config, args: argparse.Namespace) -> int:
+    from datetime import date as _date
+
+    from pip_release.metrics import Metrics, metrics_path, record_account
+
+    account = (args.account or config.accounts.x or "").lstrip("@")
+    if not account:
+        raise ReviewError("Name the X account with --account, or set destinations.twitter.username")
+    try:
+        day = _date.fromisoformat(args.date) if args.date else datetime.now(timezone.utc).date()
+    except ValueError as exc:
+        raise ReviewError("--date must look like 2026-11-15") from exc
+    for name in ("followers", "following", "posts"):
+        value = getattr(args, name)
+        if value is not None and value < 0:
+            raise ReviewError(f"--{name} can't be negative")
+    metrics = Metrics(metrics_path(config))
+    try:
+        record_account(metrics, "x", account, day.isoformat(), args.followers, args.following, args.posts)
+    finally:
+        metrics.close()
+    print(f"Recorded X @{account} on {day}: {args.followers} followers")
+    return 0
+
+
+def cmd_followers(config: Config) -> int:
+    from pip_release.metrics import Metrics, metrics_path
+
+    path = metrics_path(config)
+    if not path.exists():
+        print("No metrics yet. Run pip-release collect.")
+        return 0
+    metrics = Metrics(path)
+    try:
+        rows = metrics.conn.execute(
+            "SELECT platform, account, date, followers, following, posts FROM account_metrics a "
+            "WHERE date = (SELECT MAX(date) FROM account_metrics b WHERE b.platform = a.platform AND b.account = a.account) "
+            "ORDER BY platform"
+        ).fetchall()
+        if not rows:
+            print("No follower counts yet. Add accounts: to the config, or import x-account for X.")
+        for row in rows:
+            week = metrics.conn.execute(
+                "SELECT followers FROM account_metrics WHERE platform = ? AND account = ? AND date <= date(?, '-7 days') "
+                "AND followers IS NOT NULL ORDER BY date DESC LIMIT 1",
+                (row["platform"], row["account"], row["date"]),
+            ).fetchone()
+            change = ""
+            if week and row["followers"] is not None:
+                change = f"  {row['followers'] - week['followers']:+d} in 7 days"
+            followers = "hidden" if row["followers"] is None else row["followers"]
+            print(f"{row['platform']:<9} {row['account']:<28} {row['date']}  {followers} followers{change}")
+    finally:
+        metrics.close()
     return 0
 
 
@@ -995,6 +1056,15 @@ def _parser() -> argparse.ArgumentParser:
     bcasts = sub.add_parser("broadcasts", help="List or delete broadcasts logged by hand")
     bcasts.add_argument("action", nargs="?", default="list", choices=("list", "delete"))
     bcasts.add_argument("ids", nargs="*", type=int)
+
+    imp = sub.add_parser("import", help="Record numbers that have no free API (X follower counts)")
+    imp.add_argument("what", choices=("x-account",))
+    imp.add_argument("--date", help="Day the numbers are for (default today, UTC)")
+    imp.add_argument("--followers", type=int, required=True)
+    imp.add_argument("--following", type=int)
+    imp.add_argument("--posts", type=int)
+    imp.add_argument("--account", help="X username (default destinations.twitter.username)")
+    sub.add_parser("followers", help="Latest follower counts per platform, with the 7-day change")
 
     collect_cmd = sub.add_parser("collect", help="Snapshot GitHub, PyPI and broadcast metrics into metrics.sqlite")
     collect_cmd.add_argument("--since", help="Only keep PyPI download days from this date (ISO)")

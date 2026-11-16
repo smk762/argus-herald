@@ -67,6 +67,11 @@ digest:
   site_url: https://dragonhound.dev/updates/
   # site_dir: <your checkout of the site>/src/content/updates   (local config only)
 
+# Follower counts recorded by collect (they needn't be destinations). X counts are imported by hand.
+# accounts:
+#   bluesky: dragonhound.dev
+#   mastodon: "@name@instance.social"
+
 poll:
   interval_seconds: 1800
 

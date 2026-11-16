@@ -90,10 +90,27 @@ class Config:
     github: "GitHubSource | None" = None
     media_dir: Path | None = None  # where attachments and their cleaned copies live
     drafting: "DraftingSettings" = field(default_factory=lambda: DraftingSettings())
+    accounts: "Accounts" = field(default_factory=lambda: Accounts())
 
     @property
     def media_root(self) -> Path:
         return self.media_dir or self.store_path.parent / "media"
+
+
+@dataclass(frozen=True)
+class Accounts:
+    """Public accounts whose follower counts `collect` records (they needn't be destinations)."""
+
+    bluesky: str = ""  # handle, e.g. dragonhound.dev
+    mastodon: str = ""  # @user@instance
+    youtube: str = ""  # channel id; defaults to sources.youtube
+    x: str = ""  # username; defaults to destinations.twitter.username (counts are imported by hand)
+
+    @property
+    def mastodon_parts(self) -> tuple[str, str]:
+        """(instance base URL, account name)."""
+        user, _, host = self.mastodon.lstrip("@").partition("@")
+        return f"https://{host}", user
 
 
 @dataclass(frozen=True)
@@ -188,6 +205,7 @@ def load_config(path: Path) -> Config:
         raise ConfigError(f"sources name platforms that aren't in destinations: {', '.join(unknown)}")
     github = _github(data.get("github"))
     drafting = _drafting(data.get("drafting"))
+    accounts = _accounts(data.get("accounts"), feeds, destinations)
     media = data.get("media") or {}
     if not isinstance(media, dict) or not isinstance(media.get("dir", ""), str):
         raise ConfigError("media must be a mapping with an optional dir path")
@@ -197,6 +215,7 @@ def load_config(path: Path) -> Config:
         if unknown:
             raise ConfigError(f"digest.platforms aren't in destinations: {', '.join(unknown)}")
     return Config(
+        accounts=accounts,
         drafting=drafting,
         media_dir=Path(media["dir"]).expanduser() if media.get("dir") else None,
         github=github,
@@ -383,6 +402,35 @@ def _audience(key: str, value: Any, mode: str | None) -> Audience | None:
         link_placement=placement,
         emoji=bool(value.get("emoji", False)),
     )
+
+
+def _accounts(value: Any, feeds: list, destinations: dict) -> Accounts:
+    value = value or {}
+    if not isinstance(value, dict):
+        raise ConfigError("accounts must be a mapping")
+    unknown = set(value) - {"bluesky", "mastodon", "youtube", "x"}
+    if unknown:
+        raise ConfigError(f"Unknown accounts: {', '.join(sorted(unknown))}. Known: bluesky, mastodon, youtube, x")
+    out = {}
+    for key in ("bluesky", "mastodon", "youtube", "x"):
+        raw = value.get(key, "")
+        if not isinstance(raw, str):
+            raise ConfigError(f"accounts.{key} must be text")
+        out[key] = raw.strip()
+    if out["bluesky"] and not re.match(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$", out["bluesky"].lstrip("@")):
+        raise ConfigError("accounts.bluesky is a handle like dragonhound.dev or name.bsky.social")
+    out["bluesky"] = out["bluesky"].lstrip("@")
+    if out["mastodon"] and not re.match(r"^@?[A-Za-z0-9_]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$", out["mastodon"]):
+        raise ConfigError("accounts.mastodon looks like @name@instance.social")
+    if out["youtube"] and not re.match(r"^UC[A-Za-z0-9_-]{22}$", out["youtube"]):
+        raise ConfigError("accounts.youtube is a channel id (UC… , 24 characters)")
+    if not out["youtube"]:
+        youtube = next((f for f in feeds if f.name == "youtube"), None)
+        if youtube is not None:
+            out["youtube"] = youtube.url.rsplit("channel_id=", 1)[-1]
+    if not out["x"] and "twitter" in destinations and destinations["twitter"].username:
+        out["x"] = destinations["twitter"].username
+    return Accounts(**out)
 
 
 def _drafting(value: Any) -> DraftingSettings:
