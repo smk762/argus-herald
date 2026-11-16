@@ -4,11 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Review{% endblock %} · argus-herald</title>
+  <link rel="icon" href="/static/brand/favicon.ico" sizes="48x48">
+  <link rel="icon" href="/static/brand/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/brand/apple-icon.png">
   <link rel="stylesheet" href="/static/review.css">
 </head>
 <body>
   <header class="top">
-    <a class="mark" href="/">argus-herald</a>
+    <a class="mark" href="/"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9h3l12-5v16L6 15H3Z"/><path d="m7 15 1.5 5"/></g><circle cx="12.5" cy="12" r="2.25" fill="var(--mark-eye)"/></svg>argus-herald</a>
     {% if signed_in %}
     <nav class="sections" aria-label="Sections"><a href="/">Review</a> <a href="/digests">Digests</a> <a href="/compose">New post</a> <a href="/broadcasts">Logged posts</a> <a href="/dashboard">Dashboard</a></nav>
     {% endif %}

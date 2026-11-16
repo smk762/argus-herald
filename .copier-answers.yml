@@ -3,7 +3,7 @@
 _commit: 6c6f741
 _src_path: gh:smk762/argus-pkg-template
 author: smk762
-brand_mark: false
+brand_mark: true
 cli_name: argus-herald
 description: 'Release announcements for any Python package: drafted from PyPI and GitHub,
   held for review, published to your channels.'

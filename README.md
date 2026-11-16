@@ -1,4 +1,9 @@
-# argus-herald
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/smk762/argus-cortex/dev/brand/packages/herald/argus-herald-lockup-dark.svg">
+    <img alt="argus-herald" src="https://raw.githubusercontent.com/smk762/argus-cortex/dev/brand/packages/herald/argus-herald-lockup-light.svg" height="52">
+  </picture>
+</h1>
 
 [![CI](https://github.com/smk762/argus-herald/actions/workflows/ci.yml/badge.svg)](https://github.com/smk762/argus-herald/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/argus-herald)](https://pypi.org/project/argus-herald/)
@@ -435,3 +440,7 @@ npx bombadil browser inspect out/light             # step through a run
 ```
 
 `serve.py` starts the UI on a fresh temporary store with seeded drafts in every state, a fixture deny-list and fake publishers (nothing is posted), on a port the OS picks. CI runs both suites on every pull request.
+
+## Licence
+
+The code is MIT ([LICENSE](LICENSE)). The argus-herald mark, its favicons and the lockup are Argus brand assets from [argus-cortex `brand/`](https://github.com/smk762/argus-cortex/tree/dev/brand), not covered by the MIT licence: see [its terms](https://github.com/smk762/argus-cortex/blob/dev/brand/LICENSE).
