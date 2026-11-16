@@ -11,7 +11,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pip_release.config import (
@@ -290,20 +290,66 @@ def cmd_import(config: Config, args: argparse.Namespace) -> int:
     account = (args.account or config.accounts.x or "").lstrip("@")
     if not account:
         raise ReviewError("Name the X account with --account, or set destinations.twitter.username")
-    try:
-        day = _date.fromisoformat(args.date) if args.date else datetime.now(timezone.utc).date()
-    except ValueError as exc:
-        raise ReviewError("--date must look like 2026-11-15") from exc
-    for name in ("followers", "following", "posts"):
-        value = getattr(args, name)
+
+    def day(value: str | None, flag: str) -> _date:
+        try:
+            return _date.fromisoformat(value) if value else datetime.now(timezone.utc).date()
+        except ValueError as exc:
+            raise ReviewError(f"--{flag} must look like 2026-11-15") from exc
+
+    counts = ("followers", "following", "posts", "impressions", "engagements", "link_clicks", "profile_visits",
+              "new_follows", "likes", "reposts", "replies")
+    for name in counts:
+        value = getattr(args, name, None)
         if value is not None and value < 0:
-            raise ReviewError(f"--{name} can't be negative")
+            raise ReviewError(f"--{name.replace('_', '-')} can't be negative")
+    if args.what == "x-analytics":
+        if not args.file:
+            raise ReviewError("Give the CSV file: pip-release import x-analytics <file.csv>")
+        try:
+            text = Path(args.file).expanduser().read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ReviewError(f"Can't read {args.file}: {exc}") from exc
+    elif args.file:
+        raise ReviewError(f"import {args.what} doesn't take a file")
     metrics = Metrics(metrics_path(config))
     try:
-        record_account(metrics, "x", account, day.isoformat(), args.followers, args.following, args.posts)
+        if args.what == "x-account":
+            if args.followers is None:
+                raise ReviewError("import x-account needs --followers")
+            when = day(args.date, "date")
+            record_account(metrics, "x", account, when.isoformat(), args.followers, args.following, args.posts)
+            print(f"Recorded X @{account} on {when}: {args.followers} followers")
+        elif args.what == "x-week":
+            from pip_release.engagement import record_x_week
+
+            end = day(args.end, "end")
+            start = day(args.start, "start") if args.start else end - timedelta(days=6)
+            if start > end:
+                raise ReviewError("--start is after --end")
+            values = {k: getattr(args, k) for k in counts[3:]}
+            if all(v is None for v in values.values()):
+                raise ReviewError("Give at least one number, e.g. --impressions 12000")
+            record_x_week(metrics, account, start, end, **values)
+            print(f"Recorded X @{account} {start} to {end}: "
+                  + ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in values.items() if v is not None))
+        else:
+            from pip_release.engagement import import_x_analytics
+
+            try:
+                result = import_x_analytics(metrics, text, account)
+            except ValueError as exc:
+                raise ReviewError(str(exc)) from exc
+            if result.posts:
+                print(f"Imported {result.posts} X posts ({result.matched} matched to herald broadcasts)")
+            if result.days:
+                print(f"Imported {result.days} days of X account totals")
+            for line in result.skipped[:10]:
+                print(f"skipped {line}", file=sys.stderr)
+            if len(result.skipped) > 10:
+                print(f"skipped {len(result.skipped) - 10} more lines", file=sys.stderr)
     finally:
         metrics.close()
-    print(f"Recorded X @{account} on {day}: {args.followers} followers")
     return 0
 
 
@@ -386,6 +432,28 @@ def _collect_daily(config: Config, store: Store, http: HttpClient) -> None:
         log.warning("collect: %s", line)
 
 
+ENGAGEMENT_KEY = "engagement_at"
+ENGAGEMENT_EVERY = 3600
+
+
+def _engagement_hourly(config: Config, store: Store, http: HttpClient) -> None:
+    """From the watcher: posts are sampled at +1h, +24h, +72h and +7d, so this runs hourly."""
+    last = store.get_meta(ENGAGEMENT_KEY)
+    now = time.time()
+    if last and now - float(last) < ENGAGEMENT_EVERY:
+        return
+    from pip_release.metrics import Metrics, collect_engagement, metrics_path
+
+    metrics = Metrics(metrics_path(config))
+    try:
+        report = collect_engagement(store, metrics, http)
+    finally:
+        metrics.close()
+    store.set_meta(ENGAGEMENT_KEY, str(now))
+    for line in report.errors:
+        log.warning("engagement: %s", line)
+
+
 DISCOVER_KEY = "discover_checked_at"
 DISCOVER_EVERY = 24 * 3600
 
@@ -445,7 +513,27 @@ def cmd_platforms(
             if audience.description:
                 bits.append(audience.description)
             print(f"{'':<16} audience: {'; '.join(bits)}")
+    _metrics_sources(config, env)
     return 0
+
+
+def _metrics_sources(config: Config, env: Mapping[str, str]) -> None:
+    """What `collect` can gather, and what each missing piece would add."""
+    from pip_release.engagement import site_configured
+
+    accounts = config.accounts
+    rows = [
+        ("GitHub traffic", "" if env.get("GITHUB_TOKEN", "").strip() else "missing GITHUB_TOKEN"),
+        ("Bluesky", accounts.bluesky or "set accounts.bluesky"),
+        ("Mastodon", accounts.mastodon or "set accounts.mastodon"),
+        ("YouTube subs", "" if env.get("YOUTUBE_API_KEY", "").strip() else "missing YOUTUBE_API_KEY"),
+        ("X", "manual: import x-account, x-analytics, x-week"),
+    ]
+    missing = site_configured(env)
+    rows.append(("Site traffic", f"missing {', '.join(missing)}" if missing else ""))
+    print("\nmetrics:")
+    for label, state in rows:
+        print(f"  {label:<14} {state or 'ok'}")
 
 
 def _schedules(config: Config) -> dict:
@@ -656,6 +744,7 @@ def cmd_watch(config: Config, store: Store, http: HttpClient, publishers: list[P
             cmd_poll(config, store, http, publishers)
             _discover_daily(config, store, http)
             _collect_daily(config, store, http)
+            _engagement_hourly(config, store, http)
         except (ConfigError, ReviewError, HttpError, OSError, ValueError) as exc:
             log.error("%s", exc)
             _heartbeat(config)
@@ -1057,12 +1146,20 @@ def _parser() -> argparse.ArgumentParser:
     bcasts.add_argument("action", nargs="?", default="list", choices=("list", "delete"))
     bcasts.add_argument("ids", nargs="*", type=int)
 
-    imp = sub.add_parser("import", help="Record numbers that have no free API (X follower counts)")
-    imp.add_argument("what", choices=("x-account",))
-    imp.add_argument("--date", help="Day the numbers are for (default today, UTC)")
-    imp.add_argument("--followers", type=int, required=True)
+    imp = sub.add_parser(
+        "import", help="Record X numbers (no free API): follower counts, the analytics CSV, or a week's totals"
+    )
+    imp.add_argument("what", choices=("x-account", "x-analytics", "x-week"))
+    imp.add_argument("file", nargs="?", help="x-analytics: the CSV exported from X analytics")
+    imp.add_argument("--date", help="x-account: day the numbers are for (default today, UTC)")
+    imp.add_argument("--followers", type=int)
     imp.add_argument("--following", type=int)
     imp.add_argument("--posts", type=int)
+    imp.add_argument("--start", help="x-week: first day (default 6 days before --end)")
+    imp.add_argument("--end", help="x-week: last day (default today, UTC)")
+    for flag in ("impressions", "engagements", "link-clicks", "profile-visits", "new-follows", "likes", "reposts",
+                 "replies"):
+        imp.add_argument(f"--{flag}", type=int, help="x-week" if flag == "impressions" else argparse.SUPPRESS)
     imp.add_argument("--account", help="X username (default destinations.twitter.username)")
     sub.add_parser("followers", help="Latest follower counts per platform, with the 7-day change")
 

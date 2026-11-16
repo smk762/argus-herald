@@ -145,6 +145,24 @@ pip-release import x-account --date 2026-11-22 --followers 196 --following 410 -
 pip-release followers     # latest count per platform, with the change over 7 days
 ```
 
+### Engagement per post
+
+Each Bluesky and Mastodon post in the broadcast list (published by herald, or logged by hand with its URL) is read from the public API at +1h, +24h, +72h and +7d after it went out. The samples go to `post_metrics` as a time series of likes, reposts, replies and quotes. The watcher checks once an hour, and fetches only posts that have reached a checkpoint. A post deleted since is reported as skipped.
+
+X has no free API for this, so import the analytics export instead. Per-post exports are matched to herald's broadcasts by post id. Posts made outside herald are stored too. An account overview export (one row per day) goes to `account_engagement`. When only the week's totals are at hand, enter them:
+
+```bash
+pip-release import x-analytics ~/Downloads/account_analytics_content.csv
+pip-release import x-analytics ~/Downloads/account_overview_analytics.csv
+pip-release import x-week --end 2026-11-29 --impressions 9000 --engagements 310 --link-clicks 40 --profile-visits 55 --new-follows 16
+```
+
+Importing the same post again adds a new sample, so a weekly import draws the curve for X as well. `slots suggest` uses this data.
+
+### Site traffic
+
+With Cloudflare Web Analytics on the site, `collect` keeps daily page views and visits per path (`site_traffic`) and per referring host (`site_referrers`) for the last 7 days on each run. Set `CF_API_TOKEN` (a token with Account Analytics: read), `CF_ACCOUNT_ID` and `CF_SITE_TAG` (from the Web Analytics site's snippet) in `.env`. `pip-release platforms` lists which metrics sources are set up.
+
 ### Posts made outside herald
 
 Some posts are always made by hand: Reddit, Hacker News, YouTube uploads, newsletter and link-roundup submissions. Log them so they appear on the metrics timeline next to herald's own posts:

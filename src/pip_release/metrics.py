@@ -9,6 +9,7 @@ Collectors (each optional, each skips cleanly when it can't run):
 - GitHub stars: a daily count per repo (works without a token), and with GITHUB_TOKEN the time
   each star was given (GitHub only lists stargazers to authenticated requests).
 - PyPI downloads per day from pypistats.org (the last 180 days, without mirrors).
+- Engagement per post (Bluesky, Mastodon, the X analytics import) and site traffic: engagement.py.
 - Events: release times from the PyPI JSON API, and broadcasts from herald's own queue
   (published drafts that have a post URL or id). These are the markers on the dashboard.
 
@@ -28,6 +29,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from pip_release.config import Config
+from pip_release.engagement import collect_posts, collect_site, site_configured
 from pip_release.http import Http, HttpError
 from pip_release.models import PUBLISHED
 from pip_release.pypi import list_versions
@@ -78,6 +80,30 @@ CREATE TABLE IF NOT EXISTS account_metrics (
     platform TEXT NOT NULL, account TEXT NOT NULL, date TEXT NOT NULL,
     followers INTEGER, following INTEGER, posts INTEGER, source TEXT NOT NULL DEFAULT 'api',
     PRIMARY KEY (platform, account, date)
+);
+-- Engagement per post over time: one row per sample (Bluesky and Mastodon at +1h, +24h, +72h,
+-- +7d) or per X analytics import. external_id is the broadcast's URL in events.
+CREATE TABLE IF NOT EXISTS post_metrics (
+    platform TEXT NOT NULL, external_id TEXT NOT NULL, fetched_at TEXT NOT NULL,
+    likes INTEGER, reposts INTEGER, replies INTEGER, quotes INTEGER, impressions INTEGER,
+    engagements INTEGER, link_clicks INTEGER, profile_visits INTEGER, source TEXT NOT NULL DEFAULT 'api',
+    PRIMARY KEY (platform, external_id, fetched_at)
+);
+-- Account-wide engagement for a day (X analytics export) or a longer period (entered by hand).
+CREATE TABLE IF NOT EXISTS account_engagement (
+    platform TEXT NOT NULL, account TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+    impressions INTEGER, engagements INTEGER, likes INTEGER, reposts INTEGER, replies INTEGER,
+    link_clicks INTEGER, profile_visits INTEGER, new_follows INTEGER, source TEXT NOT NULL DEFAULT 'manual',
+    PRIMARY KEY (platform, account, start_date, end_date)
+);
+-- Site page views (Cloudflare Web Analytics), per day.
+CREATE TABLE IF NOT EXISTS site_traffic (
+    date TEXT NOT NULL, path TEXT NOT NULL, pageviews INTEGER NOT NULL, visits INTEGER NOT NULL,
+    PRIMARY KEY (date, path)
+);
+CREATE TABLE IF NOT EXISTS site_referrers (
+    date TEXT NOT NULL, referrer TEXT NOT NULL, pageviews INTEGER NOT NULL, visits INTEGER NOT NULL,
+    PRIMARY KEY (date, referrer)
 );
 CREATE TABLE IF NOT EXISTS runs (
     collector TEXT PRIMARY KEY, ran_at TEXT NOT NULL, detail TEXT NOT NULL
@@ -183,6 +209,26 @@ def collect(
     projects = tracked_projects(config)
     _run(report, metrics, "pypi_downloads", lambda: collect_downloads(metrics, http, projects, since))
     _run(report, metrics, "events", lambda: collect_events(metrics, store, http, projects))
+    posts = collect_posts(metrics, http)
+    report.lines += posts.lines
+    report.skipped += posts.skipped
+    report.errors += posts.errors
+    missing = site_configured(env)
+    if 0 < len(missing) < 3:  # half set up; with none set it's simply not in use (platforms shows it)
+        report.skipped.append(f"site traffic: {', '.join(missing)} not set")
+    elif not missing:
+        _run(report, metrics, "site_traffic", lambda: collect_site(metrics, http, env))
+    return report
+
+
+def collect_engagement(store: Store, metrics: Metrics, http: Http) -> Report:
+    """The hourly part: refresh broadcasts from the queue, then sample posts at their checkpoints."""
+    report = Report()
+    _run(report, metrics, "broadcasts", lambda: sync_broadcasts(metrics, store))
+    posts = collect_posts(metrics, http)
+    report.lines += posts.lines
+    report.skipped += posts.skipped
+    report.errors += posts.errors
     return report
 
 
@@ -295,6 +341,11 @@ def collect_events(metrics: Metrics, store: Store, http: Http, packages: list[st
                     "at": ref.upload_time.replace("Z", "+00:00"),
                     "url": f"https://pypi.org/project/{package}/{ref.version}/", "detail": "",
                 })
+    metrics.upsert("events", rows)
+    return f"{len(rows)} releases, {sync_broadcasts(metrics, store)}"
+
+
+def sync_broadcasts(metrics: Metrics, store: Store) -> str:
     broadcasts: list[dict] = []
     for draft in store.list_drafts(status=PUBLISHED):
         broadcasts.append({
@@ -310,7 +361,6 @@ def collect_events(metrics: Metrics, store: Store, http: Http, packages: list[st
             "detail": json.dumps({"logged": row["id"], "kind": row["kind"], "subject": row["subject"],
                                   "text": row["text"][:500]}),
         })
-    metrics.upsert("events", rows)
     # Broadcasts are rebuilt from their sources, so edits and deletions carry through.
     with metrics.transaction():
         metrics.conn.execute("DELETE FROM events WHERE kind = 'broadcast'")
@@ -320,7 +370,7 @@ def collect_events(metrics: Metrics, store: Store, http: Http, packages: list[st
             broadcasts,
         )
     logged = sum(1 for b in broadcasts if '"logged": false' not in b["detail"])
-    return f"{len(rows)} releases, {len(broadcasts)} broadcasts ({logged} logged by hand)"
+    return f"{len(broadcasts)} broadcasts ({logged} logged by hand)"
 
 
 def _accounts(report: Report, metrics: Metrics, http: Http, config: Config, env: Mapping[str, str]) -> None:
