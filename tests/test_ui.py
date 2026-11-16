@@ -166,7 +166,25 @@ def test_token_gates_the_queue(tmp_path):
         follow_redirects=False,
     )
     assert good.status_code == 303
-    assert client.get("/").status_code == 200
+    page = client.get("/")
+    assert page.status_code == 200 and "Tracking" in page.text and "dragonhound3" in page.text
+
+
+def test_sign_in_page_shows_nothing_about_the_queue(tmp_path):
+    app, _config = _app(tmp_path, token="s3cret")
+    text = TestClient(app).get("/login").text
+    for leak in ("Tracking", "Publishing", "argus-atlas", "dragonhound3", "AtlasRealms", 'href="/compose"'):
+        assert leak not in text
+
+
+def test_theme_cookie_is_rendered(tmp_path):
+    app, _config = _app(tmp_path)
+    client = TestClient(app)
+    assert "data-theme" not in client.get("/").text.split(">", 2)[1]
+    client.cookies.set("theme", "dark")
+    assert '<html lang="en" data-theme="dark">' in client.get("/").text
+    client.cookies.set("theme", '"><script>')
+    assert "data-theme" not in client.get("/").text.split(">", 2)[1]
 
 
 def test_account_links_skip_disabled_channels_and_unsafe_urls(tmp_path):

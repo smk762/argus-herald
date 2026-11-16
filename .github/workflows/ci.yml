@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
+  ui-properties:
+    # Bombadil explores the review UI (seeded store, fake publishers) in light, dark and
+    # token-locked modes. Results are uploaded when a property fails.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: pip install -e .
+      - run: npm ci
+        working-directory: tests/bombadil
+      - name: Run Bombadil
+        run: CHROME="$(command -v google-chrome || command -v chromium)" TIME_LIMIT=2m BOMBADIL_ARGS=--no-sandbox tests/bombadil/run.sh
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bombadil-output
+          path: tests/bombadil/out
+          retention-days: 7
