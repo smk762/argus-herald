@@ -2,22 +2,23 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [dev, main]
   pull_request:
+    branches: [dev, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -e ".[dev,claude]"
-      - run: pytest -q
+  ci:
+    uses: smk762/argus-ci/.github/workflows/python-ci.yml@v1
+    with:
+      ruff-version: "0.15.16"
+      test-extras: "dev,claude"
 
   ui-properties:
     # Bombadil explores the review UI (seeded store, fake publishers) in light, dark and
@@ -25,6 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # hatch-vcs derives the dev version from git history
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

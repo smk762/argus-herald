@@ -1,16 +1,16 @@
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from pip_release.config import ConfigError, Destination, Schedule, load_config
-from pip_release.models import Post
-from pip_release.platforms import DiscordPublisher, PatreonPublisher, TwitterPublisher
-from pip_release.schedule import choose, free_slots, iso, next_due_in, parse, publish_due, slot_times, suggest
-from pip_release.store import Store
-from pip_release.workflow import approve, compose, edit_draft
+from argus_herald.config import ConfigError, Destination, Schedule, load_config
+from argus_herald.models import Post
+from argus_herald.platforms import DiscordPublisher, PatreonPublisher, TwitterPublisher
+from argus_herald.schedule import free_slots, iso, next_due_in, parse, publish_due, slot_times, suggest
+from argus_herald.store import Store
+from argus_herald.workflow import approve, compose, edit_draft
 
-UTC = timezone.utc
+UTC = UTC
 NOW = datetime(2026, 11, 23, 9, 0, tzinfo=UTC)  # a Monday
 TUE_FRI = Schedule(slots=((1, 8, 0), (4, 8, 0)), min_gap_hours=24)
 
@@ -21,11 +21,19 @@ def x(schedule=TUE_FRI):
 
 def test_config(tmp_path):
     path = tmp_path / "c.yaml"
-    path.write_text("pypi: {projects: [a]}\ndestinations:\n  twitter:\n    schedule:\n"
-                    "      slots: [Tue 08:00, friday 8:00]\n      offset_minutes: 15\n", encoding="utf-8")
+    path.write_text(
+        "pypi: {projects: [a]}\ndestinations:\n  twitter:\n    schedule:\n"
+        "      slots: [Tue 08:00, friday 8:00]\n      offset_minutes: 15\n",
+        encoding="utf-8",
+    )
     sched = load_config(path).destinations["twitter"].schedule
     assert sched.slots == ((1, 8, 0), (4, 8, 0)) and sched.offset_minutes == 15 and sched.grace_hours == 6
-    for bad in ("{slots: []}", "{slots: [Tue 25:00]}", "{slots: [Someday 08:00]}", "{slots: [Tue 08:00], grace_hours: -1}"):
+    for bad in (
+        "{slots: []}",
+        "{slots: [Tue 25:00]}",
+        "{slots: [Someday 08:00]}",
+        "{slots: [Tue 08:00], grace_hours: -1}",
+    ):
         path.write_text(f"pypi: {{projects: [a]}}\ndestinations:\n  twitter:\n    schedule: {bad}\n", encoding="utf-8")
         with pytest.raises(ConfigError):
             load_config(path)
@@ -33,7 +41,10 @@ def test_config(tmp_path):
 
 def test_slots_respect_gap_and_offset(tmp_path):
     assert [w.isoformat() for w in list(slot_times(TUE_FRI, NOW))[:3]] == [
-        "2026-11-24T08:00:00+00:00", "2026-11-27T08:00:00+00:00", "2026-12-01T08:00:00+00:00"]
+        "2026-11-24T08:00:00+00:00",
+        "2026-11-27T08:00:00+00:00",
+        "2026-12-01T08:00:00+00:00",
+    ]
     store = Store(tmp_path / "s.sqlite")
     draft_id, _ = store.add_draft(project="p", version="1", platform="twitter", title="", body="b", link="l")
     store.transition(draft_id, ("pending",), "approved")
@@ -64,7 +75,9 @@ def test_publish_due_hands_off_posts_and_skips_missed(tmp_path, gate):
     store = Store(tmp_path / "s.sqlite")
     made = {}
     for platform in ("twitter", "patreon", "discord"):
-        made[platform], _ = store.add_draft(project="p", version="1", platform=platform, title="t", body="hello", link="l")
+        made[platform], _ = store.add_draft(
+            project="p", version="1", platform=platform, title="t", body="hello", link="l"
+        )
         store.transition(made[platform], ("pending",), "approved")
     store.set_publish_at(made["twitter"], iso(NOW - timedelta(minutes=10)))
     store.set_publish_at(made["patreon"], iso(NOW - timedelta(hours=7)))  # beyond the 6 h grace
@@ -83,11 +96,13 @@ def test_publish_due_hands_off_posts_and_skips_missed(tmp_path, gate):
 
 
 def test_cli_schedule_commands(tmp_path, capsys):
-    from pip_release.cli import main
+    from argus_herald.cli import main
 
     cfg = tmp_path / "c.yaml"
-    cfg.write_text("pypi: {projects: [demo]}\ndestinations:\n  twitter:\n    schedule: {slots: [Tue 08:00, Fri 08:00]}\n",
-                   encoding="utf-8")
+    cfg.write_text(
+        "pypi: {projects: [demo]}\ndestinations:\n  twitter:\n    schedule: {slots: [Tue 08:00, Fri 08:00]}\n",
+        encoding="utf-8",
+    )
     base = ["--config", str(cfg), "--env", str(tmp_path / "no.env"), "--store", str(tmp_path / "s.sqlite")]
     store = Store(tmp_path / "s.sqlite")
     draft_id, _ = store.add_draft(project="demo", version="1", platform="twitter", title="", body="hello", link="l")
@@ -104,11 +119,13 @@ def test_cli_schedule_commands(tmp_path, capsys):
 
 def test_suggest(tmp_path):
     db = tmp_path / "metrics.sqlite"
-    assert "run pip-release collect" in suggest(db)
+    assert "run argus-herald collect" in suggest(db)
     conn = sqlite3.connect(db)
     conn.execute("CREATE TABLE events (kind, source, project, version, at, url, detail)")
     assert "No post engagement" in suggest(db)
-    conn.execute("CREATE TABLE post_metrics (platform, external_id, fetched_at, likes, reposts, replies, quotes, impressions)")
+    conn.execute(
+        "CREATE TABLE post_metrics (platform, external_id, fetched_at, likes, reposts, replies, quotes, impressions)"
+    )
     # Four Friday-morning posts that did well, three Tuesday-evening posts that didn't.
     posts = [(datetime(2026, 12, 4, 8, tzinfo=UTC) + timedelta(weeks=w), 10) for w in range(4)]
     posts += [(datetime(2026, 12, 1, 18, tzinfo=UTC) + timedelta(weeks=w), 1) for w in range(3)]

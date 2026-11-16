@@ -2,9 +2,9 @@ import json
 
 import pytest
 
-from pip_release.config import ConfigError, load_config
-from pip_release.metrics import Metrics, collect
-from pip_release.store import Store
+from argus_herald.config import ConfigError, load_config
+from argus_herald.metrics import Metrics, collect
+from argus_herald.store import Store
 
 CHANNEL = "UC" + "b" * 22
 
@@ -32,9 +32,12 @@ class Fake:
 
 def _config(tmp_path, accounts):
     path = tmp_path / "c.yaml"
-    path.write_text("pypi: {projects: []}\n"
-                    "destinations:\n  twitter: {enabled: true, username: dragonhound3}\n"
-                    f"sources:\n  youtube: {{channel_id: {CHANNEL}}}\n" + accounts, encoding="utf-8")
+    path.write_text(
+        "pypi: {projects: []}\n"
+        "destinations:\n  twitter: {enabled: true, username: dragonhound3}\n"
+        f"sources:\n  youtube: {{channel_id: {CHANNEL}}}\n" + accounts,
+        encoding="utf-8",
+    )
     cfg = load_config(path)
     cfg.store_path = tmp_path / "s.sqlite"
     return cfg
@@ -42,10 +45,18 @@ def _config(tmp_path, accounts):
 
 def test_accounts_config(tmp_path):
     cfg = _config(tmp_path, "accounts: {bluesky: '@dragonhound.dev', mastodon: '@dragonhound@mapstodon.space'}\n")
-    assert cfg.accounts.bluesky == "dragonhound.dev" and cfg.accounts.youtube == CHANNEL and cfg.accounts.x == "dragonhound3"
+    assert (
+        cfg.accounts.bluesky == "dragonhound.dev"
+        and cfg.accounts.youtube == CHANNEL
+        and cfg.accounts.x == "dragonhound3"
+    )
     assert cfg.accounts.mastodon_parts == ("https://mapstodon.space", "dragonhound")
-    for bad in ("accounts: {threads: x}\n", "accounts: {bluesky: 'not a handle'}\n",
-                "accounts: {mastodon: dragonhound}\n", "accounts: {youtube: nope}\n"):
+    for bad in (
+        "accounts: {threads: x}\n",
+        "accounts: {bluesky: 'not a handle'}\n",
+        "accounts: {mastodon: dragonhound}\n",
+        "accounts: {youtube: nope}\n",
+    ):
         with pytest.raises(ConfigError):
             _config(tmp_path, bad)
 
@@ -67,15 +78,33 @@ def test_collect_counts_and_skips_missing_accounts(tmp_path):
 
 
 def test_import_x_and_followers_report(tmp_path, capsys):
-    from pip_release.cli import main
+    from argus_herald.cli import main
 
     cfg = tmp_path / "c.yaml"
-    cfg.write_text("pypi: {projects: [demo]}\ndestinations:\n  twitter: {enabled: true, username: dragonhound3}\n",
-                   encoding="utf-8")
+    cfg.write_text(
+        "pypi: {projects: [demo]}\ndestinations:\n  twitter: {enabled: true, username: dragonhound3}\n",
+        encoding="utf-8",
+    )
     base = ["--config", str(cfg), "--env", str(tmp_path / "no.env"), "--store", str(tmp_path / "s.sqlite")]
     assert main([*base, "followers"]) == 0 and "No metrics yet" in capsys.readouterr().out
-    assert main([*base, "import", "x-account", "--date", "2026-11-15", "--followers", "180", "--following", "407",
-                 "--posts", "2573"]) == 0
+    assert (
+        main(
+            [
+                *base,
+                "import",
+                "x-account",
+                "--date",
+                "2026-11-15",
+                "--followers",
+                "180",
+                "--following",
+                "407",
+                "--posts",
+                "2573",
+            ]
+        )
+        == 0
+    )
     assert main([*base, "import", "x-account", "--date", "2026-11-22", "--followers", "196"]) == 0
     assert main([*base, "import", "x-account", "--date", "nope", "--followers", "1"]) == 2
     capsys.readouterr()

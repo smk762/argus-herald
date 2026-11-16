@@ -1,7 +1,7 @@
 import json
 
-from pip_release.config import load_config
-from pip_release.discover import check_projects
+from argus_herald.config import load_config
+from argus_herald.discover import check_projects
 
 
 class Http:
@@ -31,8 +31,7 @@ def _config(tmp_path, projects, extra=""):
     path = tmp_path / "c.yaml"
     path.write_text(
         "pypi:\n  user: someone\n  projects: [" + ", ".join(projects) + "]\n"
-        "  discover: {github_owner: smk762, prefix: argus-}\n" + extra
-        + "destinations:\n  patreon: {enabled: true}\n",
+        "  discover: {github_owner: smk762, prefix: argus-}\n" + extra + "destinations:\n  patreon: {enabled: true}\n",
         encoding="utf-8",
     )
     cfg = load_config(path)
@@ -41,11 +40,22 @@ def _config(tmp_path, projects, extra=""):
 
 
 REPOS = [
-    {"name": "argus-atlas"}, {"name": "argus-mask"}, {"name": "argus-realms"}, {"name": "argus-studio"},
-    {"name": "argus-fork", "fork": True}, {"name": "argus-old", "archived": True}, {"name": "other"},
+    {"name": "argus-atlas"},
+    {"name": "argus-mask"},
+    {"name": "argus-realms"},
+    {"name": "argus-studio"},
+    {"name": "argus-fork", "fork": True},
+    {"name": "argus-old", "archived": True},
+    {"name": "other"},
 ]
-PYPROJECTS = {"argus-atlas": "argus-atlas", "argus-mask": "argus-mask", "argus-realms": "atlas-realms",
-              "argus-fork": "argus-fork", "argus-old": "argus-old", "other": "other-pkg"}
+PYPROJECTS = {
+    "argus-atlas": "argus-atlas",
+    "argus-mask": "argus-mask",
+    "argus-realms": "atlas-realms",
+    "argus-fork": "argus-fork",
+    "argus-old": "argus-old",
+    "other": "other-pkg",
+}
 KNOWN = {"argus-atlas", "argus-mask", "argus-fork", "argus-old", "other-pkg"}
 
 
@@ -71,7 +81,7 @@ def test_profile_and_ignore_list_are_used(tmp_path):
 
 
 def test_cli_exits_1_on_drift_and_0_when_clean(tmp_path, capsys):
-    from pip_release.cli import cmd_discover_check
+    from argus_herald.cli import cmd_discover_check
 
     cfg = _config(tmp_path, ["argus-atlas"])
     assert cmd_discover_check(cfg, Http(KNOWN, REPOS, PYPROJECTS), {}) == 1

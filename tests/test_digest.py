@@ -1,25 +1,31 @@
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
+from pathlib import Path
 
 import pytest
-
-from pip_release.config import ConfigError, load_config
-from pip_release.digest import (
-    build_digest, closed_windows, current_window, highlight, is_prerelease, period_label, promote,
-    suggest_headline, window_at,
-)
-from pip_release.platforms import PatreonPublisher, TwitterPublisher
-from pip_release.privacy import load_gate
-from pip_release.store import Store
-from pip_release.workflow import poll
-
 from conftest import DENY_TERM
+
+from argus_herald.config import ConfigError, load_config
+from argus_herald.digest import (
+    build_digest,
+    closed_windows,
+    current_window,
+    highlight,
+    is_prerelease,
+    period_label,
+    promote,
+    suggest_headline,
+    window_at,
+)
+from argus_herald.platforms import PatreonPublisher, TwitterPublisher
+from argus_herald.store import Store
+from argus_herald.workflow import poll
 
 ADDED = "### Added\n- Caption facets for every image\n- Faster index\n\n### Fixed\n- A crash\n"
 
 
 def at(text):
-    return datetime.fromisoformat(text).replace(tzinfo=timezone.utc)
+    return datetime.fromisoformat(text).replace(tzinfo=UTC)
 
 
 def _config(tmp_path, extra=""):
@@ -29,7 +35,8 @@ def _config(tmp_path, extra=""):
     path.write_text(
         "pypi: {projects: [argus-atlas]}\n"
         "destinations:\n  twitter: {enabled: true}\n  patreon: {enabled: true}\n"
-        f"digest:\n  anchor: 2026-11-16\n  window_days: 14\n  site_url: https://example.org/updates\n  site_dir: {site}\n" + extra,
+        f"digest:\n  anchor: 2026-11-16\n  window_days: 14\n  site_url: https://example.org/updates\n  site_dir: {site}\n"
+        + extra,
         encoding="utf-8",
     )
     cfg = load_config(path)
@@ -44,7 +51,12 @@ class PyPI:
     def request(self, method, url, body=None, headers=None):
         if url == "https://pypi.org/pypi/argus-atlas/json" or url.startswith("https://pypi.org/pypi/argus-atlas/"):
             data = {
-                "info": {"name": "argus-atlas", "version": list(self.uploads)[-1], "summary": "Bake tiles", "project_urls": {}},
+                "info": {
+                    "name": "argus-atlas",
+                    "version": list(self.uploads)[-1],
+                    "summary": "Bake tiles",
+                    "project_urls": {},
+                },
                 "releases": {v: [{"yanked": False, "upload_time_iso_8601": t}] for v, t in self.uploads.items()},
             }
             return 200, json.dumps(data).encode()
@@ -55,7 +67,7 @@ PUBS = [TwitterPublisher(), PatreonPublisher()]
 
 
 def test_windows_and_labels():
-    from pip_release.config import DigestSettings
+    from argus_herald.config import DigestSettings
 
     s = DigestSettings(anchor=date(2026, 11, 16))
     assert window_at(s, 0).end == date(2026, 11, 30) and window_at(s, 0).slug == "2026-11-30-digest"
@@ -92,7 +104,13 @@ def test_highlight_and_prerelease():
     assert highlight("- `serve` binds `127.0.0.1`. Pass `--host` to\n  change it.\n") == "`serve` binds `127.0.0.1`"
     long = "- " + "word " * 60 + "\n"
     assert highlight(long).endswith("word…") and len(highlight(long)) <= 120
-    assert [is_prerelease(v) for v in ("0.3.0rc1", "1.0.0a2", "2.0.0.dev1", "0.3.0", "1.2.3.post1")] == [True, True, True, False, False]
+    assert [is_prerelease(v) for v in ("0.3.0rc1", "1.0.0a2", "2.0.0.dev1", "0.3.0", "1.2.3.post1")] == [
+        True,
+        True,
+        True,
+        False,
+        False,
+    ]
 
 
 def test_window_close_drafts_one_page_and_one_draft_per_platform(tmp_path):
@@ -132,8 +150,14 @@ def test_window_close_drafts_one_page_and_one_draft_per_platform(tmp_path):
 
 def _digest_with(store, rows):
     for version, when, notes in rows:
-        store.add_release(project="argus-lens", version=version, released_at=when, summary="Index images",
-                          notes=notes, url=f"https://pypi.org/project/argus-lens/{version}/")
+        store.add_release(
+            project="argus-lens",
+            version=version,
+            released_at=when,
+            summary="Index images",
+            notes=notes,
+            url=f"https://pypi.org/project/argus-lens/{version}/",
+        )
         store.mark_seen("argus-lens", version)
     return store.create_digest("2026-11-16", "2026-11-29", "2026-11-30T00:00:00+00:00")
 
@@ -142,7 +166,10 @@ def test_exclude_and_rebuild_keep_edits(tmp_path, gate):
     cfg = _config(tmp_path)
     store = Store(cfg.store_path)
     store.mark_seen("argus-lens", "0.12.0")
-    digest_id = _digest_with(store, [("0.13.0", "2026-11-18T00:00:00+00:00", ADDED), ("0.13.1", "2026-11-19T00:00:00+00:00", "- Fixed a crash\n")])
+    digest_id = _digest_with(
+        store,
+        [("0.13.0", "2026-11-18T00:00:00+00:00", ADDED), ("0.13.1", "2026-11-19T00:00:00+00:00", "- Fixed a crash\n")],
+    )
     ids, status = build_digest(store, cfg.digest, PUBS, digest_id, gate)
     assert len(ids) == 2 and status.startswith("wrote ")
     x = store.get(ids[0])
@@ -187,15 +214,19 @@ def test_promote_makes_a_headline_group_and_optional_release_page(tmp_path, gate
     ids, status = promote(store, cfg.digest, PUBS, row, site_page=True, gate=gate)
     drafts = [store.get(i) for i in ids]
     assert {(d.kind, d.post_key) for d in drafts} == {("headline", "headline:argus-lens==0.13.0")}
-    assert status.startswith("wrote ") and "kind: release" in open(status.split(" ", 1)[1]).read()
+    assert status.startswith("wrote ") and "kind: release" in Path(status.split(" ", 1)[1]).read_text()
     assert promote(store, cfg.digest, PUBS, row)[0] == []  # idempotent
     store.close()
 
 
 def test_digest_config_is_validated(tmp_path):
     assert load_config_text(tmp_path, "digest: {mode: per_release}\n").digest is None
-    for bad in ("digest: {anchor: soon}\n", "digest: {anchor: 2026-11-16, window_days: 0}\n",
-                "digest: {anchor: 2026-11-16, site_url: http://x.org}\n", "digest: {anchor: 2026-11-16, platforms: [discord]}\n"):
+    for bad in (
+        "digest: {anchor: soon}\n",
+        "digest: {anchor: 2026-11-16, window_days: 0}\n",
+        "digest: {anchor: 2026-11-16, site_url: http://x.org}\n",
+        "digest: {anchor: 2026-11-16, platforms: [discord]}\n",
+    ):
         with pytest.raises(ConfigError):
             load_config_text(tmp_path, bad)
 
@@ -207,13 +238,19 @@ def load_config_text(tmp_path, block):
 
 
 def test_cli_digest_status_exclude_and_promote(tmp_path, capsys):
-    from pip_release.cli import main
+    from argus_herald.cli import main
 
     cfg_path = tmp_path / "c.yaml"
     _config(tmp_path)  # writes c.yaml and the site dir
     store = Store(tmp_path / "s.sqlite")
-    store.add_release(project="argus-lens", version="0.13.0", released_at="2099-01-01T00:00:00+00:00",
-                      summary="", notes=ADDED, url="https://pypi.org/project/argus-lens/0.13.0/")
+    store.add_release(
+        project="argus-lens",
+        version="0.13.0",
+        released_at="2099-01-01T00:00:00+00:00",
+        summary="",
+        notes=ADDED,
+        url="https://pypi.org/project/argus-lens/0.13.0/",
+    )
     store.close()
     base = ["--config", str(cfg_path), "--env", str(tmp_path / "no.env"), "--store", str(tmp_path / "s.sqlite")]
     assert main([*base, "digest"]) == 0

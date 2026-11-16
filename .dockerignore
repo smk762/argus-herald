@@ -1,7 +1,10 @@
 .git
 .venv
 .env
+.argus-herald
 .pip-release
+.ruff_cache
+node_modules
 __pycache__
 *.egg-info
 research_notes

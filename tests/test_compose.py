@@ -3,12 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from pip_release.config import ConfigError, load_config
-from pip_release.feeds import parse_atom
-from pip_release.models import Post
-from pip_release.platforms import PatreonPublisher, TwitterPublisher
-from pip_release.store import Store
-from pip_release.workflow import ReviewError, compose, poll
+from argus_herald.config import ConfigError, load_config
+from argus_herald.feeds import parse_atom
+from argus_herald.models import Post
+from argus_herald.platforms import PatreonPublisher, TwitterPublisher
+from argus_herald.store import Store
+from argus_herald.workflow import ReviewError, compose, poll
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SITE = "https://example.org/updates.xml"
@@ -41,7 +41,10 @@ def _feed(name):
 
 def test_parse_atom_reads_site_and_youtube_and_refuses_dtds():
     site = parse_atom(_feed("site_updates.xml"))
-    assert [(i.title, i.categories) for i in site] == [("Digest: first one", ("digest",)), ("Curator's numbers", ("note",))]
+    assert [(i.title, i.categories) for i in site] == [
+        ("Digest: first one", ("digest",)),
+        ("Curator's numbers", ("note",)),
+    ]
     video = parse_atom(_feed("youtube.xml"))[0]
     assert video.link == "https://www.youtube.com/watch?v=AAAAAAAAAAA" and video.summary == "A short demo."
     with pytest.raises(ValueError, match="DTD"):
@@ -49,23 +52,33 @@ def test_parse_atom_reads_site_and_youtube_and_refuses_dtds():
 
 
 def test_sources_config_is_validated(tmp_path):
-    cfg = _config(tmp_path, f"sources:\n  site: {{feed: {SITE}}}\n  youtube: {{channel_id: {CHANNEL}, platforms: [twitter]}}\n")
+    cfg = _config(
+        tmp_path, f"sources:\n  site: {{feed: {SITE}}}\n  youtube: {{channel_id: {CHANNEL}, platforms: [twitter]}}\n"
+    )
     assert [(f.name, f.url, f.categories, f.platforms) for f in cfg.feeds] == [
         ("site", SITE, ("note",), ()),
         ("youtube", YT, (), ("twitter",)),
     ]
-    for bad in ("sources:\n  youtube: {channel_id: nope}\n", "sources:\n  site: {feed: http://x.org/f}\n",
-                "sources:\n  rss: {}\n", f"sources:\n  youtube: {{channel_id: {CHANNEL}, platforms: [discord]}}\n"):
+    for bad in (
+        "sources:\n  youtube: {channel_id: nope}\n",
+        "sources:\n  site: {feed: http://x.org/f}\n",
+        "sources:\n  rss: {}\n",
+        f"sources:\n  youtube: {{channel_id: {CHANNEL}, platforms: [discord]}}\n",
+    ):
         with pytest.raises(ConfigError):
             _config(tmp_path, bad)
 
 
 def test_feeds_baseline_then_draft_new_items(tmp_path):
-    cfg = _config(tmp_path, f"sources:\n  site: {{feed: {SITE}}}\n  youtube: {{channel_id: {CHANNEL}, platforms: [twitter]}}\n")
+    cfg = _config(
+        tmp_path, f"sources:\n  site: {{feed: {SITE}}}\n  youtube: {{channel_id: {CHANNEL}, platforms: [twitter]}}\n"
+    )
     store = Store(cfg.store_path)
     pubs = [TwitterPublisher(), PatreonPublisher()]
     empty_yt = _feed("youtube.xml").split(b"<entry>")[0] + b"</feed>"
-    site_old = _feed("site_updates.xml").split(b"  <entry>\n    <id>tag:example.org,2026:updates/2026-11-20")[0] + b"</feed>"
+    site_old = (
+        _feed("site_updates.xml").split(b"  <entry>\n    <id>tag:example.org,2026:updates/2026-11-20")[0] + b"</feed>"
+    )
     http = FeedHttp({SITE: site_old, YT: empty_yt})
 
     first = poll(cfg, store, http, pubs)
@@ -96,7 +109,13 @@ def test_feeds_baseline_then_draft_new_items(tmp_path):
 
 def test_compose_makes_one_draft_per_destination(tmp_path):
     store = Store(tmp_path / "s.sqlite")
-    post = Post(kind="demo", subject="", text="Hex territories on real terrain.\nShort clip.", link="https://example.org/realms", title="Realms demo")
+    post = Post(
+        kind="demo",
+        subject="",
+        text="Hex territories on real terrain.\nShort clip.",
+        link="https://example.org/realms",
+        title="Realms demo",
+    )
     ids = compose(store, [TwitterPublisher(), PatreonPublisher()], post)
     x, patreon = (store.get(i) for i in ids)
     assert x.body == "Hex territories on real terrain.\nShort clip.\n\nhttps://example.org/realms"
@@ -105,7 +124,9 @@ def test_compose_makes_one_draft_per_destination(tmp_path):
     assert x.label == "Realms demo"  # no label given: the title, then the first line of text
     untitled = compose(store, [TwitterPublisher()], Post(kind="demo", subject="", text="First line\nmore", link=""))
     assert store.get(untitled[0]).label == "First line"
-    long = compose(store, [TwitterPublisher()], Post(kind="note", subject="Long", text="word " * 100, link="https://example.org/n"))
+    long = compose(
+        store, [TwitterPublisher()], Post(kind="note", subject="Long", text="word " * 100, link="https://example.org/n")
+    )
     assert store.get(long[0]).body.endswith("https://example.org/n")
     for bad in (Post("demo", "", "", ""), Post("demo", "", "x", "http://example.org"), Post("release", "", "x", "")):
         with pytest.raises(ReviewError):
@@ -139,5 +160,7 @@ def test_old_drafts_table_is_migrated_with_accepts_intact(tmp_path):
     draft = store.get(7)
     assert (draft.kind, draft.post_key, draft.label) == ("release", "release:argus-atlas==0.2.0", "argus-atlas 0.2.0")
     assert store.accepted(7) == {"email:a@b.test": "fine"}
-    assert store.add_draft(project="argus-atlas", version="0.2.0", platform="twitter", title="", body="b", link="l") == (7, False)
+    assert store.add_draft(
+        project="argus-atlas", version="0.2.0", platform="twitter", title="", body="b", link="l"
+    ) == (7, False)
     store.close()

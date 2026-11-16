@@ -2,17 +2,24 @@ import json
 import types
 
 import pytest
-
-from pip_release.config import Audience, Destination, DraftingSettings, ConfigError, load_config
-from pip_release.digest import build_digest, regenerate
-from pip_release.drafting import (
-    AnthropicBackend, Backend, DraftingError, OpenAICompatible, Request, backend_from, clean, configured_backend,
-    draft, problems,
-)
-from pip_release.platforms import PatreonPublisher, TwitterPublisher
-from pip_release.store import Store
-
 from conftest import DENY_TERM
+
+from argus_herald.config import Audience, ConfigError, Destination, DraftingSettings, load_config
+from argus_herald.digest import build_digest, regenerate
+from argus_herald.drafting import (
+    AnthropicBackend,
+    Backend,
+    DraftingError,
+    OpenAICompatible,
+    Request,
+    backend_from,
+    clean,
+    configured_backend,
+    draft,
+    problems,
+)
+from argus_herald.platforms import PatreonPublisher, TwitterPublisher
+from argus_herald.store import Store
 
 OPENING = "Argus digest, 16–29 Nov 2026: 2 releases across 2 packages."
 GOOD = OPENING + "\n\n• lens 0.13.0: caption facets for every image\n• atlas 0.4.0: painted coastlines"
@@ -45,7 +52,7 @@ def test_rules_and_cleaning():
     assert any("didn't start with" in p for p in problems("Hello", x(), "", req))
     assert any("too long" in p for p in problems(OPENING + " " + "word " * 60, x(), "https://e.org", req))
     assert problems(GOOD + " 🙂", x(Audience(emoji=True)), "", req) == []
-    assert clean("<think>plan it</think>\n\"Hello\"") == "Hello"
+    assert clean('<think>plan it</think>\n"Hello"') == "Hello"
     assert clean("• lens 0.12.0: `serve` binds **localhost**") == "• lens 0.12.0: serve binds localhost"
     assert clean("reasoning without an opening tag</think>Hi") == "Hi"
     assert any("empty" in p for p in problems(clean("<think>only</think>"), x(), "", req))
@@ -91,21 +98,29 @@ def test_remote_backend_gets_scrubbed_facts_and_needs_a_gate(gate):
 
 def test_backend_config_and_urls(tmp_path):
     settings = DraftingSettings(backend="openai_compatible")
-    assert configured_backend(settings, {}, Chat())[1].startswith("assisted drafting is off: Set PIP_RELEASE_LLM_BASE_URL")
-    env = {"PIP_RELEASE_LLM_BASE_URL": "http://192.168.0.9:11434/v1", "PIP_RELEASE_LLM_MODEL": "mistral-nemo"}
+    assert configured_backend(settings, {}, Chat())[1].startswith(
+        "assisted drafting is off: Set ARGUS_HERALD_LLM_BASE_URL"
+    )
+    env = {"ARGUS_HERALD_LLM_BASE_URL": "http://192.168.0.9:11434/v1", "ARGUS_HERALD_LLM_MODEL": "mistral-nemo"}
     assert backend_from(settings, env, Chat()).label == "openai_compatible:mistral-nemo"
     for url in ("http://example.com/v1", "ftp://192.168.0.9/v1", "http://user:pw@localhost/v1"):
         with pytest.raises(DraftingError):
-            backend_from(settings, {**env, "PIP_RELEASE_LLM_BASE_URL": url}, Chat())
+            backend_from(settings, {**env, "ARGUS_HERALD_LLM_BASE_URL": url}, Chat())
     assert backend_from(DraftingSettings(), env, Chat()) is None
     assert backend_from(DraftingSettings(backend="anthropic"), {}, Chat()).label == "anthropic:claude-opus-5-5"
     path = tmp_path / "c.yaml"
-    for bad in ("drafting: {backend: gpt}\n", "drafting: {models: {summary: x}}\n", "drafting: {timeout: 1}\n",
-                "drafting: {effort: extreme}\n"):
+    for bad in (
+        "drafting: {backend: gpt}\n",
+        "drafting: {models: {summary: x}}\n",
+        "drafting: {timeout: 1}\n",
+        "drafting: {effort: extreme}\n",
+    ):
         path.write_text("pypi: {projects: [a]}\n" + bad, encoding="utf-8")
         with pytest.raises(ConfigError):
             load_config(path)
-    path.write_text("pypi: {projects: [a]}\ndrafting: {backend: openai_compatible, models: {digest: big}}\n", encoding="utf-8")
+    path.write_text(
+        "pypi: {projects: [a]}\ndrafting: {backend: openai_compatible, models: {digest: big}}\n", encoding="utf-8"
+    )
     assert load_config(path).drafting.model_for("digest") == "big"
 
 
@@ -135,14 +150,21 @@ def test_anthropic_request_shape_and_refusal(monkeypatch):
 
 
 def _digest(tmp_path):
-    from pip_release.config import DigestSettings
     from datetime import date
+
+    from argus_herald.config import DigestSettings
 
     settings = DigestSettings(anchor=date(2026, 11, 16), site_url="https://example.org/updates/", site_dir=tmp_path)
     store = Store(tmp_path / "s.sqlite")
     for project, version, day in (("argus-lens", "0.13.0", 18), ("argus-atlas", "0.4.0", 19)):
-        store.add_release(project=project, version=version, released_at=f"2026-11-{day}T00:00:00+00:00", summary="s",
-                          notes="### Added\n- Something new\n", url=f"https://pypi.org/project/{project}/{version}/")
+        store.add_release(
+            project=project,
+            version=version,
+            released_at=f"2026-11-{day}T00:00:00+00:00",
+            summary="s",
+            notes="### Added\n- Something new\n",
+            url=f"https://pypi.org/project/{project}/{version}/",
+        )
     return settings, store, store.create_digest("2026-11-16", "2026-11-29", "2026-11-30T00:00:00+00:00")
 
 
@@ -153,7 +175,9 @@ def test_digest_uses_the_model_and_falls_back_with_a_note(tmp_path, gate):
     x_draft, patreon = store.get(ids[0]), store.get(ids[1])
     assert x_draft.drafted_by == "openai_compatible:nemo"
     assert x_draft.body == GOOD + "\n\nhttps://example.org/updates/2026-11-30-digest/"
-    assert patreon.drafted_by == "template" and patreon.note.startswith("Template used: assisted draft broke the rules twice")
+    assert patreon.drafted_by == "template" and patreon.note.startswith(
+        "Template used: assisted draft broke the rules twice"
+    )
 
     store.update_text(ids[0], "", "My words", ("pending",))
     with pytest.raises(ValueError, match="edited by a person"):

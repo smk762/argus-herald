@@ -1,4 +1,4 @@
-// With PIP_RELEASE_UI_TOKEN set, nothing but the sign-in page is reachable without the token.
+// With ARGUS_HERALD_UI_TOKEN set, nothing but the sign-in page is reachable without the token.
 // Bombadil is never given the token: it types guesses, follows links, jumps to every route and
 // posts forged forms to the action endpoints.
 import { always } from "@antithesishq/bombadil";

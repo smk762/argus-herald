@@ -9,13 +9,13 @@ def private_denylist(tmp_path, monkeypatch):
     path = tmp_path / "opsec-denylist.txt"
     path.write_text(f"# test deny-list\n{DENY_TERM}\n", encoding="utf-8")
     path.chmod(0o600)
-    monkeypatch.setenv("PIP_RELEASE_OPSEC_DENYLIST", str(path))
+    monkeypatch.setenv("ARGUS_HERALD_OPSEC_DENYLIST", str(path))
     monkeypatch.setenv("AI_AUDIT_OPSEC_DENYLIST", str(tmp_path / "no-auditor-list.txt"))
     return path
 
 
 @pytest.fixture
 def gate(private_denylist):
-    from pip_release.privacy import load_gate
+    from argus_herald.privacy import load_gate
 
     return load_gate({})
