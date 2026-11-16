@@ -480,6 +480,7 @@ def create_app(
     app = Starlette(routes=routes)
     app.state.templates = templates
     app.state.accounts = account_links(config, state["publishers"])
+    app.state.locked = bool(state["token"])
     app.add_middleware(
         SessionMiddleware,
         secret_key=secret,
@@ -904,7 +905,12 @@ def _render(request: Request, name: str, status_code: int = 200, **context: obje
     context["csrf"] = _csrf(request)
     context.setdefault("filters", None)
     context.setdefault("status", "")
-    context.setdefault("accounts", getattr(request.app.state, "accounts", None))
+    # Before sign-in the page shows nothing about the queue: no sections, packages or accounts.
+    signed_in = not getattr(request.app.state, "locked", False) or bool(request.session.get("reviewer"))
+    context["signed_in"] = signed_in
+    context.setdefault("accounts", getattr(request.app.state, "accounts", None) if signed_in else None)
+    theme = request.cookies.get("theme")
+    context["theme"] = theme if theme in ("light", "dark") else None
     return templates.TemplateResponse(request, name, context, status_code=status_code)
 
 

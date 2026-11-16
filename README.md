@@ -360,3 +360,21 @@ The review service is on `http://127.0.0.1:8787/` after `PIP_RELEASE_UI_TOKEN` i
 ```bash
 pytest
 ```
+
+### UI properties (Bombadil)
+
+[Bombadil](https://github.com/antithesishq/bombadil) explores the review UI on its own (clicks, typing, Back, jumps to any route, forms forced past disabled buttons) and checks properties in every state it reaches:
+
+- Approve and Publish are never enabled for a draft with an unresolved privacy hit or an attachment without alt text, and no forced submission gets such a draft approved.
+- Publish and scheduling appear only for approved drafts (Publish also retries a failed one); Open in X only once an X draft is handed off.
+- Saving an edit returns the draft to pending.
+- With `PIP_RELEASE_UI_TOKEN` set, only the sign-in page is reachable, and it shows nothing from the queue.
+- No 5xx, uncaught exceptions or console errors; WCAG AA text contrast; the chosen light or dark theme is the one shown.
+
+```bash
+cd tests/bombadil && npm install
+CHROME=/path/to/chrome TIME_LIMIT=60s ./run.sh     # light, dark and token-locked runs
+npx bombadil browser inspect out/light             # step through a run
+```
+
+`serve.py` starts the UI on a fresh temporary store with seeded drafts in every state, a fixture deny-list and fake publishers (nothing is posted), on a port the OS picks. CI runs both suites on every pull request.

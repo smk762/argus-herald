@@ -1,0 +1,11 @@
+{
+  "name": "herald-ui-properties",
+  "private": true,
+  "description": "Bombadil property tests for the review UI",
+  "scripts": {
+    "test": "./run.sh"
+  },
+  "devDependencies": {
+    "@antithesishq/bombadil": "0.7.10"
+  }
+}

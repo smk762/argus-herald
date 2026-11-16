@@ -23,6 +23,7 @@
   <p class="note">{{ draft.note }}</p>
   {% endif %}
   {% set blocked = gate_error or hits or media_problems %}
+  {% set blocked_why = "Resolve the privacy gate first" if (gate_error or hits) else "Fix the media problems first" %}
   {% if audience and (audience.description or audience.tone or audience.include or audience.link_placement == "reply") %}
   <aside class="audience" aria-label="Audience">
     {% if audience.description %}<p><strong>Audience:</strong> {{ audience.description }}</p>{% endif %}
@@ -134,7 +135,7 @@
       <button type="submit">Save</button>
       {% endif %}
       {% if can_approve %}
-      <button type="submit" class="primary" formaction="/drafts/{{ draft.id }}/approve"{% if blocked %} disabled title="Resolve the privacy gate first"{% endif %}>Approve</button>
+      <button type="submit" class="primary" formaction="/drafts/{{ draft.id }}/approve"{% if blocked %} disabled title="{{ blocked_why }}"{% endif %}>Approve</button>
       {% endif %}
     </div>
     {% if can_edit %}
@@ -227,7 +228,7 @@
     {% if can_publish %}
     <form method="post" action="/drafts/{{ draft.id }}/publish">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button type="submit" class="primary"{% if blocked %} disabled title="Resolve the privacy gate first"{% endif %}>Publish</button>
+      <button type="submit" class="primary"{% if blocked %} disabled title="{{ blocked_why }}"{% endif %}>Publish</button>
     </form>
     {% endif %}
     {% if can_reject %}

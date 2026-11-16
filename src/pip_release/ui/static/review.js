@@ -45,3 +45,29 @@ function bindCopy(button) {
 }
 
 document.querySelectorAll("button.copy").forEach(bindCopy);
+
+// Light/dark: without a choice the page follows the system. The choice is kept in a cookie so the
+// server renders it on the first paint.
+function bindThemeToggle(button) {
+  const root = document.documentElement;
+  const effective = () =>
+    root.dataset.theme || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  const label = () => {
+    button.textContent = effective() === "dark" ? "Light theme" : "Dark theme";
+  };
+  button.addEventListener("click", () => {
+    const next = effective() === "dark" ? "light" : "dark";
+    root.dataset.theme = next;
+    document.cookie = `theme=${next}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    label();
+  });
+  // Back/Forward can restore a page rendered before the last switch: apply the current choice.
+  window.addEventListener("pageshow", () => {
+    const saved = /(?:^|;\s*)theme=(light|dark)/.exec(document.cookie);
+    if (saved) root.dataset.theme = saved[1];
+    label();
+  });
+  label();
+}
+
+document.querySelectorAll("[data-theme-toggle]").forEach(bindThemeToggle);
