@@ -1,10 +1,10 @@
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from pip_release.cli import main
-from pip_release.engagement import (
+from argus_herald.cli import main
+from argus_herald.engagement import (
     bluesky_ref,
     collect_posts,
     collect_site,
@@ -13,10 +13,10 @@ from pip_release.engagement import (
     mastodon_ref,
     record_x_week,
 )
-from pip_release.metrics import Metrics
-from pip_release.schedule import suggest
+from argus_herald.metrics import Metrics
+from argus_herald.schedule import suggest
 
-T0 = datetime(2026, 11, 23, 9, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 23, 9, 0, tzinfo=UTC)
 DID = "did:plc:abc123"
 BSKY_POST = "https://bsky.app/profile/dragonhound.dev/post/3kabc"
 TOOT = "https://mapstodon.space/@dragonhound/113000000000000001"
@@ -35,20 +35,61 @@ class Fake:
         if "resolveHandle" in url:
             return j({"did": DID})
         if "getPosts" in url:
-            return j({"posts": [{"uri": f"at://{DID}/app.bsky.feed.post/3kabc", "likeCount": self.likes,
-                                 "repostCount": 1, "replyCount": 2, "quoteCount": 0}]})
+            return j(
+                {
+                    "posts": [
+                        {
+                            "uri": f"at://{DID}/app.bsky.feed.post/3kabc",
+                            "likeCount": self.likes,
+                            "repostCount": 1,
+                            "replyCount": 2,
+                            "quoteCount": 0,
+                        }
+                    ]
+                }
+            )
         if "/api/v1/statuses/113000000000000001" in url:
             return j({"favourites_count": 5, "reblogs_count": 2, "replies_count": 1})
         if "/api/v1/statuses/" in url:
             return 404, b"{}"
         if "graphql" in url:
             self.posted.append(json.loads(body))
-            return j({"data": {"viewer": {"accounts": [{
-                "paths": [{"count": 40, "sum": {"visits": 30}, "dimensions": {"date": "2026-11-20", "requestPath": "/updates/"}},
-                          {"count": 5, "sum": {"visits": 5}, "dimensions": {"date": "2026-11-21", "requestPath": "/"}}],
-                "referrers": [{"count": 20, "sum": {"visits": 18}, "dimensions": {"date": "2026-11-20", "refererHost": "bsky.app"}},
-                              {"count": 25, "sum": {"visits": 17}, "dimensions": {"date": "2026-11-20", "refererHost": ""}}],
-            }]}}})
+            return j(
+                {
+                    "data": {
+                        "viewer": {
+                            "accounts": [
+                                {
+                                    "paths": [
+                                        {
+                                            "count": 40,
+                                            "sum": {"visits": 30},
+                                            "dimensions": {"date": "2026-11-20", "requestPath": "/updates/"},
+                                        },
+                                        {
+                                            "count": 5,
+                                            "sum": {"visits": 5},
+                                            "dimensions": {"date": "2026-11-21", "requestPath": "/"},
+                                        },
+                                    ],
+                                    "referrers": [
+                                        {
+                                            "count": 20,
+                                            "sum": {"visits": 18},
+                                            "dimensions": {"date": "2026-11-20", "refererHost": "bsky.app"},
+                                        },
+                                        {
+                                            "count": 25,
+                                            "sum": {"visits": 17},
+                                            "dimensions": {"date": "2026-11-20", "refererHost": ""},
+                                        },
+                                    ],
+                                }
+                            ]
+                        }
+                    }
+                }
+            )
         return 404, b"{}"
 
 
@@ -57,8 +98,20 @@ def _metrics(tmp_path):
 
 
 def _broadcast(metrics, platform, url, at=T0):
-    metrics.upsert("events", [{"kind": "broadcast", "source": platform, "project": "", "version": "",
-                               "at": at.isoformat(), "url": url, "detail": "{}"}])
+    metrics.upsert(
+        "events",
+        [
+            {
+                "kind": "broadcast",
+                "source": platform,
+                "project": "",
+                "version": "",
+                "at": at.isoformat(),
+                "url": url,
+                "detail": "{}",
+            }
+        ],
+    )
 
 
 def test_post_refs():
@@ -82,7 +135,9 @@ def test_posts_are_sampled_once_per_checkpoint(tmp_path):
 
     report = collect_posts(metrics, http, T0 + timedelta(hours=1, minutes=5))
     assert report.errors == [] and len(report.lines) == 2
-    rows = metrics.conn.execute("SELECT platform, likes, reposts, replies FROM post_metrics ORDER BY platform").fetchall()
+    rows = metrics.conn.execute(
+        "SELECT platform, likes, reposts, replies FROM post_metrics ORDER BY platform"
+    ).fetchall()
     assert [tuple(r) for r in rows] == [("bluesky", 3, 1, 2), ("mastodon", 5, 2, 1)]
 
     calls = len(http.calls)
@@ -127,8 +182,15 @@ def test_x_analytics_import_matches_broadcasts(tmp_path):
     result = import_x_analytics(metrics, X_POSTS_CSV, "dragonhound3", now=T0 + timedelta(days=2))
     assert (result.posts, result.matched) == (2, 1) and len(result.skipped) == 1
     row = metrics.conn.execute("SELECT * FROM post_metrics WHERE external_id = ?", (X_POST,)).fetchone()
-    assert (row["platform"], row["impressions"], row["likes"], row["reposts"], row["link_clicks"],
-            row["profile_visits"], row["source"]) == ("twitter", 1204, 14, 4, 7, 9, "x-analytics")
+    assert (
+        row["platform"],
+        row["impressions"],
+        row["likes"],
+        row["reposts"],
+        row["link_clicks"],
+        row["profile_visits"],
+        row["source"],
+    ) == ("twitter", 1204, 14, 4, 7, 9, "x-analytics")
     assert metrics.count("post_metrics", external_id="https://x.com/dragonhound3/status/1990000000000000002") == 1
 
     days = import_x_analytics(metrics, X_DAYS_CSV, "dragonhound3")
@@ -144,7 +206,12 @@ def test_x_week_and_slot_suggestions(tmp_path):
     metrics = _metrics(tmp_path)
     record_x_week(metrics, "dragonhound3", date(2026, 11, 23), date(2026, 11, 29), impressions=9000, link_clicks=40)
     row = metrics.conn.execute("SELECT * FROM account_engagement").fetchone()
-    assert (row["end_date"], row["impressions"], row["link_clicks"], row["source"]) == ("2026-11-29", 9000, 40, "manual")
+    assert (row["end_date"], row["impressions"], row["link_clicks"], row["source"]) == (
+        "2026-11-29",
+        9000,
+        40,
+        "manual",
+    )
 
     _broadcast(metrics, "twitter", X_POST)
     import_x_analytics(metrics, X_POSTS_CSV, "dragonhound3")
@@ -155,8 +222,13 @@ def test_x_week_and_slot_suggestions(tmp_path):
 
 def test_site_traffic_replaces_the_window(tmp_path):
     metrics = _metrics(tmp_path)
-    metrics.upsert("site_traffic", [{"date": "2026-11-20", "path": "/old/", "pageviews": 1, "visits": 1},
-                                    {"date": "2026-11-01", "path": "/", "pageviews": 7, "visits": 7}])
+    metrics.upsert(
+        "site_traffic",
+        [
+            {"date": "2026-11-20", "path": "/old/", "pageviews": 1, "visits": 1},
+            {"date": "2026-11-01", "path": "/", "pageviews": 7, "visits": 7},
+        ],
+    )
     http = Fake()
     env = {"CF_API_TOKEN": "t", "CF_ACCOUNT_ID": "a", "CF_SITE_TAG": "s"}
     detail = collect_site(metrics, http, env, today=date(2026, 11, 22))
@@ -180,8 +252,9 @@ def test_site_traffic_reports_graphql_errors(tmp_path):
 
 def test_import_cli(tmp_path, capsys):
     cfg = tmp_path / "c.yaml"
-    cfg.write_text("pypi: {projects: []}\ndestinations:\n  twitter: {enabled: true, username: dragonhound3}\n",
-                   encoding="utf-8")
+    cfg.write_text(
+        "pypi: {projects: []}\ndestinations:\n  twitter: {enabled: true, username: dragonhound3}\n", encoding="utf-8"
+    )
     base = ["--config", str(cfg), "--env", str(tmp_path / "no.env"), "--store", str(tmp_path / "s.sqlite")]
     csv_file = tmp_path / "x.csv"
     csv_file.write_text(X_POSTS_CSV, encoding="utf-8")

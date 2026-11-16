@@ -17,7 +17,7 @@ import shutil
 import socket
 import sys
 import tempfile
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -25,9 +25,9 @@ sys.path.insert(0, str(HERE.parents[1] / "src"))
 
 from PIL import Image  # noqa: E402
 
-from pip_release.config import load_config  # noqa: E402
-from pip_release.store import Store  # noqa: E402
-from pip_release.workflow import attach_media  # noqa: E402
+from argus_herald.config import load_config  # noqa: E402
+from argus_herald.store import Store  # noqa: E402
+from argus_herald.workflow import attach_media  # noqa: E402
 
 DENY_TERM = "zebra-canyon-7"  # the fixture deny-list's only term
 
@@ -115,10 +115,24 @@ def seed(root: Path):
     failed = draft("patreon", "argus-atlas 0.2.0 is out.", **old)
     store.transition(failed, ("pending",), "failed", error="Patreon was down")
     # Digest and headline drafts (Regenerate uses the template backend here).
-    store.add_draft(platform="discord", title="", body="Two weeks of Argus: atlas 0.3.0, lens 1.1.0.", link="",
-                    kind="digest", post_key="digest:2026-11-16", subject="Digest 16 Nov")
-    store.add_draft(platform="telegram", title="", body="Argus Lens 1.1.0 adds heatmaps.", link="",
-                    kind="headline", post_key="headline:argus-lens==1.1.0", subject="Lens 1.1.0")
+    store.add_draft(
+        platform="discord",
+        title="",
+        body="Two weeks of Argus: atlas 0.3.0, lens 1.1.0.",
+        link="",
+        kind="digest",
+        post_key="digest:2026-11-16",
+        subject="Digest 16 Nov",
+    )
+    store.add_draft(
+        platform="telegram",
+        title="",
+        body="Argus Lens 1.1.0 adds heatmaps.",
+        link="",
+        kind="headline",
+        post_key="headline:argus-lens==1.1.0",
+        subject="Lens 1.1.0",
+    )
     store.conn.commit()
     store.close()
     return config
@@ -129,19 +143,55 @@ def seed_metrics(path: Path, today: date | None = None) -> None:
     import math
     import random
 
-    from pip_release.metrics import Metrics
+    from argus_herald.metrics import Metrics
 
-    today = today or datetime.now(timezone.utc).date()
+    today = today or datetime.now(UTC).date()
     rng = random.Random(7)
     m = Metrics(path)
     days = [today - timedelta(days=i) for i in range(120, -1, -1)]
     posts = [  # (days ago, hour, platform, url, kind, subject, media, drafted_by)
-        (40, 14, "twitter", "https://x.com/herald_test/status/1900000000000000001", "release", "atlas 0.2.0", 1, "template"),
+        (
+            40,
+            14,
+            "twitter",
+            "https://x.com/herald_test/status/1900000000000000001",
+            "release",
+            "atlas 0.2.0",
+            1,
+            "template",
+        ),
         (40, 15, "discord", "draft:101", "release", "atlas 0.2.0", 0, "template"),
-        (25, 9, "bluesky", "https://bsky.app/profile/herald.test/post/3kaaa", "digest", "Digest 1", 1, "openai_compatible:llama3.1"),
-        (24, 10, "mastodon", "https://mapstodon.space/@herald/113000000000000001", "digest", "Digest 1", 0, "openai_compatible:llama3.1"),
+        (
+            25,
+            9,
+            "bluesky",
+            "https://bsky.app/profile/herald.test/post/3kaaa",
+            "digest",
+            "Digest 1",
+            1,
+            "openai_compatible:llama3.1",
+        ),
+        (
+            24,
+            10,
+            "mastodon",
+            "https://mapstodon.space/@herald/113000000000000001",
+            "digest",
+            "Digest 1",
+            0,
+            "openai_compatible:llama3.1",
+        ),
         (12, 16, "reddit", "https://www.reddit.com/r/Python/comments/abc/", "demo", "Atlas demo", 1, "logged"),
-        (11, 14, "twitter", "https://x.com/herald_test/status/1900000000000000002", "headline", "lens 1.1.0", 1, "anthropic:claude"),
+        (
+            11,
+            14,
+            "twitter",
+            "https://x.com/herald_test/status/1900000000000000002",
+            "headline",
+            "lens 1.1.0",
+            1,
+            "anthropic:claude",
+        ),
         (5, 8, "bluesky", "https://bsky.app/profile/herald.test/post/3kbbb", "note", "Build note", 0, "template"),
     ]
     boost = {}
@@ -158,68 +208,172 @@ def seed_metrics(path: Path, today: date | None = None) -> None:
     for day in days[-45:]:
         for repo in stars:
             b = boost.get(day, 0)
-            traffic.append({"repo": repo, "date": day.isoformat(), "views": 20 + rng.randint(0, 15) + b,
-                            "uniques": 6 + rng.randint(0, 5) + b // 3, "clones": rng.randint(0, 6), "clone_uniques": rng.randint(0, 3)})
+            traffic.append(
+                {
+                    "repo": repo,
+                    "date": day.isoformat(),
+                    "views": 20 + rng.randint(0, 15) + b,
+                    "uniques": 6 + rng.randint(0, 5) + b // 3,
+                    "clones": rng.randint(0, 6),
+                    "clone_uniques": rng.randint(0, 3),
+                }
+            )
             stars[repo] += rng.random() < (0.5 if b else 0.15)
             counts.append({"repo": repo, "date": day.isoformat(), "stars": stars[repo]})
     m.upsert("gh_traffic", traffic)
     m.upsert("gh_star_counts", counts)
     refs = []
-    for j, day in enumerate(days[-30:]):
-        for referrer, base in (("github.com", 12), ("t.co", 4), ("bsky.app", 3), ("mapstodon.space", 1),
-                               ("www.reddit.com", 2), ("google.com", 5), ("news.ycombinator.com", 0), ("herald-test.example", 2)):
-            u = base + rng.randint(0, 3) + (boost.get(day, 0) // 6 if referrer in ("t.co", "bsky.app", "www.reddit.com") else 0)
+    for day in days[-30:]:
+        for referrer, base in (
+            ("github.com", 12),
+            ("t.co", 4),
+            ("bsky.app", 3),
+            ("mapstodon.space", 1),
+            ("www.reddit.com", 2),
+            ("google.com", 5),
+            ("news.ycombinator.com", 0),
+            ("herald-test.example", 2),
+        ):
+            u = (
+                base
+                + rng.randint(0, 3)
+                + (boost.get(day, 0) // 6 if referrer in ("t.co", "bsky.app", "www.reddit.com") else 0)
+            )
             if u:
-                refs.append({"repo": "argus-atlas", "snapshot_date": day.isoformat(), "referrer": referrer, "count": u * 2, "uniques": u})
+                refs.append(
+                    {
+                        "repo": "argus-atlas",
+                        "snapshot_date": day.isoformat(),
+                        "referrer": referrer,
+                        "count": u * 2,
+                        "uniques": u,
+                    }
+                )
     m.upsert("gh_referrers", refs)
-    m.upsert("site_traffic", [{"date": d_.isoformat(), "path": "/updates/", "pageviews": 30 + rng.randint(0, 20) + boost.get(d_, 0),
-                               "visits": 20 + rng.randint(0, 10) + boost.get(d_, 0) // 2} for d_ in days[-28:]])
-    events = [{"kind": "release", "source": "pypi", "project": pkg, "version": ver,
-               "at": f"{(today - timedelta(days=ago)).isoformat()}T12:00:00+00:00",
-               "url": f"https://pypi.org/project/{pkg}/{ver}/", "detail": ""}
-              for pkg, ver, ago in (("argus-atlas", "0.2.0", 41), ("argus-lens", "1.1.0", 12), ("argus-atlas", "0.3.0", 3))]
+    m.upsert(
+        "site_traffic",
+        [
+            {
+                "date": d_.isoformat(),
+                "path": "/updates/",
+                "pageviews": 30 + rng.randint(0, 20) + boost.get(d_, 0),
+                "visits": 20 + rng.randint(0, 10) + boost.get(d_, 0) // 2,
+            }
+            for d_ in days[-28:]
+        ],
+    )
+    events = [
+        {
+            "kind": "release",
+            "source": "pypi",
+            "project": pkg,
+            "version": ver,
+            "at": f"{(today - timedelta(days=ago)).isoformat()}T12:00:00+00:00",
+            "url": f"https://pypi.org/project/{pkg}/{ver}/",
+            "detail": "",
+        }
+        for pkg, ver, ago in (("argus-atlas", "0.2.0", 41), ("argus-lens", "1.1.0", 12), ("argus-atlas", "0.3.0", 3))
+    ]
     metrics_rows = []
     for ago, hour, platform, url, kind, subject, media, drafted_by in posts:
-        at = datetime.combine(today - timedelta(days=ago), datetime.min.time(), timezone.utc) + timedelta(hours=hour)
-        events.append({"kind": "broadcast", "source": platform, "project": "argus-atlas" if "atlas" in subject else "",
-                       "version": "", "at": at.isoformat(), "url": url,
-                       "detail": json.dumps({"kind": kind, "subject": subject, "text": f"{subject}: what changed and why.",
-                                             "logged": drafted_by == "logged", "drafted_by": drafted_by,
-                                             "post": f"post:{subject}", "media": media})})
+        at = datetime.combine(today - timedelta(days=ago), datetime.min.time(), UTC) + timedelta(hours=hour)
+        events.append(
+            {
+                "kind": "broadcast",
+                "source": platform,
+                "project": "argus-atlas" if "atlas" in subject else "",
+                "version": "",
+                "at": at.isoformat(),
+                "url": url,
+                "detail": json.dumps(
+                    {
+                        "kind": kind,
+                        "subject": subject,
+                        "text": f"{subject}: what changed and why.",
+                        "logged": drafted_by == "logged",
+                        "drafted_by": drafted_by,
+                        "post": f"post:{subject}",
+                        "media": media,
+                    }
+                ),
+            }
+        )
         if platform in ("bluesky", "mastodon"):
             for hours, scale in ((1, 1), (24, 4), (72, 6), (168, 7)):
-                if at + timedelta(hours=hours) < datetime.now(timezone.utc):
-                    metrics_rows.append({"platform": platform, "external_id": url,
-                                         "fetched_at": (at + timedelta(hours=hours, minutes=3)).isoformat(),
-                                         "likes": 2 * scale, "reposts": scale, "replies": scale // 2, "quotes": 0,
-                                         "impressions": None, "engagements": None, "link_clicks": None,
-                                         "profile_visits": None, "source": "api"})
+                if at + timedelta(hours=hours) < datetime.now(UTC):
+                    metrics_rows.append(
+                        {
+                            "platform": platform,
+                            "external_id": url,
+                            "fetched_at": (at + timedelta(hours=hours, minutes=3)).isoformat(),
+                            "likes": 2 * scale,
+                            "reposts": scale,
+                            "replies": scale // 2,
+                            "quotes": 0,
+                            "impressions": None,
+                            "engagements": None,
+                            "link_clicks": None,
+                            "profile_visits": None,
+                            "source": "api",
+                        }
+                    )
         if platform == "twitter":
-            metrics_rows.append({"platform": platform, "external_id": url, "fetched_at": (at + timedelta(days=8)).isoformat(),
-                                 "likes": 14, "reposts": 3, "replies": 2, "quotes": 1, "impressions": 1800,
-                                 "engagements": 60, "link_clicks": 9, "profile_visits": 11, "source": "x-analytics"})
+            metrics_rows.append(
+                {
+                    "platform": platform,
+                    "external_id": url,
+                    "fetched_at": (at + timedelta(days=8)).isoformat(),
+                    "likes": 14,
+                    "reposts": 3,
+                    "replies": 2,
+                    "quotes": 1,
+                    "impressions": 1800,
+                    "engagements": 60,
+                    "link_clicks": 9,
+                    "profile_visits": 11,
+                    "source": "x-analytics",
+                }
+            )
     m.upsert("events", events)
     m.upsert("post_metrics", metrics_rows)
     accounts = []
     for i, day in enumerate(days[-35:]):
-        accounts.append({"platform": "x", "account": "herald_test", "date": day.isoformat(), "followers": 180 + i // 2,
-                         "following": 400, "posts": 2500 + i, "source": "manual"})
+        accounts.append(
+            {
+                "platform": "x",
+                "account": "herald_test",
+                "date": day.isoformat(),
+                "followers": 180 + i // 2,
+                "following": 400,
+                "posts": 2500 + i,
+                "source": "manual",
+            }
+        )
         if i >= 10:
-            accounts.append({"platform": "bluesky", "account": "herald.test", "date": day.isoformat(), "followers": 5 + i,
-                             "following": 30, "posts": i, "source": "api"})
+            accounts.append(
+                {
+                    "platform": "bluesky",
+                    "account": "herald.test",
+                    "date": day.isoformat(),
+                    "followers": 5 + i,
+                    "following": 30,
+                    "posts": i,
+                    "source": "api",
+                }
+            )
     m.upsert("account_metrics", accounts)
     m.close()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--token", default="", help="Require this review token (PIP_RELEASE_UI_TOKEN)")
+    parser.add_argument("--token", default="", help="Require this review token (ARGUS_HERALD_UI_TOKEN)")
     parser.add_argument("--ready-file", help="Write the URL here once listening")
     args = parser.parse_args()
 
     import uvicorn
 
-    from pip_release.ui.app import create_app
+    from argus_herald.ui.app import create_app
 
     root = Path(tempfile.mkdtemp(prefix="herald-bombadil-"))
     atexit.register(shutil.rmtree, root, ignore_errors=True)
@@ -229,15 +383,15 @@ def main() -> int:
     deny.write_text(DENY_TERM + "\n", encoding="utf-8")
     deny.chmod(0o600)
     env = {
-        "PIP_RELEASE_UI_SECRET": "bombadil-secret",
-        "PIP_RELEASE_OPSEC_DENYLIST": str(deny),
+        "ARGUS_HERALD_UI_SECRET": "bombadil-secret",
+        "ARGUS_HERALD_OPSEC_DENYLIST": str(deny),
         "AI_AUDIT_OPSEC_DENYLIST": str(root / "no-auditor-list.txt"),
         "DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/1/fixture",
         "TELEGRAM_BOT_TOKEN": "1:fixture",
         "TELEGRAM_CHAT_ID": "@fixture",
     }
     if args.token:
-        env["PIP_RELEASE_UI_TOKEN"] = args.token
+        env["ARGUS_HERALD_UI_TOKEN"] = args.token
     app = create_app(config, env, http=FakeHttp())
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

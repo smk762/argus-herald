@@ -2,16 +2,14 @@ import shutil
 import subprocess
 
 import pytest
+from conftest import DENY_TERM
 from PIL import Image, PngImagePlugin
 
-from pip_release.media import X_LIMITS, MediaError, check_limits, clean
-from pip_release.platforms import DiscordPublisher, PatreonPublisher, TwitterPublisher
-from pip_release.privacy import load_gate
-from pip_release.store import Store
-from pip_release.workflow import ReviewError, approve, attach_media, compose, media_problems
-from pip_release.models import Post
-
-from conftest import DENY_TERM
+from argus_herald.media import X_LIMITS, MediaError, check_limits, clean
+from argus_herald.models import Post
+from argus_herald.platforms import DiscordPublisher, PatreonPublisher, TwitterPublisher
+from argus_herald.store import Store
+from argus_herald.workflow import ReviewError, approve, attach_media, compose, media_problems
 
 
 def jpeg_with_gps(path, size=(40, 20)):
@@ -51,7 +49,14 @@ def test_png_text_and_webp_and_wrong_extension(tmp_path):
 
 def test_animated_gif_keeps_frames_and_drops_comment(tmp_path):
     frames = [Image.new("RGB", (10, 10), (i * 80, 0, 0)) for i in range(3)]
-    frames[0].save(tmp_path / "g.gif", save_all=True, append_images=frames[1:], duration=[100, 200, 300], loop=0, comment=b"secret note")
+    frames[0].save(
+        tmp_path / "g.gif",
+        save_all=True,
+        append_images=frames[1:],
+        duration=[100, 200, 300],
+        loop=0,
+        comment=b"secret note",
+    )
     cleaned = clean(tmp_path / "g.gif", tmp_path / "clean")
     assert "comment" in cleaned.removed and b"secret note" not in cleaned.path.read_bytes()
     with Image.open(cleaned.path) as out:
@@ -61,16 +66,32 @@ def test_animated_gif_keeps_frames_and_drops_comment(tmp_path):
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
 def test_video_metadata_is_removed_with_ffmpeg(tmp_path):
     source = tmp_path / "clip.mp4"
-    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=5:duration=1",
-                    "-metadata", "location=+12.3456+045.6789/", "-metadata", "title=home", "-pix_fmt", "yuv420p",
-                    str(source)], check=True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=64x64:rate=5:duration=1",
+            "-metadata",
+            "location=+12.3456+045.6789/",
+            "-metadata",
+            "title=home",
+            "-pix_fmt",
+            "yuv420p",
+            str(source),
+        ],
+        check=True,
+    )
     cleaned = clean(source, tmp_path / "clean")
     assert cleaned.kind == "video" and cleaned.removed.startswith("location")
     assert b"+12.3456" not in cleaned.path.read_bytes() and b"home" not in cleaned.path.read_bytes()
 
 
 def test_without_ffmpeg_video_is_unstripped_and_blocks_approve(tmp_path, monkeypatch, gate):
-    import pip_release.media as media
+    import argus_herald.media as media
 
     (tmp_path / "clip.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
     monkeypatch.setattr(media.shutil, "which", lambda name: None)
@@ -98,8 +119,11 @@ def test_limits():
 
 def test_approve_needs_alt_text_passes_the_gate_and_fits_the_platform(tmp_path, gate):
     store = Store(tmp_path / "s.sqlite")
-    ids = compose(store, [TwitterPublisher(), PatreonPublisher(), DiscordPublisher()],
-                  Post(kind="demo", subject="Atlas", text="Coastline", link="https://example.org/a"))
+    ids = compose(
+        store,
+        [TwitterPublisher(), PatreonPublisher(), DiscordPublisher()],
+        Post(kind="demo", subject="Atlas", text="Coastline", link="https://example.org/a"),
+    )
     x, patreon, discord = ids
     approve(store, PatreonPublisher(), patreon, None, gate=gate)
     media_ids = attach_media(store, tmp_path / "m", x, jpeg_with_gps(tmp_path / "a.jpg"), "", all_drafts=True)

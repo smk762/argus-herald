@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% macro csv(table) %}<a class="csv" href="/dashboard/{{ table }}.csv{% if csv_query %}?{{ csv_query }}{% endif %}">CSV</a>{% endmacro %}
+{% macro num(v) %}{% if v is none %}<span class="quiet">–</span>{% elif v is number %}{{ "{:,.0f}".format(v) if v == v|int else "{:,.1f}".format(v) }}{% else %}{{ v }}{% endif %}{% endmacro %}
+{% macro delta(v) %}{% if v is none %}<span class="quiet">–</span>{% else %}{{ "{:+,.1f}".format(v) if v != v|int else "{:+,.0f}".format(v) }}{% endif %}{% endmacro %}
+{% block body %}
+<section class="dash">
+  <header class="dash-head">
+    <h1>Dashboard</h1>
+    <p class="quiet">Do announcements move adoption, and which platform and format does it best? Everything here is read from <code>metrics.sqlite</code> on this machine.</p>
+  </header>
+
+  <form method="get" action="/dashboard" class="dash-filters" aria-label="Filters">
+    <label>Range
+      <select name="days">{% for r in ranges %}<option value="{{ r }}"{% if r == f.days %} selected{% endif %}>Last {{ r }} days</option>{% endfor %}</select>
+    </label>
+    <label>Package
+      <select name="project"><option value="">All (suite total)</option>{% for p in projects %}<option{% if p == f.project %} selected{% endif %}>{{ p }}</option>{% endfor %}</select>
+    </label>
+    <label>Scale
+      <select name="scale"><option value="linear">Linear</option><option value="log"{% if log %} selected{% endif %}>Log</option></select>
+    </label>
+    <label>Platform
+      <select name="platform"><option value="">All</option>{% for p in legend %}<option value="{{ p.key }}"{% if params.platform == p.key %} selected{% endif %}>{{ p.label }}</option>{% endfor %}</select>
+    </label>
+    <label>Format
+      <select name="kind"><option value="">All</option>{% for k in kinds %}<option{% if params.kind == k %} selected{% endif %}>{{ k }}</option>{% endfor %}</select>
+    </label>
+    <label>Media
+      <select name="media"><option value="">Any</option><option value="yes"{% if params.media == "yes" %} selected{% endif %}>With media</option><option value="no"{% if params.media == "no" %} selected{% endif %}>Text only</option></select>
+    </label>
+    <label>Drafted by
+      <select name="drafted"><option value="">Anyone</option>{% for b in backends %}<option{% if params.drafted == b %} selected{% endif %}>{{ b }}</option>{% endfor %}</select>
+    </label>
+    <label>Source
+      <select name="logged"><option value="">All posts</option><option value="no"{% if params.logged == "no" %} selected{% endif %}>Published by herald</option><option value="yes"{% if params.logged == "yes" %} selected{% endif %}>Logged by hand</option></select>
+    </label>
+    <label>Weeks start
+      <select name="week">{% for w in weekdays %}<option value="{{ w }}"{% if loop.index0 == f.week_start %} selected{% endif %}>{{ w|capitalize }}</option>{% endfor %}</select>
+    </label>
+    <button type="submit">Apply</button>
+  </form>
+
+  {% if not has_metrics %}
+  <p class="note">No metrics yet. Run <code>argus-herald collect</code> (the watcher also runs it daily).</p>
+  {% endif %}
+
+  {% if tiles %}
+  <div class="tiles" aria-label="Last 7 days">
+    {% for t in tiles %}
+    <div class="tile">
+      <p class="tile-label">{{ t.label }}, last 7 days</p>
+      <p class="tile-value">{{ num(t.value) }}</p>
+      {% if t.delta is not none %}<p class="tile-delta">{{ delta(t.delta) }} vs the 7 days before</p>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <section class="dash-section" aria-labelledby="timeline-h">
+    <div class="section-head"><h2 id="timeline-h">Timeline</h2>{{ csv("timeline") }}</div>
+    <ul class="legend" aria-label="Legend">
+      <li><span class="key key-daily"></span>Daily</li>
+      <li><span class="key key-mean"></span>7-day mean</li>
+      {% if has_releases %}<li><span class="key key-release"></span>Release</li>{% endif %}
+      {% for p in legend %}<li><span class="key key-mark s{{ p.slot }}"></span>{{ p.label }} post</li>{% endfor %}
+    </ul>
+    <p class="hint">Hover a chart for the values on that day; hover a marker for the post, click it to open the post.{% if f.project %} Site visits are site-wide, so they're hidden for one package.{% endif %}</p>
+    <div class="panels" data-crosshair>
+      {% for p in panels %}
+      <figure class="panel"><figcaption>{{ p.title }}</figcaption>{{ p.svg }}</figure>
+      {% endfor %}
+      <div class="tooltip" role="status" hidden></div>
+    </div>
+    <details class="table-view">
+      <summary>Table view</summary>
+      <div class="scroll"><table>
+        <thead><tr><th>Date</th>{% for p in panels %}<th>{{ p.title }}</th>{% endfor %}</tr></thead>
+        <tbody>{% for day in dates|reverse %}{% set i = dates|length - loop.index %}<tr><td>{{ day.isoformat() }}</td>{% for p in panels %}<td class="n">{{ num(p["values"][i]) }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+      </table></div>
+    </details>
+  </section>
+
+  <section class="dash-section" aria-labelledby="followers-h">
+    <div class="section-head"><h2 id="followers-h">Followers</h2>{{ csv("followers") }}</div>
+    {% if follower_panels %}
+    <div class="panels" data-crosshair>
+      {% for p in follower_panels %}<figure class="panel"><figcaption>{{ p.title }}</figcaption>{{ p.svg }}</figure>{% endfor %}
+      <div class="tooltip" role="status" hidden></div>
+    </div>
+    {% else %}
+    <p class="quiet">No follower counts yet: add <code>accounts:</code> to the config, or <code>argus-herald import x-account</code>.</p>
+    {% endif %}
+  </section>
+
+  <section class="dash-section" aria-labelledby="referrers-h">
+    <div class="section-head"><h2 id="referrers-h">GitHub referrers</h2>{{ csv("referrers") }}</div>
+    <p class="hint">Unique visitors arriving from each source, over GitHub's trailing 14 days, as of each daily snapshot.</p>
+    {% if ref_groups %}
+    <ul class="legend" aria-label="Legend">{% for g, label, slot, values in ref_groups %}<li><span class="key key-area s{{ slot }}"></span>{{ label }}</li>{% endfor %}</ul>
+    {% endif %}
+    {{ ref_svg }}
+    {% if ref_groups %}
+    <details class="table-view">
+      <summary>Table view</summary>
+      <div class="scroll"><table>
+        <thead><tr><th>Snapshot</th>{% for g, label, slot, values in ref_groups %}<th>{{ label }}</th>{% endfor %}</tr></thead>
+        <tbody>{% for day in ref_days|reverse %}{% set i = ref_days|length - loop.index %}<tr><td>{{ day }}</td>{% for g, label, slot, values in ref_groups %}<td class="n">{{ num(values[i]) }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+      </table></div>
+    </details>
+    {% endif %}
+  </section>
+
+  <section class="dash-section" aria-labelledby="report-h">
+    <div class="section-head"><h2 id="report-h">Broadcasts</h2>{{ csv("broadcasts") }}</div>
+    <p class="hint">Deltas are <strong>associated</strong> with a post, not caused by it: the average day in the 72 hours from the post, minus the median day of the 14 days before. Greyed rows overlap another post's window, so their deltas are shared. Referrer uniques are the change in that platform's GitHub referrers across the window.</p>
+    {% if report %}
+    <div class="scroll"><table class="report">
+      <thead><tr>
+        <th><a href="{{ sort_link('at') }}">When (UTC)</a></th>
+        <th><a href="{{ sort_link('platform') }}">Platform</a></th>
+        <th><a href="{{ sort_link('format') }}">Format</a></th>
+        <th>Post</th>
+        <th class="n"><a href="{{ sort_link('e24') }}">Engagement 24h</a></th>
+        <th class="n"><a href="{{ sort_link('e7') }}">Engagement 7d</a></th>
+        {% for key, label in delta_metrics %}<th class="n"><a href="{{ sort_link('d_' ~ key) }}">{{ label }} Δ/day</a></th>{% endfor %}
+      </tr></thead>
+      <tbody>
+        {% for b in report %}
+        <tr class="{{ 'overlap' if b.overlap }}">
+          <td>{{ b.at.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td><span class="key key-dot s{{ platform_slot(b.platform) }}"></span>{{ platform_label(b.platform) }}</td>
+          <td>{{ b.format }}{% if b.media %} · media{% endif %}{% if b.logged %} · logged{% endif %}{% if b.drafted_by not in ("template", "logged") %} · {{ b.drafted_by.split(":")[0] }}{% endif %}</td>
+          <td class="post">{% if b.link %}<a href="{{ b.link }}" target="_blank" rel="noopener noreferrer">{{ b.subject or b.text[:60] }}</a>{% else %}{{ b.subject or b.text[:60] }}{% endif %}{% if b.overlap %} <span class="quiet">(overlaps)</span>{% endif %}</td>
+          <td class="n">{{ num(b.engagement_24h) }}</td>
+          <td class="n">{{ num(b.engagement_7d) }}{% if b.impressions is not none %}<br><span class="quiet">{{ num(b.impressions) }} views</span>{% endif %}</td>
+          {% for key, label in delta_metrics %}<td class="n" title="{% if b.baselines.get(key) is not none %}baseline median {{ b.baselines[key] }} per day{% endif %}">{{ delta(b.deltas.get(key)) }}</td>{% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    <p class="quiet">{{ report|length }} of {{ report_total }} posts in this range.</p>
+    {% else %}
+    <p class="quiet">No broadcasts in this range{% if report_total %} match these filters{% endif %}. Published drafts and posts logged with <code>argus-herald log-broadcast</code> appear here after the next collect.</p>
+    {% endif %}
+  </section>
+
+  <section class="dash-section" aria-labelledby="platforms-h">
+    <div class="section-head"><h2 id="platforms-h">Platforms by week</h2>{{ csv("platforms") }}</div>
+    <p class="hint">Weeks start on {{ weekdays[f.week_start]|capitalize }}{% if f.week_start == 0 %}, like digest windows{% endif %}. Referrer uniques count only posts whose window no other post overlaps.</p>
+    {% if summary %}
+    <div class="scroll"><table>
+      <thead><tr><th>Week of</th><th>Platform</th><th class="n">Posts</th><th class="n">Engagement</th><th class="n">Referrer uniques</th><th class="n">Follower change</th></tr></thead>
+      <tbody>{% for r in summary|reverse %}<tr><td>{{ r.week.isoformat() }}</td><td><span class="key key-dot s{{ platform_slot(r.platform) }}"></span>{{ platform_label(r.platform) }}</td><td class="n">{{ r.posts }}</td><td class="n">{% if r.engaged_posts %}{{ num(r.engagement) }}{% else %}<span class="quiet">–</span>{% endif %}</td><td class="n">{{ delta(r.referrers) if r.referrers else "–" }}</td><td class="n">{{ delta(r.followers) }}</td></tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}
+    <p class="quiet">Nothing to summarise in this range yet.</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/dashboard.js"></script>{% endblock %}

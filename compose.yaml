@@ -1,20 +1,20 @@
-name: pip-release
+name: argus-herald
 
 services:
   watcher:
     build: .
-    image: pip-release:local
+    image: argus-herald:local
     env_file:
       - path: .env
         required: false
     environment:
-      PIP_RELEASE_CONFIG: /config/config.yaml
-      PIP_RELEASE_STORE: /data/state.sqlite
-      PIP_RELEASE_HEARTBEAT: /data/heartbeat
-      PIP_RELEASE_UI_URL: http://127.0.0.1:8787
+      ARGUS_HERALD_CONFIG: /config/config.yaml
+      ARGUS_HERALD_STORE: /data/state.sqlite
+      ARGUS_HERALD_HEARTBEAT: /data/heartbeat
+      ARGUS_HERALD_UI_URL: http://127.0.0.1:8787
     volumes:
       - ./config.yaml:/config/config.yaml:ro
-      - pip-release-data:/data
+      - argus-herald-data:/data
     read_only: true
     tmpfs:
       - /tmp
@@ -24,27 +24,27 @@ services:
     cap_drop:
       - ALL
     healthcheck:
-      test: ["CMD", "pip-release", "healthcheck"]
+      test: ["CMD", "argus-herald", "healthcheck"]
       interval: 60s
       timeout: 5s
       retries: 3
       start_period: 40s
 
   review:
-    image: pip-release:local
+    image: argus-herald:local
     command: ["ui", "--host", "0.0.0.0", "--port", "8787"]
     env_file:
       - path: .env
         required: false
     environment:
-      PIP_RELEASE_CONFIG: /config/config.yaml
-      PIP_RELEASE_STORE: /data/state.sqlite
-      PIP_RELEASE_UI_URL: http://127.0.0.1:8787
+      ARGUS_HERALD_CONFIG: /config/config.yaml
+      ARGUS_HERALD_STORE: /data/state.sqlite
+      ARGUS_HERALD_UI_URL: http://127.0.0.1:8787
     ports:
       - "127.0.0.1:8787:8787"
     volumes:
       - ./config.yaml:/config/config.yaml:ro
-      - pip-release-data:/data
+      - argus-herald-data:/data
     read_only: true
     tmpfs:
       - /tmp
@@ -57,4 +57,6 @@ services:
       - watcher
 
 volumes:
-  pip-release-data:
+  argus-herald-data:
+    # The volume compose created before the rename (project pip-release), so the drafts carry over.
+    name: pip-release_pip-release-data

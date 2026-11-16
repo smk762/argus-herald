@@ -1,0 +1,13 @@
+name: Suite
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  suite:
+    uses: smk762/argus-ci/.github/workflows/suite-check.yml@v1
+    with:
+      repo-name: argus-herald # the row's name, also before the GitHub repo is renamed

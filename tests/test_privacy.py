@@ -1,12 +1,11 @@
 import pytest
-
-from pip_release.models import APPROVED, PENDING
-from pip_release.platforms import TwitterPublisher
-from pip_release.privacy import GateUnavailable, load_gate, segments
-from pip_release.store import Store
-from pip_release.workflow import PrivacyRefused, ReviewError, accept_hit, approve, edit_draft, publish_draft
-
 from conftest import DENY_TERM
+
+from argus_herald.models import APPROVED, PENDING
+from argus_herald.platforms import TwitterPublisher
+from argus_herald.privacy import GateUnavailable, load_gate, segments
+from argus_herald.store import Store
+from argus_herald.workflow import PrivacyRefused, ReviewError, accept_hit, approve, edit_draft, publish_draft
 
 # Public, well-known addresses (the Bitcoin genesis address and a documented bech32 example).
 GENESIS = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
@@ -57,7 +56,7 @@ def test_allow_list_and_custom_patterns(private_denylist):
 
 
 def test_fails_closed_without_the_denylist(tmp_path, monkeypatch):
-    monkeypatch.setenv("PIP_RELEASE_OPSEC_DENYLIST", str(tmp_path / "missing.txt"))
+    monkeypatch.setenv("ARGUS_HERALD_OPSEC_DENYLIST", str(tmp_path / "missing.txt"))
     with pytest.raises(GateUnavailable, match="deny-list is missing"):
         load_gate({})
 
@@ -81,7 +80,14 @@ def test_segments_mark_hits_and_skip_overlaps(gate):
 
 def _store_with(tmp_path, body):
     store = Store(tmp_path / "state.sqlite")
-    draft_id, _ = store.add_draft(project="argus-atlas", version="1", platform="twitter", title="", body=body, link="https://pypi.org/project/argus-atlas/1/")
+    draft_id, _ = store.add_draft(
+        project="argus-atlas",
+        version="1",
+        platform="twitter",
+        title="",
+        body=body,
+        link="https://pypi.org/project/argus-atlas/1/",
+    )
     return store, draft_id
 
 

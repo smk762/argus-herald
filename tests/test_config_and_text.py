@@ -2,9 +2,9 @@ import json
 
 import pytest
 
-from pip_release.config import ConfigError, load_config, load_env_file, normalize_name
-from pip_release.pypi import ProfileUnavailable, list_versions, parse_profile_projects
-from pip_release.textutil import (
+from argus_herald.config import ConfigError, load_config, load_env_file, normalize_name
+from argus_herald.pypi import ProfileUnavailable, list_versions, parse_profile_projects
+from argus_herald.textutil import (
     extract_changelog,
     fit_body,
     fit_weighted,
@@ -27,7 +27,7 @@ def test_yaml_rejects_secret_keys(tmp_path):
 
 
 def test_json_config_and_interval_floor(tmp_path, monkeypatch):
-    monkeypatch.delenv("PIP_RELEASE_STORE", raising=False)
+    monkeypatch.delenv("ARGUS_HERALD_STORE", raising=False)
     path = tmp_path / "config.json"
     path.write_text(
         json.dumps(

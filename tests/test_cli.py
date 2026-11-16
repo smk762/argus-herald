@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pip_release.cli import main, parse_edit
+from argus_herald.cli import main, parse_edit
 
 
 def test_parse_edit_reads_title_and_body():
@@ -61,7 +61,7 @@ def test_init_copies_the_dragonhound_example(tmp_path, monkeypatch):
 
 
 def _seeded(tmp_path):
-    from pip_release.store import Store
+    from argus_herald.store import Store
 
     config = tmp_path / "config.json"
     config.write_text(
@@ -79,7 +79,7 @@ def _seeded(tmp_path):
 
 
 def _statuses(path):
-    from pip_release.store import Store
+    from argus_herald.store import Store
 
     store = Store(path)
     try:
@@ -97,7 +97,7 @@ def test_reset_rejects_pending_before_a_date(tmp_path, capsys):
 
 
 def test_reset_asks_first_and_keeps_drafts_on_no(tmp_path, monkeypatch, capsys):
-    import pip_release.cli as cli
+    import argus_herald.cli as cli
 
     base, path = _seeded(tmp_path)
     monkeypatch.setattr(cli, "_confirm", lambda prompt: False)
@@ -114,7 +114,7 @@ def test_reset_without_a_terminal_needs_yes(tmp_path, capsys):
 
 
 def test_parse_cutoff_normalises_to_utc():
-    from pip_release.cli import parse_cutoff
+    from argus_herald.cli import parse_cutoff
 
     assert parse_cutoff("2026-11-15") == "2026-11-15"
     assert parse_cutoff("2026-11-15T05:00:00-05:00") == "2026-11-15T10:00:00+00:00"
@@ -122,7 +122,7 @@ def test_parse_cutoff_normalises_to_utc():
 
 
 def test_check_and_accept_and_fail_closed(tmp_path, capsys, monkeypatch):
-    from pip_release.store import Store
+    from argus_herald.store import Store
 
     base, path = _seeded(tmp_path)
     store = Store(path)
@@ -131,7 +131,7 @@ def test_check_and_accept_and_fail_closed(tmp_path, capsys, monkeypatch):
 
     assert main([*base, "check"]) == 1
     out = capsys.readouterr().out
-    assert "email address" in out and "pip-release accept 1 'email:bob@corp.test'" in out
+    assert "email address" in out and "argus-herald accept 1 'email:bob@corp.test'" in out
     assert main([*base, "approve", "1"]) == 1
     assert "Refused by the privacy gate" in capsys.readouterr().err
 
@@ -139,7 +139,7 @@ def test_check_and_accept_and_fail_closed(tmp_path, capsys, monkeypatch):
     assert main([*base, "check", "1"]) == 0
     assert main([*base, "approve", "1"]) == 0
 
-    monkeypatch.setenv("PIP_RELEASE_OPSEC_DENYLIST", str(tmp_path / "gone.txt"))
+    monkeypatch.setenv("ARGUS_HERALD_OPSEC_DENYLIST", str(tmp_path / "gone.txt"))
     assert main([*base, "approve", "2"]) == 2
     assert "deny-list is missing" in capsys.readouterr().err
 
@@ -172,7 +172,7 @@ def test_media_commands_and_compose_with_media(tmp_path, capsys):
     assert main([*base, "media", "remove", "1"]) == 0
     assert main([*base, "compose", "Clip", "--media", str(tmp_path / "shot.png")]) == 2  # one --alt per --media
     assert main([*base, "compose", "Clip", "--media", str(tmp_path / "shot.png"), "--alt", "Square"]) == 0
-    from pip_release.store import Store
+    from argus_herald.store import Store
 
     store = Store(path)
     assert [m["alt"] for d in store.list_drafts() if d.kind == "demo" for m in store.media(d.id)] == ["Square"]

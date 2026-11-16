@@ -1,4 +1,4 @@
-from pip_release.oauth1 import authorization_header, sign
+from argus_herald.oauth1 import authorization_header, sign
 
 
 def test_twitter_signature_example():

@@ -2,8 +2,14 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
 *.egg-info/
 dist/
+build/
 .env
 config.yaml
+.argus-herald/
+# The data directory before the rename; moved to .argus-herald/ on first run.
 .pip-release/
+# hatch-vcs writes this at build time (version derived from git tags)
+src/argus_herald/_version.py

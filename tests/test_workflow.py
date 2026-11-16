@@ -1,19 +1,19 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from pip_release.config import Destination, load_config
-from pip_release.models import APPROVED, HANDED_OFF, PENDING, PUBLISHED, Draft
-from pip_release.platforms import (
+from argus_herald.config import Destination, load_config
+from argus_herald.models import APPROVED, HANDED_OFF, PENDING, PUBLISHED, Draft
+from argus_herald.platforms import (
     DiscordPublisher,
     PatreonPublisher,
     TwitterPublisher,
     load_publishers,
 )
-from pip_release.privacy import load_gate
-from pip_release.store import Store
-from pip_release.workflow import (
+from argus_herald.privacy import load_gate
+from argus_herald.store import Store
+from argus_herald.workflow import (
     BASELINE_KEY,
     ReviewError,
     approve,
@@ -215,7 +215,7 @@ def test_discord_webhook_must_be_discord():
 
 
 def store_draft_like():
-    from pip_release.models import Draft
+    from argus_herald.models import Draft
 
     return Draft(
         id=1,
@@ -269,7 +269,7 @@ def test_desktop_notice_groups_a_release_and_includes_the_review_url():
 
 
 def test_reminder_is_due_after_24_hours():
-    now = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
     assert reminder_due(None, now) is True
     assert reminder_due("not-a-date", now) is True
     recent = (now - timedelta(hours=23, minutes=59)).isoformat()
@@ -370,8 +370,8 @@ def test_confirm_rejects_bad_post_urls_and_url_can_be_added_later(tmp_path):
 
 
 def test_twitter_mode_comes_from_the_destination(tmp_path):
-    from pip_release.config import Destination
-    from pip_release.platforms import configured_publishers
+    from argus_herald.config import Destination
+    from argus_herald.platforms import configured_publishers
 
     assert TwitterPublisher().configure(Destination(mode="api")).manual is False
     assert TwitterPublisher().configure(None).manual is True

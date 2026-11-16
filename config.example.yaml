@@ -6,7 +6,7 @@ pypi:
   projects:
     - your-project
   ignore: []
-  # discover:            # pip-release discover --check also reads these GitHub repos
+  # discover:            # argus-herald discover --check also reads these GitHub repos
   #   github_owner: your-github-user
   #   prefix: your-prefix-
 
@@ -36,7 +36,7 @@ destinations:
     url: https://www.patreon.com/c/YourCampaign
 
 privacy:
-  # The deny-list itself is a private file: ~/.config/pip-release/opsec-denylist.txt
+  # The deny-list itself is a private file: ~/.config/argus-herald/opsec-denylist.txt
   allow_addresses: []
   patterns: {}
 
@@ -64,8 +64,8 @@ privacy:
 
 # Optional: a model writes the first draft of digest and headline posts.
 # drafting:
-#   backend: openai_compatible   # with PIP_RELEASE_LLM_BASE_URL and PIP_RELEASE_LLM_MODEL in .env
-#   # backend: anthropic         # pip install 'pip-release[claude]'; model defaults to claude-opus-5-5
+#   backend: openai_compatible   # with ARGUS_HERALD_LLM_BASE_URL and ARGUS_HERALD_LLM_MODEL in .env
+#   # backend: anthropic         # pip install 'argus-herald[claude]'; model defaults to claude-opus-5-5
 
 # Follower counts recorded by collect (they needn't be destinations). X counts are imported by hand.
 # accounts:
@@ -76,4 +76,4 @@ poll:
   interval_seconds: 1800
 
 store:
-  path: .pip-release/state.sqlite
+  path: .argus-herald/state.sqlite
