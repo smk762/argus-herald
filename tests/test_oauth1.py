@@ -35,3 +35,15 @@ def test_twitter_signature_example():
         timestamp=params["oauth_timestamp"],
     )
     assert 'oauth_signature="hCtSmYh%2BiHYCEqBWrE7C7hYmtUk%3D"' in header
+
+
+def test_base_string_normalises_host_and_default_port():
+    from argus_herald.oauth1 import signature_base
+
+    plain = signature_base("POST", "https://api.example.com/x", {"a": "1"})
+    assert signature_base("POST", "HTTPS://API.Example.com/x", {"a": "1"}) == plain
+    assert signature_base("POST", "https://api.example.com:443/x", {"a": "1"}) == plain
+    assert signature_base("POST", "https://user:pw@api.example.com/x", {"a": "1"}) == plain
+    assert signature_base("GET", "http://Example.com:80/x", {}) == signature_base("GET", "http://example.com/x", {})
+    assert "example.com%3A8443" in signature_base("GET", "https://example.com:8443/x", {})
+    assert "%5B%3A%3A1%5D%3A8080" in signature_base("GET", "http://[::1]:8080/x", {})

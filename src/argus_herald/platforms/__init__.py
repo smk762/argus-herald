@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -36,10 +37,12 @@ class Publisher(ABC):
     schedule: Schedule | None = None
 
     def configure(self, destination: Destination | None) -> Publisher:
-        """Return a publisher set up for this destination."""
-        self.audience = destination.audience if destination else None
-        self.schedule = destination.schedule if destination else None
-        return self
+        """Return a publisher set up for this destination. This instance is left as it was, so
+        setting up a second destination never changes the first."""
+        publisher = copy.copy(self)
+        publisher.audience = destination.audience if destination else None
+        publisher.schedule = destination.schedule if destination else None
+        return publisher
 
     def wants(self, packages: list[str]) -> bool:
         """Whether this destination's audience wants content about any of these packages.
@@ -134,14 +137,16 @@ class TwitterPublisher(Publisher):
 
     def configure(self, destination: Destination | None) -> TwitterPublisher:
         mode = (destination.mode if destination else None) or "manual"
-        publisher = self if mode == self.mode else TwitterPublisher(mode)
+        publisher = copy.copy(self) if mode == self.mode else TwitterPublisher(mode)
         publisher.audience = destination.audience if destination else None
         publisher.schedule = destination.schedule if destination else None
         return publisher
 
     def reply_url(self, draft: Draft) -> str | None:
         """Intent for the self-reply that carries the link, once the post's URL is known."""
-        match = re.search(r"/status/(\d+)", draft.external_id or "")
+        # A confirmed handoff stores the post's URL; the API path stores the bare post id.
+        external = (draft.external_id or "").strip()
+        match = re.search(r"/status/(\d+)", external) or re.fullmatch(r"(\d+)", external)
         if not draft.reply or not match:
             return None
         return f"https://x.com/intent/post?in_reply_to={match.group(1)}&text=" + quote(draft.reply, safe="")
@@ -229,7 +234,8 @@ class DiscordPublisher(Publisher):
             raise LengthError("Missing DISCORD_WEBHOOK_URL")
         self.validate(draft.title, draft.body)
         url = _discord_url(env["DISCORD_WEBHOOK_URL"])
-        status, body = send_json(http, url, {"content": draft.body})
+        # Release notes are other people's text: nothing in them may ping @everyone, a role or a user.
+        status, body = send_json(http, url, {"content": draft.body, "allowed_mentions": {"parse": []}})
         if status not in (200, 204):
             raise LengthError(f"Discord rejected the post with HTTP {status}")
         external = None

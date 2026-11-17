@@ -108,8 +108,16 @@ def bluesky_samples(http: Http, posts: list[Post], now: datetime) -> tuple[list[
         actor, rkey = ref
         if not actor.startswith("did:"):
             if actor not in dids:
-                data = _get(http, f"{BSKY}/com.atproto.identity.resolveHandle?handle={quote(actor, safe='')}")
-                dids[actor] = str(data["did"])
+                # A renamed or deleted handle costs its own posts only, and is asked about once.
+                try:
+                    data = _get(http, f"{BSKY}/com.atproto.identity.resolveHandle?handle={quote(actor, safe='')}")
+                    did = data.get("did") if isinstance(data, dict) else None
+                except (HttpError, OSError, ValueError):
+                    did = None
+                dids[actor] = str(did) if did else ""
+            if not dids[actor]:
+                problems.append(f"bluesky: can't resolve handle {actor} for {post.url}")
+                continue
             actor = dids[actor]
         wanted[f"at://{actor}/app.bsky.feed.post/{rkey}"] = post
     uris = list(wanted)
@@ -405,6 +413,10 @@ query ($account: String!, $filter: AccountRumPageloadEventsAdaptiveGroupsFilter_
 
 def collect_site(metrics, http: Http, env: Mapping[str, str], today: date | None = None, days: int = 7) -> str:
     """The last `days` days of page views per path and per referrer. Re-fetching a day replaces it."""
+    missing = site_configured(env)
+    if missing:
+        # A blank site tag can answer with no rows, and no rows would replace the stored days.
+        raise ValueError(f"Cloudflare site traffic isn't configured: set {', '.join(missing)}")
     token, account, site = (env.get(k, "").strip() for k in ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_SITE_TAG"))
     today = today or datetime.now(UTC).date()
     start = today - timedelta(days=days - 1)
@@ -453,7 +465,10 @@ def collect_site(metrics, http: Http, env: Mapping[str, str], today: date | None
         )
     with metrics.transaction():
         for table, rows, key in (("site_traffic", paths, "path"), ("site_referrers", refs, "referrer")):
-            metrics.conn.execute(f"DELETE FROM {table} WHERE date >= ?", (start.isoformat(),))
+            # Only the fetched window: a backfill of earlier days must not erase later ones.
+            metrics.conn.execute(
+                f"DELETE FROM {table} WHERE date BETWEEN ? AND ?", (start.isoformat(), today.isoformat())
+            )
             metrics.conn.executemany(
                 f"INSERT OR REPLACE INTO {table} (date, {key}, pageviews, visits) VALUES (?, ?, ?, ?)",
                 [(r["date"], r[key], r["pageviews"], r["visits"]) for r in rows],

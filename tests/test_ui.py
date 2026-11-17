@@ -550,3 +550,24 @@ def test_schedule_on_approve_and_change_it(tmp_path):
     assert "That time has passed" in past.text
     cleared = client.post("/drafts/1/schedule", data={"csrf": _csrf(past.text), "when": "clear"}, follow_redirects=True)
     assert "Unscheduled." in cleared.text and "Not scheduled" in cleared.text
+
+
+def test_removing_media_sends_an_approved_draft_back_to_review(tmp_path):
+    from PIL import Image
+
+    from argus_herald.models import APPROVED, PENDING
+    from argus_herald.workflow import attach_media
+
+    app, config = _app(tmp_path)
+    client = TestClient(app)
+    Image.new("RGB", (16, 16), (0, 90, 0)).save(tmp_path / "shot.png")
+    store = Store(config.store_path)
+    (media_id,) = attach_media(store, config.media_root, 1, tmp_path / "shot.png", "A green square")
+    assert store.transition(1, (PENDING,), APPROVED) is not None
+    store.close()
+    page = client.get("/drafts/1")
+    removed = client.post(f"/media/{media_id}/remove", data={"csrf": _csrf(page.text)}, follow_redirects=True)
+    assert "Removed shot.png" in removed.text
+    store = Store(config.store_path)
+    assert store.media(1) == [] and store.get(1).status == PENDING  # the post changed: approve it again
+    store.close()

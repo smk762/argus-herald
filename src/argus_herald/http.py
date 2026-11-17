@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from http.client import HTTPException
 from typing import Protocol
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -102,7 +103,12 @@ class HttpClient:
             with self._opener.open(request, timeout=self.timeout) as response:
                 return response.status, response.read()
         except HTTPError as exc:
-            payload = exc.read()
+            try:
+                payload = exc.read()
+            except (OSError, HTTPException) as read_exc:
+                raise HttpError(method, url, 0) from read_exc
             return exc.code, payload
-        except URLError as exc:
+        except (OSError, HTTPException) as exc:
+            # URLError, and what urllib lets through unwrapped: a timeout waiting for headers,
+            # a dropped connection, a body cut short.
             raise HttpError(method, url, 0) from exc

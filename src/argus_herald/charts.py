@@ -20,13 +20,15 @@ LEFT, RIGHT, TOP, BOTTOM = 52, 14, 10, 22
 
 def compact(value: float) -> str:
     value = float(value)
+    if not math.isfinite(value):
+        return "–"  # a missing or overflowed point gets a placeholder, not a crash
     if abs(value) >= 1_000_000:
         return f"{value / 1_000_000:.1f}M".replace(".0M", "M")
     if abs(value) >= 10_000:
         return f"{value / 1000:.0f}K"
     if abs(value) >= 1000:
         return f"{value:,.0f}"
-    return f"{value:.0f}" if value == int(value) else f"{value:.1f}"
+    return f"{value:.0f}" if value.is_integer() else f"{value:.1f}"
 
 
 def nice_ticks(top: float, count: int = 3) -> list[float]:
@@ -42,6 +44,8 @@ def nice_ticks(top: float, count: int = 3) -> list[float]:
 
 
 def _log_ticks(top: float) -> list[float]:
+    if not math.isfinite(top) or top <= 0:
+        return [0.0, 1.0]
     ticks, value = [0.0], 1.0
     while value <= top * 1.0001:
         ticks.append(value)

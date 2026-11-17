@@ -296,7 +296,14 @@ def repair(text: str, publisher: Publisher, link: str, request: Request) -> tupl
         item_rows = [i for i, line in enumerate(lines) if _ITEM.match(line)]
         if len(item_rows) <= 1 or (len(item_rows) <= MAX_ITEMS and not too_long(joined)):
             break
-        del lines[item_rows[-1] :]
+        # The item runs to the next blank line. What follows it (a closing line) is kept, and
+        # still has to fit.
+        start = end = item_rows[-1]
+        while end < len(lines) and lines[end].strip():
+            end += 1
+        del lines[start:end]
+        while start < len(lines) and not lines[start].strip() and (start == 0 or not lines[start - 1].strip()):
+            del lines[start]
         dropped += 1
     if dropped:
         done.append(f"dropped {dropped} item{'s' if dropped != 1 else ''} to fit")

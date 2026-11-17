@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import json
+import os
 import shutil
 import socket
 import sys
@@ -365,6 +366,20 @@ def seed_metrics(path: Path, today: date | None = None) -> None:
     m.close()
 
 
+def bind_and_announce(sock: socket.socket, ready_file: str | None) -> str:
+    """Bind and listen, then say so. A client that connects on the signal waits in the backlog
+    until uvicorn accepts; before listen() it would be refused."""
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(128)
+    url = f"http://127.0.0.1:{sock.getsockname()[1]}/"
+    if ready_file:
+        # Written whole, then moved into place: a polling reader never sees half a URL.
+        partial = Path(f"{ready_file}.tmp")
+        partial.write_text(url, encoding="utf-8")
+        os.replace(partial, ready_file)
+    return url
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--token", default="", help="Require this review token (ARGUS_HERALD_UI_TOKEN)")
@@ -382,10 +397,13 @@ def main() -> int:
     deny = root / "denylist.txt"
     deny.write_text(DENY_TERM + "\n", encoding="utf-8")
     deny.chmod(0o600)
+    auditor = root / "auditor-denylist.txt"  # empty: the real auditor list is never read
+    auditor.write_text("", encoding="utf-8")
+    auditor.chmod(0o600)
     env = {
         "ARGUS_HERALD_UI_SECRET": "bombadil-secret",
         "ARGUS_HERALD_OPSEC_DENYLIST": str(deny),
-        "AI_AUDIT_OPSEC_DENYLIST": str(root / "no-auditor-list.txt"),
+        "AI_AUDIT_OPSEC_DENYLIST": str(auditor),
         "DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/1/fixture",
         "TELEGRAM_BOT_TOKEN": "1:fixture",
         "TELEGRAM_CHAT_ID": "@fixture",
@@ -396,10 +414,7 @@ def main() -> int:
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", 0))
-    url = f"http://127.0.0.1:{sock.getsockname()[1]}/"
-    if args.ready_file:
-        Path(args.ready_file).write_text(url, encoding="utf-8")
+    url = bind_and_announce(sock, args.ready_file)
     print(f"READY {url} (data in {root})", flush=True)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
     server.run(sockets=[sock])

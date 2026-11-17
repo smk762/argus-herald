@@ -64,19 +64,25 @@ def list_versions(http: Http, name: str) -> list[VersionRef]:
 
 
 def fetch_release(http: Http, name: str, version: str) -> Release:
+    url = project_json_url(name, version)
     try:
-        data = read_json(http, project_json_url(name, version))
-    except HttpError:
+        data = read_json(http, url)
+    except HttpError as exc:
+        if exc.status != 404:
+            raise
+        # The project page describes the latest release only: use it when that is this version.
         data = read_json(http, project_json_url(name))
+        latest = str((data.get("info") or {}).get("version") or "")
+        if latest != version:
+            raise HttpError("GET", url, 404) from exc
     info = data.get("info") or {}
     urls = info.get("project_urls") or {}
     if not isinstance(urls, dict):
         urls = {}
     project = str(info.get("name") or name)
-    found = str(info.get("version") or version)
     return Release(
         project=project,
-        version=found if found == version else version,
+        version=version,
         summary=str(info.get("summary") or "").strip(),
         url=release_page(project, version),
         author=(str(info["author"]).strip() if info.get("author") else None),

@@ -115,3 +115,23 @@ def test_publish_checks_again(tmp_path, gate, private_denylist):
     with pytest.raises(PrivacyRefused):
         publish_draft(store, TwitterPublisher(), store.get(draft_id), {}, None, gate=load_gate({}))
     assert store.get(draft_id).status == APPROVED
+
+
+def test_scrub_redacts_the_whole_of_overlapping_hits(private_denylist):
+    private_denylist.write_text("alpha bravo\nbravo charlie-delta\n", encoding="utf-8")
+    gate = load_gate({"patterns": {"ticket": r"delta TICKET-\d+"}})
+    scrubbed = gate.scrub("start alpha bravo charlie-delta TICKET-42 end")
+    for leaked in ("alpha", "bravo", "charlie", "delta", "TICKET", "42"):
+        assert leaked not in scrubbed
+    assert scrubbed.startswith("start ") and scrubbed.endswith(" end")
+    assert gate.scrub("plain text stays") == "plain text stays"
+
+
+def test_fails_closed_when_the_named_auditor_list_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("AI_AUDIT_OPSEC_DENYLIST", str(tmp_path / "moved-away.txt"))
+    with pytest.raises(GateUnavailable, match="auditor deny-list named by AI_AUDIT_OPSEC_DENYLIST is missing"):
+        load_gate({})
+    # The default place may be absent: only a list someone named has to exist.
+    monkeypatch.delenv("AI_AUDIT_OPSEC_DENYLIST")
+    monkeypatch.setattr("argus_herald.privacy.AUDITOR_DENYLIST", tmp_path / "not-installed.txt")
+    assert load_gate({}).deny_terms

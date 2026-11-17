@@ -155,6 +155,8 @@ class Gate:
         out, pos = [], 0
         for hit in sorted(self.scan(text), key=lambda h: (h.start, -h.end)):
             if hit.start < pos:
+                # Overlaps the span just redacted: extend it, so the tail isn't copied out.
+                pos = max(pos, hit.end)
                 continue
             out.append(text[pos : hit.start])
             out.append(self._PLACEHOLDERS.get(hit.rule, "[redacted]"))
@@ -190,6 +192,12 @@ def load_gate(privacy: Mapping[str, object] | None = None, env: Mapping[str, str
         )
     terms = _read_terms(path, warnings)
     auditor = Path(env.get(AUDITOR_DENYLIST_ENV) or AUDITOR_DENYLIST).expanduser()
+    if env.get(AUDITOR_DENYLIST_ENV) and not auditor.is_file():
+        # A list someone named must be read. Only the default place may be absent.
+        raise GateUnavailable(
+            f"The auditor deny-list named by {AUDITOR_DENYLIST_ENV} is missing ({auditor}). Approve and "
+            f"publish stay refused until it exists, or {AUDITOR_DENYLIST_ENV} is unset."
+        )
     if auditor.is_file() and auditor.resolve() != path.resolve():
         terms.extend(_read_terms(auditor, warnings))
     patterns = privacy.get("patterns") or {}

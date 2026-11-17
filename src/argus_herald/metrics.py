@@ -133,7 +133,8 @@ class Metrics:
         try:
             yield
             self.conn.commit()
-        except Exception:
+        except BaseException:
+            # KeyboardInterrupt and cancellation too: an open transaction wedges the connection.
             self.conn.rollback()
             raise
 
@@ -325,32 +326,44 @@ def collect_traffic(metrics: Metrics, http: Http, owner: str, repos: list[str], 
 
 
 def collect_stars(metrics: Metrics, http: Http, owner: str, repos: list[str], token: str) -> str:
-    """Stars with timestamps. After the first run, starts from the page the known stars end on."""
+    """Stars with timestamps. After the first run, starts near the page the known stars end on."""
     headers = _gh_headers(token, "application/vnd.github.star+json")
     added = 0
+
+    def fetch(repo: str, page: int) -> tuple[int, int, int]:
+        """Store one page: (items on the page, stars on it, stars that were new)."""
+        url = f"{GITHUB_API}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/stargazers?per_page=100&page={page}"
+        batch = _get_json(http, url, headers)
+        rows = [
+            {
+                "repo": repo,
+                "user_hash": _hash((item.get("user") or {}).get("login") or ""),
+                "starred_at": str(item.get("starred_at") or ""),
+            }
+            for item in batch
+            if isinstance(item, dict) and item.get("starred_at")
+        ]
+        before = metrics.count("gh_stars", repo=repo)
+        metrics.upsert("gh_stars", rows)
+        return len(batch), len(rows), metrics.count("gh_stars", repo=repo) - before
+
     for repo in repos:
         known = metrics.count("gh_stars", repo=repo)
-        page = known // 100 + 1
-        while page <= 50:
-            url = (
-                f"{GITHUB_API}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/stargazers?per_page=100&page={page}"
-            )
-            batch = _get_json(http, url, headers)
-            rows = [
-                {
-                    "repo": repo,
-                    "user_hash": _hash((item.get("user") or {}).get("login") or ""),
-                    "starred_at": str(item.get("starred_at") or ""),
-                }
-                for item in batch
-                if isinstance(item, dict) and item.get("starred_at")
-            ]
-            before = metrics.count("gh_stars", repo=repo)
-            metrics.upsert("gh_stars", rows)
-            added += metrics.count("gh_stars", repo=repo) - before
-            if len(batch) < 100:
-                break
+        # Local rows are never deleted, but an unstar shortens GitHub's list, so new stars can sit
+        # on an earlier page than the local count says. Start a page early, and walk back until a
+        # page holds a star already known (or page 1).
+        page = min(max(1, known // 100), 50)
+        size, stars, new = fetch(repo, page)
+        added += new
+        back = page - 1
+        while back >= 1 and new == stars:
+            _, stars, new = fetch(repo, back)
+            added += new
+            back -= 1
+        while size >= 100 and page < 50:
             page += 1
+            size, _, new = fetch(repo, page)
+            added += new
     total = int(metrics.conn.execute("SELECT COUNT(*) FROM gh_stars").fetchone()[0])
     return f"{len(repos)} repos, {total} stars ({added} new)"
 

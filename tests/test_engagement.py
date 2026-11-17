@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
@@ -267,3 +267,65 @@ def test_import_cli(tmp_path, capsys):
     assert main([*base, "import", "x-analytics"]) != 0
     assert main([*base, "platforms"]) == 0
     assert "Site traffic   missing CF_API_TOKEN" in capsys.readouterr().out
+
+
+def test_an_unresolvable_handle_only_costs_its_own_posts(tmp_path):
+    class Renamed(Fake):
+        def request(self, method, url, body=None, headers=None):
+            if "resolveHandle" in url and "gone.example" in url:
+                self.calls.append(url)
+                return 400, b'{"error":"InvalidRequest","message":"Unable to resolve handle"}'
+            if "resolveHandle" in url and "odd.example" in url:
+                self.calls.append(url)
+                return 200, b"{}"  # an answer with no did
+            return super().request(method, url, body, headers)
+
+    metrics = _metrics(tmp_path)
+    _broadcast(metrics, "bluesky", "https://bsky.app/profile/gone.example/post/3kaaa")
+    _broadcast(metrics, "bluesky", "https://bsky.app/profile/gone.example/post/3kbbb")
+    _broadcast(metrics, "bluesky", "https://bsky.app/profile/odd.example/post/3kccc")
+    _broadcast(metrics, "bluesky", BSKY_POST)
+    http = Renamed()
+    report = collect_posts(metrics, http, T0 + timedelta(hours=2))
+    assert metrics.count("post_metrics", platform="bluesky", external_id=BSKY_POST) == 1
+    assert sum("can't resolve handle gone.example" in line for line in report.skipped + report.errors) == 2
+    assert sum("gone.example" in url for url in http.calls) == 1  # asked once, not per post
+
+
+def test_site_backfill_leaves_later_days_alone(tmp_path):
+    metrics = _metrics(tmp_path)
+    later = [{"date": "2026-11-25", "path": "/later/", "pageviews": 3, "visits": 3}]
+    metrics.upsert("site_traffic", later)
+    metrics.upsert("site_referrers", [{"date": "2026-11-25", "referrer": "t.co", "pageviews": 2, "visits": 2}])
+    env = {"CF_API_TOKEN": "t", "CF_ACCOUNT_ID": "a", "CF_SITE_TAG": "s"}
+    collect_site(metrics, Fake(), env, today=date(2026, 11, 22))  # a re-run for an earlier week
+    paths = {(r["date"], r["path"]) for r in metrics.conn.execute("SELECT * FROM site_traffic")}
+    assert ("2026-11-25", "/later/") in paths and ("2026-11-20", "/updates/") in paths
+    assert metrics.count("site_referrers", date="2026-11-25") == 1
+
+
+@pytest.mark.parametrize("blank", ["CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_SITE_TAG"])
+def test_site_traffic_needs_all_three_settings(tmp_path, blank):
+    class Empty(Fake):
+        def request(self, method, url, body=None, headers=None):
+            self.calls.append(url)
+            empty = {"data": {"viewer": {"accounts": [{"paths": [], "referrers": []}]}}}
+            return 200, json.dumps(empty).encode()
+
+    metrics = _metrics(tmp_path)
+    metrics.upsert("site_traffic", [{"date": "2026-11-20", "path": "/kept/", "pageviews": 1, "visits": 1}])
+    env = {"CF_API_TOKEN": "t", "CF_ACCOUNT_ID": "a", "CF_SITE_TAG": "s", blank: "  "}
+    http = Empty()
+    with pytest.raises(ValueError, match=blank):
+        collect_site(metrics, http, env, today=date(2026, 11, 22))
+    assert http.calls == [] and metrics.count("site_traffic") == 1
+
+
+def test_slot_suggestions_bucket_by_utc(tmp_path):
+    metrics = _metrics(tmp_path)
+    # Monday 23:30 at -05:00 is Tuesday 04:30 UTC.
+    _broadcast(metrics, "twitter", X_POST, at=datetime(2026, 11, 23, 23, 30, tzinfo=timezone(timedelta(hours=-5))))
+    import_x_analytics(metrics, X_POSTS_CSV, "dragonhound3")
+    metrics.close()
+    text = suggest(tmp_path / "m.sqlite")
+    assert "Tue 04-08 UTC" in text and "Mon" not in text

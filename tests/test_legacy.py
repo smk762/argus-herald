@@ -50,7 +50,8 @@ def test_old_denylist_place_is_read_with_a_warning(tmp_path, monkeypatch):
     old.chmod(0o600)
     monkeypatch.setattr(privacy, "DEFAULT_DENYLIST", tmp_path / "missing.txt")
     monkeypatch.setattr(privacy, "LEGACY_DENYLIST", old)
-    gate = privacy.load_gate({}, {"AI_AUDIT_OPSEC_DENYLIST": str(tmp_path / "none.txt")})
+    monkeypatch.setattr(privacy, "AUDITOR_DENYLIST", tmp_path / "none.txt")
+    gate = privacy.load_gate({}, {})
     assert "zz-legacy-term" in gate.deny_terms
     assert any("old place" in w for w in gate.warnings)
 
@@ -82,3 +83,20 @@ def test_old_entry_point_group_still_loads(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="argus_herald"):
         found = {p.id for p in platforms.load_publishers()}
     assert "example" in found and "argus_herald.platforms" in caplog.text
+
+
+def test_old_import_name_leaves_the_real_module_reloadable():
+    import argus_herald.textutil as real
+
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        old = importlib.import_module("pip_release.textutil")
+    assert old is real
+    assert real.__spec__.name == "argus_herald.textutil" and real.__spec__.origin.endswith("textutil.py")
+    marker = real.clip
+    del real.clip
+    try:
+        importlib.reload(real)  # runs the module again: a no-op loader would leave clip missing
+        assert callable(real.clip)
+    finally:
+        real.__dict__.setdefault("clip", marker)

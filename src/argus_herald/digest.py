@@ -196,7 +196,9 @@ def notable(store: Store, releases: list[sqlite3.Row]) -> list[tuple[sqlite3.Row
         suggested = suggest_headline(row["version"], earlier, row["notes"])
         parsed = parse_version(row["version"]) or (0, 0, 0)
         patch = parsed[2] != 0 or is_prerelease(row["version"])
-        scored.append(((not suggested, patch, row["released_at"][::-1]), row, line, suggested))
+        scored.append(((not suggested, patch), row, line, suggested))
+    # Newest first within a tier: two stable passes, since a timestamp string can't be negated.
+    scored.sort(key=lambda item: item[1]["released_at"] or "", reverse=True)
     scored.sort(key=lambda item: item[0])
     seen_projects: set[str] = set()
     out = []
@@ -549,7 +551,14 @@ def _write_release_page(settings: DigestSettings, slug: str, text: str, gate: Ga
     hits = gate.check({"site page": text})
     if hits:
         return describe(hits)
-    path = Path(settings.site_dir) / f"{slug}.md"
+    # The slug carries a project name and version: keep it one plain file name inside site_dir.
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", slug).lstrip(".-")
+    if not slug:
+        return "release has no usable page name; page not written"
+    site_dir = Path(settings.site_dir)
+    path = site_dir / f"{slug}.md"
+    if not path.resolve().is_relative_to(site_dir.resolve()):
+        return "page path is outside digest.site_dir; page not written"
     if path.exists():
         return f"left alone (already exists): {path}"
     path.write_text(text, encoding="utf-8")
