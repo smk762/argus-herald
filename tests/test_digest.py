@@ -260,3 +260,30 @@ def test_cli_digest_status_exclude_and_promote(tmp_path, capsys):
     assert main([*base, "digest", "exclude", "argus-lens==9.9"]) == 2
     assert main([*base, "promote", "argus-lens==0.13.0"]) == 0
     assert "headline drafts: #1, #2" in capsys.readouterr().out
+
+
+def test_cli_promote_finds_a_github_only_release(tmp_path, capsys):
+    from argus_herald.cli import main
+
+    _config(tmp_path)
+    store = Store(tmp_path / "s.sqlite")
+    store.add_release(
+        project="argus-herald",
+        version="0.2.0",
+        released_at="2099-01-01T00:00:00+00:00",
+        summary="",
+        notes=ADDED,
+        url="https://github.com/smk762/argus-herald/releases/tag/v0.2.0",
+        source="github",
+    )
+    store.close()
+    base = [
+        "--config",
+        str(tmp_path / "c.yaml"),
+        "--env",
+        str(tmp_path / "no.env"),
+        "--store",
+        str(tmp_path / "s.sqlite"),
+    ]
+    assert main([*base, "promote", "argus-herald==0.2.0"]) == 0
+    assert "headline drafts: #" in capsys.readouterr().out
