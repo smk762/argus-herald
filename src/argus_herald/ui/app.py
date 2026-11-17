@@ -41,6 +41,8 @@ from argus_herald.workflow import (
     media_problems,
     publish_draft,
     reject,
+    remove_media,
+    set_media_alt,
 )
 
 _ROOT = Path(__file__).resolve().parent
@@ -420,12 +422,10 @@ def create_app(
             if draft is None or draft.status not in (PENDING, APPROVED, FAILED):
                 _flash(request, "bad", "This draft's media can't change now.")
             elif request.path_params["action"] == "remove":
-                store.remove_media(media_id)
+                remove_media(store, media_id)  # an approved draft goes back to review
                 _flash(request, "ok", f"Removed {item['name']}.")
             else:
-                store.set_alt(media_id, str(form.get("alt") or "").strip())
-                if draft.status == APPROVED:
-                    store.transition(draft.id, (APPROVED,), PENDING)
+                set_media_alt(store, media_id, str(form.get("alt") or "").strip())
                 _flash(request, "ok", "Alt text saved.")
         return RedirectResponse(f"/drafts/{item['draft_id']}", status_code=303)
 

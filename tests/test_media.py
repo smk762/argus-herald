@@ -139,3 +139,84 @@ def test_approve_needs_alt_text_passes_the_gate_and_fits_the_platform(tmp_path, 
     assert any("can't carry media" in p for p in media_problems(store, DiscordPublisher(), store.get(discord)))
     assert TwitterPublisher("api").media_limits is None
     store.close()
+
+
+def _fake_tools(monkeypatch, run):
+    from argus_herald import media
+
+    monkeypatch.setattr(media.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(media.subprocess, "run", run)
+
+
+def _done(args, returncode=0, stdout="", stderr=""):
+    return subprocess.CompletedProcess(args, returncode, stdout, stderr)
+
+
+def test_an_ffprobe_that_hangs_or_fails_is_not_a_clean_file(tmp_path, monkeypatch):
+    from argus_herald.media import _video_tags
+
+    def hangs(args, **kwargs):
+        raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+    _fake_tools(monkeypatch, hangs)
+    assert _video_tags(tmp_path / "clip.mp4") == ["container metadata"]
+    _fake_tools(monkeypatch, lambda args, **kw: _done(args, 1, "{}", "moov atom not found"))
+    assert _video_tags(tmp_path / "clip.mp4") == ["container metadata"]
+    _fake_tools(monkeypatch, lambda args, **kw: _done(args, 0, "{}"))
+    assert _video_tags(tmp_path / "clip.mp4") == ["container metadata"]
+    probed = '{"format": {"tags": {"encoder": "Lavf"}}, "streams": [{"tags": {"language": "und"}}]}'
+    _fake_tools(monkeypatch, lambda args, **kw: _done(args, 0, probed))
+    assert _video_tags(tmp_path / "clip.mp4") == []
+
+
+def test_an_ffmpeg_timeout_leaves_no_partial_file(tmp_path, monkeypatch):
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"not really a video")
+    out = tmp_path / "clean"
+
+    def run(args, **kwargs):
+        if "ffprobe" in args[0]:
+            return _done(args, 0, '{"format": {"tags": {}}, "streams": [{}]}')
+        from pathlib import Path
+
+        Path(args[-1]).write_bytes(b"half a clip")  # ffmpeg had started writing
+        raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+    _fake_tools(monkeypatch, run)
+    with pytest.raises(MediaError, match="took too long"):
+        clean(source, out)
+    assert list(out.iterdir()) == []
+
+    def works(args, **kwargs):
+        if "ffprobe" in args[0]:
+            return _done(args, 0, '{"format": {"tags": {}}, "streams": [{}]}')
+        from pathlib import Path
+
+        Path(args[-1]).write_bytes(b"a whole clip")
+        return _done(args)
+
+    _fake_tools(monkeypatch, works)
+    cleaned = clean(source, out)
+    assert cleaned.path.read_bytes() == b"a whole clip" and [p.name for p in out.iterdir()] == [cleaned.path.name]
+
+
+def test_a_gif_that_decodes_too_large_is_refused(tmp_path, monkeypatch):
+    from argus_herald import media
+
+    frames = [Image.new("RGB", (64, 64), (i * 20, 0, 255 - i * 20)) for i in range(12)]
+    frames[0].save(tmp_path / "many.gif", save_all=True, append_images=frames[1:], duration=40)
+    monkeypatch.setattr(media, "MAX_GIF_PIXELS", 64 * 64 * 11)
+    with pytest.raises(MediaError, match="too large to clean: 12 frames"):
+        clean(tmp_path / "many.gif", tmp_path / "clean")
+    monkeypatch.setattr(media, "MAX_GIF_PIXELS", 64 * 64 * 12)
+    with Image.open(clean(tmp_path / "many.gif", tmp_path / "clean").path) as kept:
+        assert kept.n_frames == 12
+
+
+def test_an_animated_webp_is_refused_not_cut_to_one_frame(tmp_path):
+    frames = [Image.new("RGB", (16, 16), (i * 60, 0, 0)) for i in range(4)]
+    frames[0].save(tmp_path / "moving.webp", save_all=True, append_images=frames[1:], duration=80)
+    with pytest.raises(MediaError, match="animated"):
+        clean(tmp_path / "moving.webp", tmp_path / "clean")
+    frames[0].save(tmp_path / "still.webp")
+    assert clean(tmp_path / "still.webp", tmp_path / "clean").kind == "image"

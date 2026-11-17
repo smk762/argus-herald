@@ -90,3 +90,44 @@ def test_cli_exits_1_on_drift_and_0_when_clean(tmp_path, capsys):
     cfg = _config(tmp_path, ["argus-atlas", "argus-mask"])
     assert cmd_discover_check(cfg, Http(KNOWN, REPOS, PYPROJECTS), {}) == 0
     assert "no drift" in capsys.readouterr().out
+
+
+class Raw(Http):
+    """Serves each repo's pyproject.toml verbatim; a repo mapped to an exception raises it."""
+
+    def request(self, method, url, body=None, headers=None):
+        if url.startswith("https://raw.githubusercontent.com/"):
+            answer = self.pyprojects.get(url.split("/")[4])
+            if isinstance(answer, Exception):
+                raise answer
+            return (200, answer.encode()) if answer else (404, b"")
+        return super().request(method, url, body, headers)
+
+
+def test_a_project_key_that_is_not_a_table_is_skipped(tmp_path):
+    cfg = _config(tmp_path, ["argus-atlas"])
+    repos = [{"name": "argus-a"}, {"name": "argus-b"}, {"name": "argus-c"}, {"name": "argus-mask"}]
+    pyprojects = {
+        "argus-a": 'project = "foo"\n',
+        "argus-b": "project = [1]\n",
+        "argus-c": '[[project]]\nname = "x"\n',
+        "argus-mask": '[project]\nname = "argus-mask"\n',
+    }
+    drift = check_projects(cfg, Raw(KNOWN, repos, pyprojects), {})
+    assert drift.unconfigured == {"argus-mask": "github.com/smk762/argus-mask"}
+
+
+def test_one_failing_repo_is_a_note_and_the_rest_are_checked(tmp_path):
+    from argus_herald.http import HttpError
+
+    cfg = _config(tmp_path, ["argus-atlas", "argus-typo"])
+    repos = [{"name": "argus-broken"}, {"name": "argus-down"}, {"name": "argus-mask"}]
+    pyprojects = {
+        "argus-broken": OSError("connection reset"),
+        "argus-down": HttpError("GET", "https://raw.githubusercontent.com/x", 0),
+        "argus-mask": '[project]\nname = "argus-mask"\n',
+    }
+    drift = check_projects(cfg, Raw(KNOWN, repos, pyprojects), {})
+    assert drift.missing == ["argus-typo"]
+    assert drift.unconfigured == {"argus-mask": "github.com/smk762/argus-mask"}
+    assert any(note.startswith("github.com/smk762/argus-broken not checked") for note in drift.notes)

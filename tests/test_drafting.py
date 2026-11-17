@@ -186,3 +186,28 @@ def test_digest_uses_the_model_and_falls_back_with_a_note(tmp_path, gate):
     regenerate(store, settings, TwitterPublisher(), ids[0], backend, gate, force=True)
     assert store.get(ids[0]).body.startswith(OPENING) and not store.get(ids[0]).edited
     store.close()
+
+
+def test_dropping_an_item_keeps_the_closing_line():
+    from argus_herald.drafting import repair
+
+    req = Request("digest", "facts", OPENING)
+    outro = "Full notes on the site."
+    five = OPENING + "\n\n" + "\n".join(f"• pkg{i} 0.{i}.0: a short change" for i in range(5)) + "\n\n" + outro
+    text, done = repair(five, x(), "https://e.org", req)
+    assert text.count("•") == 3 and text.endswith("\n\n" + outro) and "\n\n\n" not in text
+    assert done == ["dropped 2 items to fit"]
+    # A wrapped item goes as a whole, and the closing line still counts toward the fit.
+    wrapped = (
+        OPENING
+        + "\n\n• a 0.1.0: one\n• b 0.2.0: two\n• c 0.3.0: three\n• d 0.4.0: four\n  and its second line\n\n"
+        + outro
+    )
+    text, _ = repair(wrapped, x(), "https://e.org", req)
+    assert "second line" not in text and text.endswith("• c 0.3.0: three\n\n" + outro)
+    long_items = (
+        OPENING + "\n\n" + "\n".join(f"• pkg{i} 0.{i}.0: " + "longword " * 9 for i in range(3)) + "\n\n" + outro
+    )
+    text, _ = repair(long_items, x(), "https://e.org", req)
+    assert 1 <= text.count("•") < 3 and text.endswith(outro)
+    assert problems(text, x(), "https://e.org", req) == [] or text.count("•") == 1

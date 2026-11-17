@@ -19,7 +19,15 @@ def signature_base(method: str, url: str, params: Mapping[str, str]) -> str:
     parsed = urlparse(url)
     if parsed.scheme == "" or parsed.netloc == "":
         raise ValueError("OAuth URL must be absolute")
-    base_url = f"{parsed.scheme.lower()}://{parsed.netloc}{parsed.path}"
+    # RFC 5849 3.4.1.2: lowercase scheme and host, no default port, no userinfo.
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    if ":" in host:
+        host = f"[{host}]"
+    port = parsed.port
+    if port is not None and port != {"http": 80, "https": 443}.get(scheme):
+        host = f"{host}:{port}"
+    base_url = f"{scheme}://{host}{parsed.path}"
     items = [(percent(key), percent(value)) for key, value in params.items()]
     for key, value in parse_qsl(parsed.query, keep_blank_values=True):
         items.append((percent(key), percent(value)))

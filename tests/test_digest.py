@@ -287,3 +287,47 @@ def test_cli_promote_finds_a_github_only_release(tmp_path, capsys):
     ]
     assert main([*base, "promote", "argus-herald==0.2.0"]) == 0
     assert "headline drafts: #" in capsys.readouterr().out
+
+
+def test_notable_names_the_newest_release_of_a_package(tmp_path):
+    from argus_herald.digest import notable
+
+    store = Store(tmp_path / "s.sqlite")
+    # Reversed character by character, the older stamp sorts first; the newer one must win.
+    for version, when in (("0.4.1", "2026-11-17T00:00:09+00:00"), ("0.4.2", "2026-11-25T00:00:01+00:00")):
+        store.add_release(
+            project="argus-atlas",
+            version=version,
+            released_at=when,
+            summary="",
+            notes=f"### Fixed\n- Fix in {version}\n",
+            url="",
+        )
+    for version, when in (("0.2.1", "2026-11-18T10:00:00+00:00"), ("0.2.2", "2026-11-19T08:00:05+00:00")):
+        store.add_release(
+            project="argus-lens",
+            version=version,
+            released_at=when,
+            summary="",
+            notes=f"### Fixed\n- Fix in {version}\n",
+            url="",
+        )
+    picked = notable(store, store.releases(open_only=True))
+    assert [(row["project"], row["version"]) for row, _line, _suggested in picked] == [
+        ("argus-atlas", "0.4.2"),
+        ("argus-lens", "0.2.2"),
+    ]
+    store.close()
+
+
+@pytest.mark.parametrize("slug", ["../../escaped", "/abs/escaped", "2026-11-18-pkg/sub-1-0", "..", ".hidden"])
+def test_release_page_stays_inside_the_site_dir(tmp_path, gate, slug):
+    from argus_herald.digest import _write_release_page
+
+    cfg = _config(tmp_path)
+    site = Path(cfg.digest.site_dir)
+    status = _write_release_page(cfg.digest, slug, "page text", gate)
+    written = [p for p in tmp_path.rglob("*.md")]
+    assert all(p.parent == site and not p.name.startswith(".") for p in written), status
+    assert not (tmp_path / "escaped.md").exists() and not Path("/abs/escaped.md").exists()
+    assert status.startswith("wrote ") == bool(written)

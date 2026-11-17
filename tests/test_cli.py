@@ -177,3 +177,69 @@ def test_media_commands_and_compose_with_media(tmp_path, capsys):
     store = Store(path)
     assert [m["alt"] for d in store.list_drafts() if d.kind == "demo" for m in store.media(d.id)] == ["Square"]
     store.close()
+
+
+def _edit_setup(tmp_path, monkeypatch, editor):
+    from argus_herald.store import Store
+
+    config = tmp_path / "config.json"
+    config.write_text('{"pypi":{"projects":["demo"]},"destinations":{"patreon":{"enabled":true}}}', encoding="utf-8")
+    store = Store(tmp_path / "s.sqlite")
+    store.add_draft(project="demo", version="1.0", platform="patreon", title="demo 1.0", body="Old body", link="")
+    store.close()
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.setenv("EDITOR", editor)
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "tmp"))
+    (tmp_path / "tmp").mkdir()
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", None)  # read TMPDIR again
+    return ["--config", str(config), "--env", str(tmp_path / "no.env"), "--store", str(tmp_path / "s.sqlite")]
+
+
+def test_edit_runs_an_editor_command_with_arguments_on_a_private_file(tmp_path, monkeypatch, capsys):
+    import sys
+
+    from argus_herald.store import Store
+
+    script = tmp_path / "editor.py"
+    script.write_text(
+        "import os, stat, sys\n"
+        "flag, path = sys.argv[1], sys.argv[2]\n"
+        "mode = stat.S_IMODE(os.stat(path).st_mode)\n"
+        f"open({str(tmp_path / 'seen.txt')!r}, 'w').write(f'{{flag}} {{path}} {{mode:o}}')\n"
+        "open(path, 'w').write('title: demo 1.0\\n\\nNew body\\n')\n",
+        encoding="utf-8",
+    )
+    base = _edit_setup(tmp_path, monkeypatch, f"{sys.executable} {script} --wait")
+    assert main([*base, "edit", "1"]) == 0
+    flag, path, mode = (tmp_path / "seen.txt").read_text().split(" ")
+    assert flag == "--wait" and mode == "600"
+    assert Path(path).name != "argus-herald-1.txt" and Path(path).name.startswith("argus-herald-1-")
+    assert not Path(path).exists() and list((tmp_path / "tmp").iterdir()) == []  # removed when done
+    store = Store(tmp_path / "s.sqlite")
+    assert store.get(1).body == "New body"
+    store.close()
+
+
+def test_edit_never_writes_through_a_file_planted_at_a_guessable_path(tmp_path, monkeypatch):
+    import sys
+
+    base = _edit_setup(tmp_path, monkeypatch, f"{sys.executable} -c pass")
+    victim = tmp_path / "victim.txt"
+    victim.write_text("precious", encoding="utf-8")
+    (tmp_path / "tmp" / "argus-herald-1.txt").symlink_to(victim)
+    assert main([*base, "edit", "1"]) == 0
+    assert victim.read_text(encoding="utf-8") == "precious"
+
+
+def test_edit_with_a_missing_editor_is_an_error_not_a_traceback(tmp_path, monkeypatch, capsys):
+    from argus_herald.store import Store
+
+    base = _edit_setup(tmp_path, monkeypatch, "no-such-editor-zz --wait")
+    assert main([*base, "edit", "1"]) == 2
+    assert "Can't run the editor" in capsys.readouterr().err
+    assert list((tmp_path / "tmp").iterdir()) == []
+    store = Store(tmp_path / "s.sqlite")
+    assert store.get(1).body == "Old body"
+    store.close()

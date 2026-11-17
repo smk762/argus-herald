@@ -170,7 +170,8 @@ def suggest(metrics_db: Path) -> str:
         return "No published posts have engagement data yet."
     by_platform: dict[str, list[tuple[datetime, float]]] = defaultdict(list)
     for row in rows:
-        by_platform[row["platform"]].append((parse(row["at"]), float(row["score"] or 0)))
+        # The report is in UTC, so bucket by the UTC weekday and hour whatever offset was stored.
+        by_platform[row["platform"]].append((parse(row["at"]).astimezone(UTC), float(row["score"] or 0)))
     lines = []
     for platform, posts in sorted(by_platform.items()):
         lines.append(f"{platform}: {len(posts)} posts")

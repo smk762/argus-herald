@@ -18,6 +18,7 @@ from argus_herald.feeds import parse_atom
 from argus_herald.http import Http, HttpError
 
 API = "https://api.github.com"
+MAX_PAGES = 50  # 100 releases a page
 _VERSION = re.compile(r"^[vV]?(\d+\.\d+(?:\.\d+)?(?:[-.]?[A-Za-z0-9.]+)?)$")
 
 
@@ -45,19 +46,27 @@ def list_releases(http: Http, owner: str, repo: str, token: str = "") -> list[Gi
 
     out: list[GitHubRelease] = []
     if token:
-        url = f"{API}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/releases?per_page=100"
-        status, body = http.request(
-            "GET",
-            url,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-                "Authorization": f"Bearer {token}",
-            },
-        )
-        if status != 200:
-            raise HttpError("GET", url, status)
-        for item in json.loads(body.decode("utf-8")):
+        items: list[dict] = []
+        for page in range(1, MAX_PAGES + 1):
+            url = f"{API}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/releases?per_page=100&page={page}"
+            status, body = http.request(
+                "GET",
+                url,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+            if status != 200:
+                raise HttpError("GET", url, status)
+            batch = json.loads(body.decode("utf-8"))
+            if not isinstance(batch, list):
+                raise ValueError("Unexpected GitHub response")
+            items.extend(item for item in batch if isinstance(item, dict))
+            if len(batch) < 100:
+                break
+        for item in items:
             if item.get("draft"):
                 continue
             version = version_from_tag(str(item.get("tag_name") or ""))

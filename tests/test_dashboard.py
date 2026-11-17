@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 
 from starlette.testclient import TestClient
 
@@ -238,3 +238,75 @@ def test_dashboard_routes(tmp_path):
     guarded = TestClient(locked, follow_redirects=False)
     assert guarded.get("/dashboard").headers["location"] == "/login"
     assert guarded.get("/dashboard/broadcasts.csv").headers["location"] == "/login"
+
+
+def _event(m, url, detail, at="2026-12-10T12:00:00+00:00"):
+    m.upsert(
+        "events",
+        [
+            {
+                "kind": "broadcast",
+                "source": "twitter",
+                "project": "p",
+                "version": "",
+                "at": at,
+                "url": url,
+                "detail": detail,
+            }
+        ],
+    )
+
+
+def test_a_detail_that_is_not_an_object_is_skipped(tmp_path):
+    m = _metrics(tmp_path)
+    for i, detail in enumerate(("[]", "1", '"text"', "true", "null")):
+        _event(m, f"https://x.com/a/status/{i}", detail)
+    _event(m, "https://x.com/a/status/9", json.dumps({"subject": "good", "post": "good"}))
+    found = d.broadcasts(d.connect(m.path), d.Filters(days=30, end=END))
+    assert [b.subject for b in found] == ["good"]
+
+
+def test_a_malformed_media_count_reads_as_none(tmp_path):
+    m = _metrics(tmp_path)
+    for i, media in enumerate(("3 images", "2.5", [1], {"n": 1})):
+        _event(m, f"https://x.com/a/status/{i}", json.dumps({"subject": f"s{i}", "post": f"s{i}", "media": media}))
+    _event(m, "https://x.com/a/status/9", json.dumps({"subject": "two", "post": "two", "media": "2"}))
+    found = d.broadcasts(d.connect(m.path), d.Filters(days=30, end=END))
+    assert sorted(b.media for b in found) == [0, 0, 0, 0, 2]
+
+
+def test_checkpoints_compare_times_not_strings(tmp_path):
+    m = _metrics(tmp_path)
+    t0 = _at(END - timedelta(days=10))
+    url = "https://bsky.app/profile/a.b/post/1"
+    _broadcast(m, "bluesky", t0, url, "a")
+    samples = [
+        # (stored stamp, likes): a space separator, a Z suffix, another offset, no offset
+        ((t0 + timedelta(hours=23)).strftime("%Y-%m-%dT%H:%M:%SZ"), 1),  # before the 24h window
+        ((t0 + timedelta(hours=30)).strftime("%Y-%m-%d %H:%M:%S"), 4),  # inside it
+        ((t0 + timedelta(days=7, hours=1)).astimezone(timezone(timedelta(hours=10))).isoformat(), 9),
+        ((t0 + timedelta(days=6)).strftime("%Y-%m-%dT%H:%M:%S"), 6),  # day 6: not the 7d sample
+    ]
+    m.upsert(
+        "post_metrics",
+        [
+            {
+                "platform": "bluesky",
+                "external_id": url,
+                "fetched_at": stamp,
+                "likes": likes,
+                "reposts": 0,
+                "replies": 0,
+                "quotes": 0,
+                "impressions": likes * 100,
+                "engagements": None,
+                "link_clicks": None,
+                "profile_visits": None,
+                "source": "api",
+            }
+            for stamp, likes in samples
+        ],
+    )
+    (report,) = d.broadcast_report(d.connect(m.path), d.Filters(days=30, end=END))
+    assert (report.engagement_24h, report.engagement_7d) == (4, 9)
+    assert report.impressions == 900  # the latest sample by time, not by string order

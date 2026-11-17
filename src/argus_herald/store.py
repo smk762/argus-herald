@@ -321,7 +321,14 @@ class Store:
                 return False  # already announced as a GitHub release in a closed digest
             notes = twin["notes"] if twin["notes"].strip() else notes
             released_at = min(released_at or twin["released_at"], twin["released_at"])
-            self.conn.execute("DELETE FROM releases WHERE id = ?", (twin["id"],))
+            # One statement turns the GitHub row into the PyPI one: nothing is lost if the process
+            # stops here, and what a person set on it (excluded) stays.
+            cur = self.conn.execute(
+                "UPDATE OR IGNORE releases SET source = ?, released_at = ?, summary = ?, notes = ?, url = ? "
+                "WHERE id = ?",
+                (source, released_at, summary, notes, url, twin["id"]),
+            )
+            return bool(cur.rowcount)
         cur = self.conn.execute(
             "INSERT OR IGNORE INTO releases (source, project, version, released_at, seen_at, summary, notes, url) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

@@ -75,9 +75,12 @@ def check_projects(config: Config, http: Http, env: Mapping[str, str]) -> Drift:
         for repo in repos:
             if not repo.startswith(prefix):
                 continue
-            name = _pyproject_name(http, owner, repo)
-            if name and normalize_name(name) not in configured and _pypi_status(http, name) == 200:
-                found(name, f"github.com/{owner}/{repo}")
+            try:
+                name = _pyproject_name(http, owner, repo)
+                if name and normalize_name(name) not in configured and _pypi_status(http, name) == 200:
+                    found(name, f"github.com/{owner}/{repo}")
+            except (HttpError, OSError, ValueError) as exc:
+                drift.notes.append(f"github.com/{owner}/{repo} not checked: {exc}")
     return drift
 
 
@@ -134,5 +137,8 @@ def _pyproject_name(http: Http, owner: str, repo: str) -> str | None:
         data = tomllib.loads(body.decode("utf-8", "replace"))
     except tomllib.TOMLDecodeError:
         return None
-    name = (data.get("project") or {}).get("name")
+    project = data.get("project")
+    if not isinstance(project, dict):
+        return None
+    name = project.get("name")
     return name.strip() if isinstance(name, str) and name.strip() else None

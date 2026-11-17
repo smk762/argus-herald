@@ -26,10 +26,13 @@ class _Alias(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         return None
 
     def create_module(self, spec):
-        return importlib.import_module(_NEW + spec.name[len(_OLD) :])
+        return None  # a throwaway module: exec_module swaps the real one in
 
     def exec_module(self, module):
-        pass  # already executed under its new name
+        # The import system returns sys.modules[name], so the old name gets the real module
+        # object with its own __spec__ and loader: reload and importlib.resources keep working.
+        name = module.__spec__.name
+        sys.modules[name] = importlib.import_module(_NEW + name[len(_OLD) :])
 
 
 sys.meta_path.insert(0, _Alias())

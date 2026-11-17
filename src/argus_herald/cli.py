@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -53,6 +55,8 @@ from argus_herald.workflow import (
     rebaseline,
     reject,
     reminder_due,
+    remove_media,
+    set_media_alt,
 )
 
 log = logging.getLogger("argus_herald")
@@ -253,12 +257,12 @@ def cmd_media(config: Config, store: Store, args: argparse.Namespace) -> int:
             print(f"      alt: {item['alt'] or '(missing)'}   removed: {item['removed']}")
         return 0
     if args.action == "alt":
-        if len(args.args) != 2 or not store.set_alt(int(args.args[0]), args.args[1].strip()):
+        if len(args.args) != 2 or not set_media_alt(store, int(args.args[0]), args.args[1].strip()):
             raise ReviewError("Usage: argus-herald media alt <media id> 'text'")
         print("Saved.")
         return 0
     if args.action == "remove":
-        if not args.args or not store.remove_media(int(args.args[0])):
+        if not args.args or not remove_media(store, int(args.args[0])):
             raise ReviewError("Usage: argus-herald media remove <media id>")
         print("Removed.")
         return 0
@@ -828,13 +832,25 @@ def cmd_edit(store: Store, publishers: Mapping[str, Publisher], draft_id: int) -
     draft = _one(store, draft_id)
     publisher = _publisher(publishers, draft.platform)
     original = f"title: {draft.title}\n\n{draft.body}\n"
-    path = _temp_path(draft_id)
-    path.write_text(original, encoding="utf-8")
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
-    completed = subprocess.run([editor, str(path)], check=False)
-    if completed.returncode != 0:
-        raise ReviewError(f"Editor exited {completed.returncode}. The draft was not changed.")
-    title, body = parse_edit(path.read_text(encoding="utf-8"), draft.title)
+    try:
+        command = shlex.split(editor)  # "code --wait", "emacsclient -t"
+    except ValueError as exc:
+        raise ReviewError(f"Can't read the editor command {editor!r}: {exc}") from exc
+    if not command:
+        raise ReviewError("The editor command is empty. Set VISUAL or EDITOR.")
+    path = _temp_path(draft_id)
+    try:
+        path.write_text(original, encoding="utf-8")
+        try:
+            completed = subprocess.run([*command, str(path)], check=False)
+        except OSError as exc:
+            raise ReviewError(f"Can't run the editor {editor!r}: {exc}. The draft was not changed.") from exc
+        if completed.returncode != 0:
+            raise ReviewError(f"Editor exited {completed.returncode}. The draft was not changed.")
+        title, body = parse_edit(path.read_text(encoding="utf-8"), draft.title)
+    finally:
+        path.unlink(missing_ok=True)
     edit_draft(store, publisher, draft_id, title, body)
     print(f"Updated draft {draft_id}. It is pending approval.")
     return 0
@@ -1393,5 +1409,7 @@ def _copy(source: Path, dest: Path, force: bool) -> None:
 
 
 def _temp_path(draft_id: int) -> Path:
-    directory = Path(os.environ.get("TMPDIR") or "/tmp")
-    return directory / f"argus-herald-{draft_id}.txt"
+    """A new, private (0600) file with a random name: nobody else can have made it first."""
+    handle, name = tempfile.mkstemp(prefix=f"argus-herald-{draft_id}-", suffix=".txt")
+    os.close(handle)
+    return Path(name)
