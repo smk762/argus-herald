@@ -84,6 +84,7 @@ privacy:
 #     weak: 0.5                 # at or below 0.5x
 #     min_posts: 5              # fewer baseline posts than this on a platform: no data
 #     days: 30                  # the baseline: that platform's posts from the last 30 days
+#     min_age_hours: 24         # a post younger than this is left out of the rating; 0 turns that off
 
 poll:
   interval_seconds: 1800
