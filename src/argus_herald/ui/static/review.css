@@ -13,6 +13,7 @@
   --bar-soft: #f7f3ea;
   --ok-soft: #e5f3ea;
   --bad-soft: #f8e8e4;
+  --amber-soft: #f7ecd6;
   --chip: #eee7da;
   --bad-line: #e3c4bd;
   --mark: #f6d9d2;
@@ -55,6 +56,7 @@
     --bar-soft: #221f1a;
     --ok-soft: #1c3223;
     --bad-soft: #3a221d;
+    --amber-soft: #382c17;
     --chip: #2b2720;
     --bad-line: #6e3c31;
     --mark: #5c2c23;
@@ -93,6 +95,7 @@
   --bar-soft: #221f1a;
   --ok-soft: #1c3223;
   --bad-soft: #3a221d;
+  --amber-soft: #382c17;
   --chip: #2b2720;
   --bad-line: #6e3c31;
   --mark: #5c2c23;
@@ -457,3 +460,19 @@ select { font: inherit; padding: 0.35rem 0.5rem; border: 1px solid var(--line); 
 .dash td.post { max-width: 22rem; }
 .table-view { margin-top: 0.6rem; }
 .table-view summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
+
+/* ---- dashboard: clips --------------------------------------------------------------- */
+/* Every badge says its state in words; the colour only repeats it. */
+.badge-ok { background: var(--ok-soft); color: var(--ok); }
+.badge-warn { background: var(--amber-soft); color: var(--amber); }
+.clip-summary { list-style: none; padding: 0; margin: 0.6rem 0; display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.9rem; }
+.clip-summary .badge { margin: 0 0.3rem 0 0; }
+.dash table.clips .badge { margin-left: 0; white-space: nowrap; }
+.clips td.clip { min-width: 12rem; max-width: 22rem; overflow-wrap: anywhere; }
+.clips .clip-meta { display: block; color: var(--muted); font-size: 0.8rem; }
+.clips .perf { display: block; white-space: nowrap; margin-bottom: 0.15rem; }
+.clips .why { margin-top: 0.25rem; font-size: 0.8rem; max-width: 22rem; }
+.clips .why summary { cursor: pointer; color: var(--muted); }
+.clips .why ul { margin: 0.25rem 0 0; padding-left: 1rem; overflow-wrap: anywhere; }
+.clips tr.rerecord td:first-child { box-shadow: inset 3px 0 0 var(--brick); }
+.clips .rerecord-mark { font-weight: 700; border: 1px solid var(--bad-line); }

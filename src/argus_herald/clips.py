@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from argus_herald import freshness
 from argus_herald.models import CLIP_CURRENT, CLIP_FIELDS, CLIP_FORMATS, CLIP_STATUSES
+from argus_herald.performance import NO_DATA, RATINGS, STRONG
 from argus_herald.store import Store
 from argus_herald.workflow import ReviewError
 
@@ -203,6 +204,28 @@ def export_csv(store: Store) -> str:
     return out.getvalue()
 
 
+def best_rating(clip: dict, performance: dict[str, ClipPerformance]) -> str:
+    found = performance.get(clip["id"])
+    return found.best if found else NO_DATA
+
+
+def sort_key(clip: dict, row: dict | None, performance: dict[str, ClipPerformance]) -> tuple[int, int]:
+    """Freshness first (redo, check, unknown, fresh, then not checked), then the clip's best
+    rating on any platform (strong, typical, weak, no data). The listing and the dashboard both
+    sort by this."""
+    return freshness.rank(clip, row), RATINGS.index(best_rating(clip, performance))
+
+
+def ordered(clips: list[dict], freshness_rows: dict[str, dict], performance: dict[str, ClipPerformance]) -> list[dict]:
+    """Clips in listing order. The sort is stable: ties keep the order given (the store's, by id)."""
+    return sorted(clips, key=lambda c: sort_key(c, freshness_rows.get(c["id"]), performance))
+
+
+def rerecord_first(clip: dict, row: dict | None, performance: dict[str, ClipPerformance]) -> bool:
+    """Its demo's UI changed (redo) and its posts did well (strong): the clip most worth re-recording."""
+    return freshness.state(clip, row) == freshness.REDO and best_rating(clip, performance) == STRONG
+
+
 def coverage(clips: list[dict]) -> tuple[list[str], list[str]]:
     """(demos with a current clip, demos without one). A demo is known once any clip names it."""
     demos = {c["demo"] for c in clips if c["demo"]}
@@ -243,15 +266,16 @@ def report(
     now: datetime | None = None,
     performance: dict[str, ClipPerformance] | None = None,
 ) -> str:
-    """The terminal view: one line per clip, the ones that need a look first, then why they do,
-    then how each posted clip did, then coverage."""
+    """The terminal view: one line per clip in the dashboard's order (the ones that need a look
+    first, then by how they did), then why they need a look, then how each posted clip did, then
+    coverage."""
     clips = store.clips()
     if not clips:
         return (
             "No clips yet. Add one with `argus-herald clips add <id> --demo ... --title ...`, or `clips import <csv>`."
         )
     view = View(store, store.clip_freshness(), now or datetime.now(UTC), performance or {})
-    clips.sort(key=lambda c: freshness.rank(c, view.freshness.get(c["id"])))  # stable: by id within a state
+    clips = ordered(clips, view.freshness, view.performance)
     columns = columns or REPORT_COLUMNS
     head = [name for name, _ in columns]
     body = [[cell(c, view) for _, cell in columns] for c in clips]
@@ -264,7 +288,8 @@ def report(
         for c in flagged:
             row = view.freshness.get(c["id"])
             why = freshness.explain(c, row, view.now)
-            lines.append(f"  {c['id']} ({freshness.state(c, row)}): {why[0] if why else ''}".rstrip())
+            first = ", strong: re-record first" if rerecord_first(c, row, view.performance) else ""
+            lines.append(f"  {c['id']} ({freshness.state(c, row)}{first}): {why[0] if why else ''}".rstrip())
             lines.extend(f"    {line}" for line in why[1:])
     posted = [c for c in clips if c["id"] in view.performance and view.performance[c["id"]].platforms]
     if posted:

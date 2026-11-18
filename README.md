@@ -161,8 +161,9 @@ The traffic endpoints only answer to an account with write access to the repo. A
 - **GitHub referrers:** unique visitors by source (X, Bluesky, Mastodon, Reddit, Hacker News, search, your own site, other), stacked.
 - **Broadcasts:** one row per post, with engagement at 24h and 7d and the change in downloads, views, stars and that platform's referrers. The change compares the 72 hours from the post with the median day of the 14 days before. These are associations, not effects; rows whose window overlaps another post are greyed out. Sort by any column; filter by platform, format, media, drafting backend, or herald vs logged by hand.
 - **Platforms by week:** posts, engagement, referrer uniques and follower change. Weeks start on the digest anchor's weekday (Monday by default); change it in the filters.
+- **Clips:** one row per clip in the [registry](#clip-registry), in the same order as `argus-herald clips`: `redo` first, then `check`, `unknown` and the rest, and within each the best-performing first. Each row shows the clip's title, id, demo and format, its status, a [freshness](#freshness) badge (open "What changed" for the commits, the UI files and the version move), a [performance](#performance) badge per platform with its impressions or engagements, and the date of its last post, linked when the post has an https URL. A clip that is both `redo` and `strong` is marked "re-record first". Above the table: the demos with no current clip, and how many clips are in each status. The range and package filters don't apply to it.
 
-Every table has a CSV link with the page's filters applied.
+Every table except Clips has a CSV link with the page's filters applied; `argus-herald clips export` covers the registry.
 
 ### Followers
 
@@ -405,17 +406,19 @@ Per clip and platform, `clips` shows the posts and the sums of impressions, enga
 | `strong` | 1.5 or more |
 | `typical` | between |
 | `weak` | 0.5 or less |
-| `no data` | no sample yet, fewer than 5 baseline posts, or a baseline median of 0 |
+| `no data` | no sample yet, only posts under 24 hours old, fewer than 5 baseline posts, or a baseline median of 0 |
 
 ```bash
-argus-herald clips                    # a performance column (x strong, bsky typical), then the numbers per posted clip
+argus-herald clips                    # a performance column (x strong, bsky typical), then the numbers per posted clip;
+                                      # within each freshness state the best-performing clips come first
 argus-herald clips show atlas-styles  # the same numbers for one clip
 ```
 
 - A clip posted more than once (a re-cut, a repost) sums its posts and gets one rating per platform.
 - A clip with no posts, or none sampled yet, is `no data`, never `weak`.
+- A post younger than 24 hours is left out of both medians, since its first samples are small: it still counts in the clip's posts and sums, but a clip posted only that recently is `no data` (posted less than 24h ago). `min_age_hours` sets the age; 0 turns it off.
 - It is worked out when you look, from `metrics.sqlite`; nothing is stored. Before the first `collect` everything is `no data`.
-- The thresholds, the minimum baseline posts and the window are under `clips.performance` in the config.
+- The thresholds, the minimum baseline posts, the window and the minimum post age are under `clips.performance` in the config.
 
 ## Privacy gate
 
@@ -505,6 +508,7 @@ The version comes from the git tag (`hatch-vcs`): tagging `vX.Y.Z` publishes the
 - Publish and scheduling appear only for approved drafts (Publish also retries a failed one); Open in X only once an X draft is handed off.
 - Saving an edit returns the draft to pending.
 - With `ARGUS_HERALD_UI_TOKEN` set, only the sign-in page is reachable, and it shows nothing from the queue.
+- The dashboard's Clips panel: every freshness and performance badge says its state in words, rows run `redo` first, a clip that is both `redo` and `strong` (and only such a clip) is marked "re-record first", and last-post links are https.
 - No 5xx, uncaught exceptions or console errors; WCAG AA text contrast; the chosen light or dark theme is the one shown.
 
 ```bash

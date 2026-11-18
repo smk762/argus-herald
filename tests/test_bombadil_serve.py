@@ -36,3 +36,23 @@ def test_seeded_snapshots_stop_at_the_injected_day(tmp_path):
     count, latest = conn.execute("SELECT count(*), max(fetched_at) FROM post_metrics").fetchone()
     conn.close()
     assert count > 0 and latest < "2026-01-02"
+
+
+def test_seeded_clips_cover_every_panel_state(tmp_path):
+    from argus_herald import clip_panel
+    from argus_herald.config import PerformanceSettings
+    from argus_herald.store import Store
+
+    _serve().seed_clips(tmp_path / "s.sqlite", tmp_path / "metrics.sqlite")
+    store = Store(tmp_path / "s.sqlite")
+    panel = clip_panel.load(store, tmp_path / "metrics.sqlite", PerformanceSettings())
+    store.close()
+    rows = [(r.id, r.freshness, r.best, r.rerecord_first, r.age) for r in panel.rows]
+    assert rows == [
+        ("atlas-styles", "redo", "strong", True, ""),
+        ("proof-checkpoints", "check", "no data", False, "as of 3d"),
+        ("lens-heatmap", "fresh", "typical", False, ""),
+        ("pipeline-tour", "not checked", "no data", False, ""),
+        ("quarry-loop", "not checked", "no data", False, ""),
+    ]
+    assert panel.rows[0].last_url.startswith("https://") and panel.missing == ("quarry",)

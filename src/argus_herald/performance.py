@@ -19,11 +19,18 @@ engagements. The baseline window ends now and covers every post that went out on
 in it and has a sample, the clip's own posts included, so it is one number per platform that
 every clip is held against.
 
+A post younger than `min_age_hours` (24) is left out of both medians: its first samples are
+small and would pull the baseline down and make a new clip look weak. Age is measured from the
+post's time (the draft's last update, or the logged broadcast's time) to now; a post exactly
+`min_age_hours` old is old enough. A young post still counts in the clip's posts and sums and
+still sets its last post. A post whose time can't be read is never too young: it stays out of
+the baseline, as it is outside every window, and stays in the clip's own median. 0 turns the rule off.
+
     strong   ratio >= strong (1.5)
     weak     ratio <= weak (0.5)
     typical  in between
-    no data  the clip has no sampled post there, fewer than min_posts (5) baseline posts, or a
-             baseline median of 0
+    no data  the clip has no sampled post there (or only ones younger than min_age_hours), fewer
+             than min_posts (5) baseline posts, or a baseline median of 0
 """
 
 from __future__ import annotations
@@ -42,6 +49,7 @@ from argus_herald.metrics import PostRef, posts_out
 from argus_herald.store import Store
 
 STRONG, TYPICAL, WEAK, NO_DATA = "strong", "typical", "weak", "no data"
+RATINGS = (STRONG, TYPICAL, WEAK, NO_DATA)  # best first: the listing and the dashboard sort by it
 # Short names for the listing; a platform the dashboard doesn't know keeps its own name.
 _SHORT = {"twitter": "x", "bluesky": "bsky"}
 
@@ -56,12 +64,19 @@ class Rating:
     why: str = ""  # for no data: the reason
 
 
-def rate(clip_values: Sequence[float], baseline_values: Sequence[float], settings: PerformanceSettings) -> Rating:
-    """Rate a clip's per-post measures against a platform's baseline measures. Pure."""
+def rate(
+    clip_values: Sequence[float],
+    baseline_values: Sequence[float],
+    settings: PerformanceSettings,
+    empty: str = "no sample yet",
+) -> Rating:
+    """Rate a clip's per-post measures against a platform's baseline measures. Pure.
+
+    `empty` is the no data reason when the clip has no values."""
     count = len(baseline_values)
     base = median(baseline_values) if baseline_values else None
     if not clip_values:
-        return Rating(NO_DATA, baseline_median=base, baseline_posts=count, why="no sample yet")
+        return Rating(NO_DATA, baseline_median=base, baseline_posts=count, why=empty)
     mid = median(clip_values)
     if count < settings.min_posts:
         why = f"{count} baseline post{'s' * (count != 1)}, needs {settings.min_posts}"
@@ -90,6 +105,14 @@ class PlatformPerformance:
     def short(self) -> str:
         return short_name(self.platform)
 
+    @property
+    def value(self) -> int | None:
+        """The total of the rated measure (impressions, or engagements) over the sampled posts."""
+        return self.impressions if self.measure == "impressions" else self.engagements
+
+    def detail(self) -> str:
+        return _detail(self)
+
 
 @dataclass
 class ClipPerformance:
@@ -112,17 +135,23 @@ class ClipPerformance:
         last = self.last
         return last.last_url if last else ""
 
+    @property
+    def best(self) -> str:
+        """The clip's best rating on any platform; no data when it has none."""
+        return min((p.rating.label for p in self.platforms.values()), key=RATINGS.index, default=NO_DATA)
+
     def summary(self) -> str:
         """The listing's cell: `x strong, bsky typical`, or `-` for a clip never posted."""
         if not self.platforms:
             return "-"
-        return ", ".join(f"{p.short} {p.rating.label}" for p in self._ordered())
+        return ", ".join(f"{p.short} {p.rating.label}" for p in self.ordered())
 
     def details(self) -> list[str]:
         """One line per platform: the numbers behind the rating."""
-        return [_detail(p) for p in self._ordered()]
+        return [p.detail() for p in self.ordered()]
 
-    def _ordered(self) -> list[PlatformPerformance]:
+    def ordered(self) -> list[PlatformPerformance]:
+        """Platforms with the most posts first."""
         return sorted(self.platforms.values(), key=lambda p: (-p.posts, p.short))
 
 
@@ -169,9 +198,12 @@ def compute(
         for group, items in by_group.items()
     }
     since = now - timedelta(days=settings.days)
+    settled = now - timedelta(hours=settings.min_age_hours)  # posted at or before this: old enough to rate
     baselines: dict[str, list[float]] = {}
     for group, items in by_group.items():
-        values = [_measure(s, measures[group]) for _r, s, at in items if s and at is not None and since <= at <= now]
+        values = [
+            _measure(s, measures[group]) for _r, s, at in items if s and at is not None and since <= at <= settled
+        ]
         baselines[group] = [v for v in values if v is not None]
 
     out = {clip_id: ClipPerformance(clip_id) for clip_id in clip_ids}
@@ -184,7 +216,9 @@ def compute(
     for (clip_id, group), items in sorted(used.items()):
         measure = measures[group]
         sampled = [s for _r, s, _at in items if s]
-        values = [v for v in (_measure(s, measure) for s in sampled) if v is not None]
+        rated = [s for _r, s, at in items if s and (at is None or at <= settled)]
+        values = [v for v in (_measure(s, measure) for s in rated) if v is not None]
+        empty = f"posted less than {settings.min_age_hours}h ago" if len(rated) < len(sampled) else "no sample yet"
         dated = [(at, ref) for ref, _s, at in items if at is not None]
         last_at, last_ref = max(dated, key=lambda pair: pair[0]) if dated else (None, None)
         out[clip_id].platforms[group] = PlatformPerformance(
@@ -195,7 +229,7 @@ def compute(
             impressions=_sum(s["impressions"] for s in sampled),
             engagements=_sum(_engagements(s) for s in sampled),
             link_clicks=_sum(s["link_clicks"] for s in sampled),
-            rating=rate(values, baselines[group], settings),
+            rating=rate(values, baselines[group], settings, empty),
             last_at=last_at,
             last_url=last_ref.url if last_ref and last_ref.url.startswith("https://") else "",
         )
