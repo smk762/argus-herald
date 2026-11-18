@@ -31,7 +31,7 @@ from urllib.parse import quote
 from argus_herald.config import Config
 from argus_herald.engagement import collect_posts, collect_site, site_configured
 from argus_herald.http import Http, HttpError
-from argus_herald.models import CLIP_CURRENT, PUBLISHED
+from argus_herald.models import CLIP_CURRENT, PUBLISHED, Draft
 from argus_herald.pypi import list_versions
 from argus_herald.store import Store
 from argus_herald.workflow import tracked_projects
@@ -421,17 +421,43 @@ def collect_events(metrics: Metrics, store: Store, http: Http, packages: list[st
     return f"{len(rows)} releases, {sync_broadcasts(metrics, store)}"
 
 
+@dataclass(frozen=True)
+class PostRef:
+    """A post that went out, keyed the way metrics.sqlite knows it: `platform` and `url` are a
+    broadcast's events.source and events.url, and a sample's post_metrics.platform and external_id."""
+
+    via: str  # "draft" (published, or handed off and confirmed) or "logged" (posted outside herald)
+    id: int
+    platform: str
+    url: str  # the post URL or id; "draft:<id>" for a published draft that has none
+    at: str
+
+
+def posts_out(store: Store) -> list[tuple[PostRef, Draft | sqlite3.Row]]:
+    """Every post that went out, with the draft or logged row it came from."""
+    out: list[tuple[PostRef, Draft | sqlite3.Row]] = []
+    for draft in store.list_drafts(status=PUBLISHED):
+        url = draft.external_id or f"draft:{draft.id}"
+        out.append((PostRef("draft", draft.id, draft.platform, url, draft.updated_at), draft))
+    for row in store.logged_broadcasts():
+        out.append((PostRef("logged", int(row["id"]), row["platform"], row["url"], row["at"]), row))
+    return out
+
+
 def sync_broadcasts(metrics: Metrics, store: Store) -> str:
     broadcasts: list[dict] = []
-    for draft in store.list_drafts(status=PUBLISHED):
+    posts = posts_out(store)
+    for ref, draft in posts:
+        if ref.via != "draft":
+            continue
         broadcasts.append(
             {
                 "kind": "broadcast",
-                "source": draft.platform,
+                "source": ref.platform,
                 "project": draft.project,
                 "version": draft.version,
-                "at": draft.updated_at,
-                "url": draft.external_id or f"draft:{draft.id}",
+                "at": ref.at,
+                "url": ref.url,
                 "detail": json.dumps(
                     {
                         "draft": draft.id,
@@ -446,15 +472,17 @@ def sync_broadcasts(metrics: Metrics, store: Store) -> str:
                 ),
             }
         )
-    for row in store.logged_broadcasts():
+    for ref, row in posts:
+        if ref.via != "logged":
+            continue
         broadcasts.append(
             {
                 "kind": "broadcast",
-                "source": row["platform"],
+                "source": ref.platform,
                 "project": row["project"],
                 "version": "",
-                "at": row["at"],
-                "url": row["url"],
+                "at": ref.at,
+                "url": ref.url,
                 "detail": json.dumps(
                     {
                         "logged": row["id"],

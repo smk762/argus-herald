@@ -14,14 +14,18 @@ import csv
 import io
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from argus_herald import freshness
 from argus_herald.models import CLIP_CURRENT, CLIP_FIELDS, CLIP_FORMATS, CLIP_STATUSES
 from argus_herald.store import Store
 from argus_herald.workflow import ReviewError
+
+if TYPE_CHECKING:
+    from argus_herald.performance import ClipPerformance
 
 COLUMNS = ("id", *CLIP_FIELDS)
 # Column names from a hand-kept list, and the registry column each one fills.
@@ -213,6 +217,7 @@ class View:
     store: Store
     freshness: dict[str, dict]
     now: datetime
+    performance: dict[str, ClipPerformance] = field(default_factory=dict)  # by clip id; empty: not computed
 
 
 # The listing's columns, left to right: (header, cell). A new column is one more entry.
@@ -226,19 +231,26 @@ REPORT_COLUMNS: list[Column] = [
     ("recorded", lambda c, v: c["recorded_at"][:10] or "-"),
     ("version", lambda c, v: c["project_version"] or "-"),
     ("posts", lambda c, v: str(len(v.store.clip_uses(c["id"])) or "-")),
+    ("performance", lambda c, v: v.performance[c["id"]].summary() if c["id"] in v.performance else "-"),
     ("title", lambda c, v: c["title"]),
 ]
 
 
-def report(store: Store, *, columns: list[Column] | None = None, now: datetime | None = None) -> str:
+def report(
+    store: Store,
+    *,
+    columns: list[Column] | None = None,
+    now: datetime | None = None,
+    performance: dict[str, ClipPerformance] | None = None,
+) -> str:
     """The terminal view: one line per clip, the ones that need a look first, then why they do,
-    then coverage."""
+    then how each posted clip did, then coverage."""
     clips = store.clips()
     if not clips:
         return (
             "No clips yet. Add one with `argus-herald clips add <id> --demo ... --title ...`, or `clips import <csv>`."
         )
-    view = View(store, store.clip_freshness(), now or datetime.now(UTC))
+    view = View(store, store.clip_freshness(), now or datetime.now(UTC), performance or {})
     clips.sort(key=lambda c: freshness.rank(c, view.freshness.get(c["id"])))  # stable: by id within a state
     columns = columns or REPORT_COLUMNS
     head = [name for name, _ in columns]
@@ -254,6 +266,13 @@ def report(store: Store, *, columns: list[Column] | None = None, now: datetime |
             why = freshness.explain(c, row, view.now)
             lines.append(f"  {c['id']} ({freshness.state(c, row)}): {why[0] if why else ''}".rstrip())
             lines.extend(f"    {line}" for line in why[1:])
+    posted = [c for c in clips if c["id"] in view.performance and view.performance[c["id"]].platforms]
+    if posted:
+        lines.append("")
+        lines.append("Performance (each clip's median against the platform's own recent posts):")
+        for c in posted:
+            lines.append(f"  {c['id']}")
+            lines.extend(f"    {line}" for line in view.performance[c["id"]].details())
     covered, missing = coverage(clips)
     total = len(covered) + len(missing)
     lines.append("")
@@ -263,7 +282,7 @@ def report(store: Store, *, columns: list[Column] | None = None, now: datetime |
     return "\n".join(lines)
 
 
-def describe(store: Store, clip_id: str) -> str:
+def describe(store: Store, clip_id: str, performance: dict[str, ClipPerformance] | None = None) -> str:
     clip = require(store, clip_id)
     lines = [f"{key + ':':<17}{'' if clip[key] is None else clip[key]}" for key in COLUMNS]
     uses = store.clip_uses(clip["id"])
@@ -284,4 +303,12 @@ def describe(store: Store, clip_id: str) -> str:
         lines.append("Freshness: not checked yet (`argus-herald clips refresh`)")
     else:
         lines.append(f"Freshness: not checked while {clip['status']}")
+    if performance is not None:
+        found = performance.get(clip["id"])
+        lines.append("")
+        if found and found.platforms:
+            lines.append("Performance (median against the platform's own recent posts):")
+            lines.extend(f"  {line}" for line in found.details())
+        else:
+            lines.append("Performance: no data (no post that used it has gone out)")
     return "\n".join(lines)

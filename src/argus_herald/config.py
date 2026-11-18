@@ -120,13 +120,24 @@ DEFAULT_UI_PATHS = ("src/**", "frontend/**", "*.css", "*.html")
 
 
 @dataclass(frozen=True)
+class PerformanceSettings:
+    """How a clip's posts are rated against the account's own recent posts (see performance.py)."""
+
+    strong: float = 1.5  # ratio at or above this is strong
+    weak: float = 0.5  # at or below this is weak
+    min_posts: int = 5  # fewer baseline posts than this on a platform: no data
+    days: int = 30  # the baseline is a platform's posts from the last this many days
+
+
+@dataclass(frozen=True)
 class ClipSettings:
-    """Where the demos behind registry clips live, for the freshness check."""
+    """Where the demos behind registry clips live, for the freshness check, and how their posts are rated."""
 
     owner: str = ""  # for a bare demo_repo; falls back to github.owner, then pypi.discover.github_owner
     branch: str = "dev"  # the deploy branch the live demo is built from
     ui_paths: tuple[str, ...] = DEFAULT_UI_PATHS
     demos: tuple[tuple[str, str, tuple[str, ...]], ...] = ()  # (demo, branch, ui_paths) overrides
+    performance: PerformanceSettings = PerformanceSettings()
 
     def for_demo(self, demo: str) -> tuple[str, tuple[str, ...]]:
         """(deploy branch, UI path globs) for one demo."""
@@ -499,9 +510,11 @@ def _clips(value: Any) -> ClipSettings:
         return ClipSettings()
     if not isinstance(value, dict):
         raise ConfigError("clips must be a mapping")
-    unknown = sorted(str(key) for key in set(value) - {"owner", "branch", "ui_paths", "demos"})
+    unknown = sorted(str(key) for key in set(value) - {"owner", "branch", "ui_paths", "demos", "performance"})
     if unknown:
-        raise ConfigError(f"Unknown clips keys: {', '.join(unknown)}. Known: owner, branch, ui_paths, demos")
+        raise ConfigError(
+            f"Unknown clips keys: {', '.join(unknown)}. Known: owner, branch, ui_paths, demos, performance"
+        )
     owner = value.get("owner") or ""
     if not isinstance(owner, str) or (owner.strip() and not _OWNER.match(owner.strip())):
         raise ConfigError("clips.owner must be a GitHub user or organisation name")
@@ -523,7 +536,37 @@ def _clips(value: Any) -> ClipSettings:
                 _clip_paths(f"{where}.ui_paths", raw.get("ui_paths"), paths),
             )
         )
-    return ClipSettings(owner=owner.strip(), branch=branch, ui_paths=paths, demos=tuple(overrides))
+    return ClipSettings(
+        owner=owner.strip(),
+        branch=branch,
+        ui_paths=paths,
+        demos=tuple(overrides),
+        performance=_clip_performance(value.get("performance")),
+    )
+
+
+def _clip_performance(value: Any) -> PerformanceSettings:
+    if value is None:
+        return PerformanceSettings()
+    known = ("strong", "weak", "min_posts", "days")
+    if not isinstance(value, dict) or set(value) - set(known):
+        raise ConfigError(f"clips.performance is a mapping of {', '.join(known)}")
+    default = PerformanceSettings()
+    ratios = {}
+    for key in ("strong", "weak"):
+        raw = value.get(key, getattr(default, key))
+        if isinstance(raw, bool) or not isinstance(raw, int | float) or not 0 < raw < float("inf"):
+            raise ConfigError(f"clips.performance.{key} is a ratio above 0, like {getattr(default, key)}")
+        ratios[key] = float(raw)
+    if ratios["strong"] <= ratios["weak"]:
+        raise ConfigError("clips.performance.strong must be above clips.performance.weak")
+    counts = {}
+    for key in ("min_posts", "days"):
+        raw = value.get(key, getattr(default, key))
+        if isinstance(raw, bool) or not isinstance(raw, int) or not 0 < raw <= 3650:
+            raise ConfigError(f"clips.performance.{key} is a whole number from 1 to 3650")
+        counts[key] = raw
+    return PerformanceSettings(**ratios, **counts)
 
 
 def _clip_branch(where: str, value: Any) -> str:
