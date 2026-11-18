@@ -343,6 +343,32 @@ Approve is refused while any attachment lacks alt text, when the privacy gate fl
 
 For X and Patreon, the handoff lists the cleaned files to download and attach, each with its alt text ready to copy.
 
+### Clip registry
+
+The registry records what each demo clip shows and what it was recorded against, so herald can say which demos have no current clip and which posts used which clip.
+
+```bash
+argus-herald clips add atlas-styles --demo atlas --project argus-atlas --title "Atlas styles" --format clip --target-seconds 30
+argus-herald clips set atlas-styles --status recorded --path ~/clips/atlas-styles.mp4 \
+    --project-version 0.9.0 --demo-repo argus-realms --demo-commit 16e992da7b
+argus-herald clips                    # every clip, then the demos with no current clip
+argus-herald clips show atlas-styles  # its fields and the posts that used it
+argus-herald clips export clips.csv   # and `clips import clips.csv` to bring a spreadsheet back
+```
+
+- **Formats:** `loop`, `clip`, `short`, `walkthrough`. **Statuses:** `todo`, `scripted`, `recorded`, `edited`, `posted`, `stale`, `hold`. Herald never changes a status by itself.
+- A demo counts as covered while one of its clips is `recorded`, `edited` or `posted`. A demo is known once any clip names it.
+- Setting `--status recorded` fills in today's date unless `--recorded-at` is given.
+- `clips import` checks every row before saving any. A column in the file replaces the stored value, and a column that isn't in the file is left alone. Columns the registry doesn't keep are named and skipped.
+- `clips remove` refuses a clip that a post has used.
+
+Attach a clip by its id and the link is recorded. The file is cleaned like any other attachment, and it still needs alt text:
+
+```bash
+argus-herald media add 12 --clip atlas-styles --alt "Three map styles applied to the same coastline" --all-drafts
+argus-herald log-broadcast --platform reddit --url https://www.reddit.com/r/gis/comments/abc/ --clip atlas-styles
+```
+
 ## Privacy gate
 
 Every draft passes a privacy gate on approve and again on publish. A hit refuses the draft; text is never rewritten. It catches:

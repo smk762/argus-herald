@@ -19,6 +19,27 @@ KINDS = ("release", "digest", "headline", "demo", "note", "video", "page")
 POST_KINDS = ("demo", "note", "video", "page")
 DRAFT_FIELDS = {"title", "body", "reply", "edited", "note", "external_id", "error", "publish_at"}
 
+# The clip registry: one row per demo clip. The column names are also the CSV header of
+# `clips import` and `clips export`.
+CLIP_FIELDS = (
+    "demo",
+    "project",
+    "title",
+    "format",
+    "target_seconds",
+    "status",
+    "recorded_at",
+    "project_version",
+    "demo_repo",
+    "demo_commit",
+    "path",
+    "stale_if",
+)
+CLIP_FORMATS = ("loop", "clip", "short", "walkthrough")
+CLIP_STATUSES = ("todo", "scripted", "recorded", "edited", "posted", "stale", "hold")
+# A demo is covered while one of its clips is in these.
+CLIP_CURRENT = ("recorded", "edited", "posted")
+
 
 @dataclass(frozen=True)
 class VersionRef:

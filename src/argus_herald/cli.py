@@ -26,7 +26,7 @@ from argus_herald.config import (
 )
 from argus_herald.http import HttpClient, HttpError
 from argus_herald.legacy import adopt_legacy_env, warn_once
-from argus_herald.models import APPROVED, PENDING, POST_KINDS, Draft, Post
+from argus_herald.models import APPROVED, CLIP_FIELDS, CLIP_FORMATS, CLIP_STATUSES, PENDING, POST_KINDS, Draft, Post
 from argus_herald.platforms import Publisher, configured_publishers
 from argus_herald.privacy import Gate, GateUnavailable, load_gate
 from argus_herald.pypi import ProfileUnavailable, discover_projects
@@ -140,6 +140,8 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
         return cmd_publish(config, store, by_id, http, _ids(args, store), args.dry_run, _gate(config))
     if args.command == "media":
         return cmd_media(config, store, args)
+    if args.command == "clips":
+        return cmd_clips(store, args)
     if args.command == "log-broadcast":
         return cmd_log_broadcast(store, args)
     if args.command == "broadcasts":
@@ -243,6 +245,15 @@ def cmd_discover_check(config: Config, http, env: Mapping[str, str]) -> int:
 
 
 def cmd_media(config: Config, store: Store, args: argparse.Namespace) -> int:
+    if args.action == "add" and args.clip:
+        from argus_herald import clips
+
+        if len(args.args) != 1 or not args.args[0].isdigit() or not args.alt:
+            raise ReviewError("Usage: argus-herald media add <draft id> --clip <clip id> --alt '...' [--all-drafts]")
+        ids = clips.attach(store, config.media_root, int(args.args[0]), args.clip, args.alt, all_drafts=args.all_drafts)
+        item = store.media_item(ids[0])
+        print(f"Attached clip {item['clip_id']} as {item['kind']} to {len(ids)} draft(s); removed: {item['removed']}")
+        return 0
     if args.action == "add":
         if len(args.args) != 2 or not args.alt:
             raise ReviewError("Usage: argus-herald media add <draft id> <file> --alt '...' [--all-drafts]")
@@ -254,7 +265,8 @@ def cmd_media(config: Config, store: Store, args: argparse.Namespace) -> int:
     if args.action == "list":
         for item in store.media(int(args.args[0])):
             print(f"#{item['id']:<4} {item['kind']:<6} {item['bytes'] // 1000:>7} kB  {item['name']}")
-            print(f"      alt: {item['alt'] or '(missing)'}   removed: {item['removed']}")
+            clip = f"   clip: {item['clip_id']}" if item["clip_id"] else ""
+            print(f"      alt: {item['alt'] or '(missing)'}   removed: {item['removed']}{clip}")
         return 0
     if args.action == "alt":
         if len(args.args) != 2 or not set_media_alt(store, int(args.args[0]), args.args[1].strip()):
@@ -279,16 +291,75 @@ def cmd_log_broadcast(store: Store, args: argparse.Namespace) -> int:
         "text": args.text,
         "at": args.at,
     }
+    from argus_herald import clips
+
+    if args.clip:
+        clips.require(store, args.clip)  # before anything is written
     if args.id:
         edit_logged(store, args.id, **fields)
+        if args.clip:
+            clips.link_broadcast(store, args.id, args.clip)
         print(f"Updated logged broadcast {args.id}.")
         return 0
     if not args.platform or not args.url:
         raise ReviewError("--platform and --url are required (or --id to edit one)")
     defaults = {"kind": "other", "project": "", "subject": "", "text": ""}
     broadcast_id = log_broadcast(store, **{k: (v if v is not None else defaults.get(k)) for k, v in fields.items()})
+    if args.clip:
+        clips.link_broadcast(store, broadcast_id, args.clip)
     row = store.logged_broadcast(broadcast_id)
-    print(f"Logged #{broadcast_id}: {row['platform']} {row['url']} at {row['at']}")
+    used = f" (clip {row['clip_id']})" if row["clip_id"] else ""
+    print(f"Logged #{broadcast_id}: {row['platform']} {row['url']} at {row['at']}{used}")
+    return 0
+
+
+def cmd_clips(store: Store, args: argparse.Namespace) -> int:
+    from argus_herald import clips
+
+    given = {key: getattr(args, key) for key in CLIP_FIELDS if getattr(args, key) is not None}
+    action, rest = args.action, args.args
+    if action in ("list", "export", "import") and given:
+        raise ReviewError(f"clips {action} takes no field options")
+    if action == "list":
+        print(clips.report(store))
+        return 0
+    if action == "export":
+        if len(rest) > 1:
+            raise ReviewError("Usage: argus-herald clips export [file]")
+        text = clips.export_csv(store)
+        if rest:
+            Path(rest[0]).expanduser().write_text(text, encoding="utf-8", newline="")
+            print(f"Wrote {len(store.clips())} clips to {rest[0]}")
+        else:
+            sys.stdout.write(text)
+        return 0
+    if action == "import":
+        if len(rest) != 1:
+            raise ReviewError("Usage: argus-herald clips import <csv>")
+        try:
+            text = Path(rest[0]).expanduser().read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ReviewError(f"Can't read {rest[0]}: {exc}") from exc
+        added, updated, ignored = clips.import_csv(store, text)
+        print(f"Imported {added + updated} clips ({added} new, {updated} updated).")
+        if ignored:
+            print(f"Columns the registry doesn't keep: {', '.join(ignored)}")
+        return 0
+    if len(rest) != 1:
+        raise ReviewError(
+            f"Usage: argus-herald clips {action} <clip id>" + (" [--field value ...]" * (action in ("add", "set")))
+        )
+    if action == "add":
+        clip = clips.add(store, rest[0], **given)
+        print(f"Added clip {clip['id']} ({clip['status']}).")
+    elif action == "set":
+        clip = clips.update(store, rest[0], **given)
+        print(f"Updated clip {clip['id']}: {', '.join(f'{key}={clip[key]}' for key in given)}")
+    elif action == "show":
+        print(clips.describe(store, rest[0]))
+    elif action == "remove":
+        clips.remove(store, rest[0])
+        print(f"Removed clip {rest[0]}.")
     return 0
 
 
@@ -1226,6 +1297,7 @@ def _parser() -> argparse.ArgumentParser:
     logb.add_argument("--text", help="What it said, for the dashboard")
     logb.add_argument("--at", help="When it was posted (ISO date or timestamp; default now, UTC)")
     logb.add_argument("--id", type=int, help="Edit this logged broadcast instead of adding one")
+    logb.add_argument("--clip", help="The registry clip this post used (see `clips`)")
 
     bcasts = sub.add_parser("broadcasts", help="List or delete broadcasts logged by hand")
     bcasts.add_argument("action", nargs="?", default="list", choices=("list", "delete"))
@@ -1297,7 +1369,30 @@ def _parser() -> argparse.ArgumentParser:
         "args", nargs="*", help="add: <draft id> <file>; list: <draft id>; alt: <media id> 'text'; remove: <media id>"
     )
     media_cmd.add_argument("--alt", help="Alt text (required for add)")
+    media_cmd.add_argument("--clip", help="add: attach this registry clip's file instead of naming a file")
     media_cmd.add_argument("--all-drafts", action="store_true", help="Attach to every draft of the same post")
+
+    clips_cmd = sub.add_parser("clips", help="The demo clip registry: list, add, set, show, import, export")
+    clips_cmd.add_argument(
+        "action", nargs="?", default="list", choices=("list", "add", "set", "show", "remove", "import", "export")
+    )
+    clips_cmd.add_argument("args", nargs="*", help="add/set/show/remove: <clip id>; import: <csv>; export: [file]")
+    clips_cmd.add_argument("--demo", help="The demo it shows")
+    clips_cmd.add_argument("--project", help="The package behind the demo")
+    clips_cmd.add_argument("--title")
+    clips_cmd.add_argument("--format", choices=CLIP_FORMATS)
+    clips_cmd.add_argument("--target-seconds", dest="target_seconds", help="Planned length")
+    clips_cmd.add_argument("--status", choices=CLIP_STATUSES)
+    clips_cmd.add_argument(
+        "--recorded-at", dest="recorded_at", help="ISO date or timestamp (default: today, on --status recorded)"
+    )
+    clips_cmd.add_argument(
+        "--project-version", dest="project_version", help="The package version it was recorded against"
+    )
+    clips_cmd.add_argument("--demo-repo", dest="demo_repo", help="The demo's source repository")
+    clips_cmd.add_argument("--demo-commit", dest="demo_commit", help="The demo commit that was live when recorded")
+    clips_cmd.add_argument("--path", help="The edited file")
+    clips_cmd.add_argument("--stale-if", dest="stale_if", help="What change would date this clip")
 
     check = sub.add_parser("check", help="Run the privacy gate over drafts (default: pending and approved)")
     check.add_argument("ids", nargs="*", type=int)

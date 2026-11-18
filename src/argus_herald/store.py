@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from argus_herald.legacy import migrate_data_dir
-from argus_herald.models import DRAFT_FIELDS, Draft
+from argus_herald.models import CLIP_FIELDS, DRAFT_FIELDS, Draft
 
 _SCHEMA = """
 -- Release sources: "pypi" (a PyPI project) or "github" (a repo's GitHub releases).
@@ -88,6 +88,24 @@ CREATE TABLE IF NOT EXISTS logged_broadcasts (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+-- Demo clips: what each one shows and what it was recorded against. `path` is the edited file.
+CREATE TABLE IF NOT EXISTS clips (
+    id TEXT PRIMARY KEY,
+    demo TEXT NOT NULL DEFAULT '',
+    project TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    format TEXT NOT NULL DEFAULT 'clip',
+    target_seconds INTEGER,
+    status TEXT NOT NULL DEFAULT 'todo',
+    recorded_at TEXT NOT NULL DEFAULT '',
+    project_version TEXT NOT NULL DEFAULT '',
+    demo_repo TEXT NOT NULL DEFAULT '',
+    demo_commit TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    stale_if TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS feed_sources (
     source TEXT PRIMARY KEY,
     baselined_at TEXT NOT NULL
@@ -159,6 +177,10 @@ class Store:
             self.conn.execute("ALTER TABLE drafts ADD COLUMN drafted_by TEXT NOT NULL DEFAULT 'template'")
         if "publish_at" not in columns:
             self.conn.execute("ALTER TABLE drafts ADD COLUMN publish_at TEXT")
+        # Which registry clip an attachment or a hand-logged post used (NULL: none).
+        for table in ("draft_media", "logged_broadcasts"):
+            if "clip_id" not in {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN clip_id TEXT")
 
     def _migrate_sources(self) -> None:
         """Add a source column to projects and seen (keys were PyPI names only)."""
@@ -450,6 +472,64 @@ class Store:
     def delete_logged(self, broadcast_id: int) -> bool:
         return bool(self.conn.execute("DELETE FROM logged_broadcasts WHERE id = ?", (broadcast_id,)).rowcount)
 
+    def set_logged_clip(self, broadcast_id: int, clip_id: str | None) -> bool:
+        cur = self.conn.execute(
+            "UPDATE logged_broadcasts SET clip_id = ?, updated_at = ? WHERE id = ?", (clip_id, _now(), broadcast_id)
+        )
+        return bool(cur.rowcount)
+
+    # ---- clip registry -----------------------------------------------------------------
+
+    def clips(self) -> list[dict]:
+        return [dict(row) for row in self.conn.execute("SELECT * FROM clips ORDER BY id")]
+
+    def clip(self, clip_id: str) -> dict | None:
+        row = self.conn.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone()
+        return dict(row) if row else None
+
+    def save_clips(self, rows: list[dict]) -> tuple[int, int]:
+        """Add or update clips in one transaction; each row carries `id` and the fields to set.
+        Returns (added, updated)."""
+        now = _now()
+        added = updated = 0
+        with self.transaction():
+            for row in rows:
+                fields = {k: v for k, v in row.items() if k != "id"}
+                if set(fields) - set(CLIP_FIELDS):
+                    raise ValueError(f"Unknown clip fields: {set(fields) - set(CLIP_FIELDS)}")
+                if self.conn.execute("SELECT 1 FROM clips WHERE id = ?", (row["id"],)).fetchone():
+                    sets = "".join(f"{key} = ?, " for key in fields)
+                    self.conn.execute(
+                        f"UPDATE clips SET {sets}updated_at = ? WHERE id = ?", (*fields.values(), now, row["id"])
+                    )
+                    updated += 1
+                else:
+                    names = "".join(f"{key}, " for key in fields)
+                    self.conn.execute(
+                        f"INSERT INTO clips (id, {names}created_at, updated_at) VALUES (?, {'?, ' * len(fields)}?, ?)",
+                        (row["id"], *fields.values(), now, now),
+                    )
+                    added += 1
+        return added, updated
+
+    def delete_clip(self, clip_id: str) -> bool:
+        return bool(self.conn.execute("DELETE FROM clips WHERE id = ?", (clip_id,)).rowcount)
+
+    def clip_uses(self, clip_id: str) -> list[dict]:
+        """Every post that used a clip: drafts it is attached to, then hand-logged broadcasts."""
+        drafts = self.conn.execute(
+            "SELECT DISTINCT 'draft' AS via, d.id AS id, d.platform AS platform, d.status AS status, "
+            "d.updated_at AS at, COALESCE(d.external_id, '') AS ref "
+            "FROM draft_media m JOIN drafts d ON d.id = m.draft_id WHERE m.clip_id = ? ORDER BY d.id",
+            (clip_id,),
+        ).fetchall()
+        logged = self.conn.execute(
+            "SELECT 'logged' AS via, id, platform, 'posted' AS status, at, url AS ref FROM logged_broadcasts "
+            "WHERE clip_id = ? ORDER BY at, id",
+            (clip_id,),
+        ).fetchall()
+        return [dict(row) for row in (*drafts, *logged)]
+
     def feed_baselined(self, source: str) -> bool:
         row = self.conn.execute("SELECT 1 FROM feed_sources WHERE source = ?", (source,)).fetchone()
         return row is not None
@@ -545,14 +625,25 @@ class Store:
             return None
         return self.get(draft_id)
 
-    def add_media(self, draft_id: int, *, kind: str, path: str, name: str, alt: str, size: int, removed: str) -> int:
+    def add_media(
+        self,
+        draft_id: int,
+        *,
+        kind: str,
+        path: str,
+        name: str,
+        alt: str,
+        size: int,
+        removed: str,
+        clip_id: str | None = None,
+    ) -> int:
         position = self.conn.execute(
             "SELECT COALESCE(MAX(position), -1) + 1 FROM draft_media WHERE draft_id = ?", (draft_id,)
         ).fetchone()[0]
         cur = self.conn.execute(
-            "INSERT INTO draft_media (draft_id, position, kind, path, name, alt, bytes, removed, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (draft_id, position, kind, path, name, alt, size, removed, _now()),
+            "INSERT INTO draft_media (draft_id, position, kind, path, name, alt, bytes, removed, created_at, clip_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (draft_id, position, kind, path, name, alt, size, removed, _now(), clip_id),
         )
         return int(cur.lastrowid)
 
