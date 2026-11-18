@@ -127,6 +127,7 @@ class PerformanceSettings:
     weak: float = 0.5  # at or below this is weak
     min_posts: int = 5  # fewer baseline posts than this on a platform: no data
     days: int = 30  # the baseline is a platform's posts from the last this many days
+    min_age_hours: int = 24  # a post younger than this is left out of the rating; 0 turns that off
 
 
 @dataclass(frozen=True)
@@ -548,7 +549,7 @@ def _clips(value: Any) -> ClipSettings:
 def _clip_performance(value: Any) -> PerformanceSettings:
     if value is None:
         return PerformanceSettings()
-    known = ("strong", "weak", "min_posts", "days")
+    known = ("strong", "weak", "min_posts", "days", "min_age_hours")
     if not isinstance(value, dict) or set(value) - set(known):
         raise ConfigError(f"clips.performance is a mapping of {', '.join(known)}")
     default = PerformanceSettings()
@@ -566,7 +567,10 @@ def _clip_performance(value: Any) -> PerformanceSettings:
         if isinstance(raw, bool) or not isinstance(raw, int) or not 0 < raw <= 3650:
             raise ConfigError(f"clips.performance.{key} is a whole number from 1 to 3650")
         counts[key] = raw
-    return PerformanceSettings(**ratios, **counts)
+    raw = value.get("min_age_hours", default.min_age_hours)
+    if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= 8760:
+        raise ConfigError("clips.performance.min_age_hours is a whole number from 0 to 8760")
+    return PerformanceSettings(**ratios, **counts, min_age_hours=raw)
 
 
 def _clip_branch(where: str, value: Any) -> str:

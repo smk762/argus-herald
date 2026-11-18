@@ -405,7 +405,7 @@ Per clip and platform, `clips` shows the posts and the sums of impressions, enga
 | `strong` | 1.5 or more |
 | `typical` | between |
 | `weak` | 0.5 or less |
-| `no data` | no sample yet, fewer than 5 baseline posts, or a baseline median of 0 |
+| `no data` | no sample yet, only posts under 24 hours old, fewer than 5 baseline posts, or a baseline median of 0 |
 
 ```bash
 argus-herald clips                    # a performance column (x strong, bsky typical), then the numbers per posted clip
@@ -414,8 +414,9 @@ argus-herald clips show atlas-styles  # the same numbers for one clip
 
 - A clip posted more than once (a re-cut, a repost) sums its posts and gets one rating per platform.
 - A clip with no posts, or none sampled yet, is `no data`, never `weak`.
+- A post younger than 24 hours is left out of both medians, since its first samples are small: it still counts in the clip's posts and sums, but a clip posted only that recently is `no data` (posted less than 24h ago). `min_age_hours` sets the age; 0 turns it off.
 - It is worked out when you look, from `metrics.sqlite`; nothing is stored. Before the first `collect` everything is `no data`.
-- The thresholds, the minimum baseline posts and the window are under `clips.performance` in the config.
+- The thresholds, the minimum baseline posts, the window and the minimum post age are under `clips.performance` in the config.
 
 ## Privacy gate
 

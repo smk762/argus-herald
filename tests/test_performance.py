@@ -106,9 +106,9 @@ def test_clip_posted_twice_sums_its_posts_and_gets_one_rating(env):
     store, metrics, _ = env
     baseline(store, metrics, "twitter", [100, 100, 100, 100, 100, 100])
     # One post from a draft, one logged by hand under the other name for X: both are the X platform.
-    published(store, "twitter", "https://x.com/a/status/901", clip="atlas-loop")
+    published(store, "twitter", "https://x.com/a/status/901", clip="atlas-loop", days_ago=2)
     sample(metrics, "twitter", "https://x.com/a/status/901", impressions=300, engagements=20, link_clicks=4)
-    logged(store, "x", "https://x.com/a/status/902", clip="atlas-loop", days_ago=0.5)
+    logged(store, "x", "https://x.com/a/status/902", clip="atlas-loop", days_ago=1.25)
     sample(metrics, "x", "https://x.com/a/status/902", impressions=200, engagements=10, link_clicks=None)
 
     found = perf(env)["atlas-loop"]
@@ -129,7 +129,7 @@ def test_clip_posted_twice_sums_its_posts_and_gets_one_rating(env):
         "x: strong 2.50x; 2 posts: 500 impressions, 30 engagements, 4 link clicks; "
         "median 250 impressions vs baseline median 100 over 8 posts"
     ]
-    assert found.last_url == "https://x.com/a/status/902" and found.last_at == NOW - timedelta(days=0.5)
+    assert found.last_url == "https://x.com/a/status/902" and found.last_at == NOW - timedelta(days=1.25)
 
 
 def test_two_platforms_one_with_engagements_only(env):
@@ -142,7 +142,7 @@ def test_two_platforms_one_with_engagements_only(env):
         sample(metrics, "bluesky", url, likes=6, reposts=2, replies=1, quotes=1)
     published(store, "twitter", "https://x.com/a/status/950", clip="atlas-loop", days_ago=2)
     sample(metrics, "twitter", "https://x.com/a/status/950", impressions=40)
-    published(store, "bluesky", "https://bsky.app/profile/a.bsky.social/post/clip", clip="atlas-loop", days_ago=0.5)
+    published(store, "bluesky", "https://bsky.app/profile/a.bsky.social/post/clip", clip="atlas-loop", days_ago=1.5)
     sample(metrics, "bluesky", "https://bsky.app/profile/a.bsky.social/post/clip", likes=1, reposts=1)
 
     found = perf(env)["atlas-loop"]
@@ -197,6 +197,68 @@ def test_posts_older_than_the_window_are_not_in_the_baseline(env):
     assert (x.rating.label, x.rating.baseline_posts) == (WEAK, 15)
 
 
+def test_young_posts_are_left_out_of_the_baseline(env):
+    store, metrics, _ = env
+    baseline(store, metrics, "twitter", [100] * 5)
+    baseline(store, metrics, "twitter", [1] * 7, days_ago=0.5)  # first-hour numbers, still settling
+    published(store, "twitter", "https://x.com/a/status/1001", clip="atlas-loop", days_ago=3)
+    sample(metrics, "twitter", "https://x.com/a/status/1001", impressions=100)
+
+    x = perf(env)["atlas-loop"].platforms["twitter"]
+    assert (x.rating.label, x.rating.baseline_posts, x.rating.baseline_median) == (TYPICAL, 6, 100)
+    x = perf(env, PerformanceSettings(min_age_hours=0))["atlas-loop"].platforms["twitter"]  # the rule off
+    assert (x.rating.label, x.rating.baseline_posts, x.rating.baseline_median) == (STRONG, 13, 1)
+
+
+def test_a_clip_posted_only_recently_is_no_data_not_weak(env):
+    store, metrics, _ = env
+    baseline(store, metrics, "twitter", [100] * 5)
+    published(store, "twitter", "https://x.com/a/status/1002", clip="atlas-loop", days_ago=0.25)
+    sample(metrics, "twitter", "https://x.com/a/status/1002", impressions=3, engagements=1, link_clicks=0)
+
+    found = perf(env)["atlas-loop"]
+    x = found.platforms["twitter"]
+    assert (x.rating.label, x.rating.why, x.rating.clip_median) == (NO_DATA, "posted less than 24h ago", None)
+    assert (x.posts, x.sampled, x.impressions) == (1, 1, 3)  # still counted and summed
+    assert found.last_url == "https://x.com/a/status/1002"
+    assert "no data (posted less than 24h ago)" in found.details()[0]
+    x = perf(env, PerformanceSettings(min_age_hours=12))["atlas-loop"].platforms["twitter"]
+    assert (x.rating.label, x.rating.why) == (NO_DATA, "posted less than 12h ago")
+    x = perf(env, PerformanceSettings(min_age_hours=0))["atlas-loop"].platforms["twitter"]
+    assert (x.rating.label, x.rating.ratio) == (WEAK, 0.03)
+
+
+def test_rated_on_old_posts_only_but_summed_over_all(env):
+    store, metrics, _ = env
+    baseline(store, metrics, "twitter", [100] * 5)
+    published(store, "twitter", "https://x.com/a/status/1003", clip="atlas-loop", days_ago=4)
+    sample(metrics, "twitter", "https://x.com/a/status/1003", impressions=200, link_clicks=5)
+    logged(store, "twitter", "https://x.com/a/status/1004", clip="atlas-loop", days_ago=0.1)
+    sample(metrics, "twitter", "https://x.com/a/status/1004", impressions=2, link_clicks=1)
+
+    found = perf(env)["atlas-loop"]
+    x = found.platforms["twitter"]
+    assert (x.posts, x.sampled, x.impressions, x.link_clicks) == (2, 2, 202, 6)
+    assert (x.rating.label, x.rating.ratio, x.rating.clip_median, x.rating.baseline_posts) == (STRONG, 2.0, 200, 6)
+    assert found.last_url == "https://x.com/a/status/1004"  # the young post is still the last one
+    x = perf(env, PerformanceSettings(min_age_hours=0))["atlas-loop"].platforms["twitter"]
+    assert (x.rating.label, x.rating.clip_median, x.rating.baseline_posts) == (TYPICAL, 101, 7)
+
+
+def test_a_post_exactly_min_age_hours_old_is_rated(env):
+    store, metrics, _ = env
+    baseline(store, metrics, "twitter", [100] * 5)
+    published(store, "twitter", "https://x.com/a/status/1005", clip="atlas-loop", days_ago=1)  # exactly 24h
+    sample(metrics, "twitter", "https://x.com/a/status/1005", impressions=300)
+    x = perf(env)["atlas-loop"].platforms["twitter"]
+    assert (x.rating.label, x.rating.baseline_posts) == (STRONG, 6)
+
+    just_under = NOW + timedelta(seconds=-1)  # one second short of 24h old
+    store, _metrics, path = env
+    x = clip_performance(store, path, SETTINGS, now=just_under)["atlas-loop"].platforms["twitter"]
+    assert (x.rating.label, x.rating.why, x.rating.baseline_posts) == (NO_DATA, "posted less than 24h ago", 5)
+
+
 def test_unposted_and_unsampled_clips_are_no_data(env):
     store, metrics, _ = env
     baseline(store, metrics, "twitter", [100] * 5)
@@ -234,9 +296,10 @@ def test_config(tmp_path):
         path.write_text("pypi:\n  projects: [argus-atlas]\n" + text, encoding="utf-8")
         return load_config(path)
 
-    assert load("").clips.performance == PerformanceSettings(1.5, 0.5, 5, 30)
-    got = load("clips:\n  performance: {strong: 2, weak: 0.25, min_posts: 3, days: 14}\n").clips.performance
-    assert got == PerformanceSettings(2.0, 0.25, 3, 14)
+    assert load("").clips.performance == PerformanceSettings(1.5, 0.5, 5, 30, 24)
+    got = load("clips:\n  performance: {strong: 2, weak: 0.25, min_posts: 3, days: 14, min_age_hours: 0}\n")
+    assert got.clips.performance == PerformanceSettings(2.0, 0.25, 3, 14, 0)
+    assert load("clips:\n  performance: {min_age_hours: 8760}\n").clips.performance.min_age_hours == 8760
     for bad in (
         "{strong: 0.5, weak: 0.5}",
         "{strong: 0.4}",
@@ -248,6 +311,11 @@ def test_config(tmp_path):
         "{min_posts: 2.5}",
         "{days: -3}",
         "{days: true}",
+        "{min_age_hours: -1}",
+        "{min_age_hours: 8761}",
+        "{min_age_hours: 1.5}",
+        "{min_age_hours: true}",
+        "{min_age_hours: '24'}",
         "{colour: red}",
         "[1.5]",
     ):
@@ -280,7 +348,7 @@ def test_cli_shows_ratings_and_the_numbers_behind_them(tmp_path, capsys):
     assert "Performance (" not in out and not (tmp_path / "metrics.sqlite").exists()
 
     metrics = Metrics(tmp_path / "metrics.sqlite")
-    now = datetime.now(UTC)
+    now = datetime.now(UTC) - timedelta(days=2)  # old enough to rate
     for n in range(5):
         url = f"https://x.com/a/status/{100 + n}"
         draft_id = published(store, "twitter", url)
