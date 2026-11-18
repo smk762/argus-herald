@@ -31,7 +31,7 @@ from urllib.parse import quote
 from argus_herald.config import Config
 from argus_herald.engagement import collect_posts, collect_site, site_configured
 from argus_herald.http import Http, HttpError
-from argus_herald.models import PUBLISHED
+from argus_herald.models import CLIP_CURRENT, PUBLISHED
 from argus_herald.pypi import list_versions
 from argus_herald.store import Store
 from argus_herald.workflow import tracked_projects
@@ -230,7 +230,23 @@ def collect(
         report.skipped.append(f"site traffic: {', '.join(missing)} not set")
     elif not missing:
         _run(report, metrics, "site_traffic", lambda: collect_site(metrics, http, env))
+    _clip_freshness(report, config, store, http, token)
     return report
+
+
+def _clip_freshness(report: Report, config: Config, store: Store, http: Http, token: str) -> None:
+    """Compare recorded clips with their demos. A clip whose check fails keeps its last state."""
+    from argus_herald.freshness import refresh
+
+    if not any(clip["status"] in CLIP_CURRENT for clip in store.clips()):
+        return
+    try:
+        summary = refresh(store, http, config, token)
+    except (sqlite3.Error, OSError, ValueError, KeyError) as exc:  # the rest of collect has run; say so and stop
+        report.errors.append(f"clip_freshness: {exc}")
+        return
+    report.lines.append(f"clip_freshness: {summary.line}")
+    report.errors += [f"clip_freshness: {line}" for line in summary.errors]
 
 
 def collect_engagement(store: Store, metrics: Metrics, http: Http) -> Report:

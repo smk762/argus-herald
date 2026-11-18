@@ -13,9 +13,12 @@ from __future__ import annotations
 import csv
 import io
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from argus_herald import freshness
 from argus_herald.models import CLIP_CURRENT, CLIP_FIELDS, CLIP_FORMATS, CLIP_STATUSES
 from argus_herald.store import Store
 from argus_herald.workflow import ReviewError
@@ -203,29 +206,54 @@ def coverage(clips: list[dict]) -> tuple[list[str], list[str]]:
     return sorted(covered), sorted(demos - covered)
 
 
-def report(store: Store) -> str:
-    """The terminal view: one line per clip, then coverage."""
+@dataclass(frozen=True)
+class View:
+    """What the listing knows besides the clips themselves, read once."""
+
+    store: Store
+    freshness: dict[str, dict]
+    now: datetime
+
+
+# The listing's columns, left to right: (header, cell). A new column is one more entry.
+Column = tuple[str, Callable[[dict, View], str]]
+REPORT_COLUMNS: list[Column] = [
+    ("clip", lambda c, v: c["id"]),
+    ("demo", lambda c, v: c["demo"] or "-"),
+    ("format", lambda c, v: c["format"]),
+    ("status", lambda c, v: c["status"]),
+    ("fresh", lambda c, v: freshness.label(c, v.freshness.get(c["id"]), v.now)),
+    ("recorded", lambda c, v: c["recorded_at"][:10] or "-"),
+    ("version", lambda c, v: c["project_version"] or "-"),
+    ("posts", lambda c, v: str(len(v.store.clip_uses(c["id"])) or "-")),
+    ("title", lambda c, v: c["title"]),
+]
+
+
+def report(store: Store, *, columns: list[Column] | None = None, now: datetime | None = None) -> str:
+    """The terminal view: one line per clip, the ones that need a look first, then why they do,
+    then coverage."""
     clips = store.clips()
     if not clips:
         return (
             "No clips yet. Add one with `argus-herald clips add <id> --demo ... --title ...`, or `clips import <csv>`."
         )
-    head = ("clip", "demo", "format", "status", "recorded", "version", "posts", "title")
-    body = [
-        (
-            c["id"],
-            c["demo"] or "-",
-            c["format"],
-            c["status"],
-            c["recorded_at"][:10] or "-",
-            c["project_version"] or "-",
-            str(len(store.clip_uses(c["id"])) or "-"),
-            c["title"],
-        )
-        for c in clips
-    ]
+    view = View(store, store.clip_freshness(), now or datetime.now(UTC))
+    clips.sort(key=lambda c: freshness.rank(c, view.freshness.get(c["id"])))  # stable: by id within a state
+    columns = columns or REPORT_COLUMNS
+    head = [name for name, _ in columns]
+    body = [[cell(c, view) for _, cell in columns] for c in clips]
     widths = [max(len(row[i]) for row in (head, *body)) for i in range(len(head))]
     lines = ["  ".join(cell.ljust(w) for cell, w in zip(row, widths, strict=True)).rstrip() for row in (head, *body)]
+    flagged = [c for c in clips if freshness.state(c, view.freshness.get(c["id"])) in freshness.FLAGGED]
+    if flagged:
+        lines.append("")
+        lines.append("Needs a look (then `clips ack <id>` if it still matches, or `clips set <id> --status stale`):")
+        for c in flagged:
+            row = view.freshness.get(c["id"])
+            why = freshness.explain(c, row, view.now)
+            lines.append(f"  {c['id']} ({freshness.state(c, row)}): {why[0] if why else ''}".rstrip())
+            lines.extend(f"    {line}" for line in why[1:])
     covered, missing = coverage(clips)
     total = len(covered) + len(missing)
     lines.append("")
@@ -246,4 +274,14 @@ def describe(store: Store, clip_id: str) -> str:
             lines.append(f"  draft #{use['id']:<4} {use['platform']:<12} {use['status']:<11} {use['ref']}".rstrip())
         else:
             lines.append(f"  logged #{use['id']:<3} {use['platform']:<12} {use['at'][:10]}  {use['ref']}".rstrip())
+    row = store.clip_freshness().get(clip["id"])
+    found = freshness.state(clip, row)
+    lines.append("")
+    if found:
+        lines.append(f"Freshness: {found}")
+        lines.extend(f"  {line}" for line in freshness.explain(clip, row))
+    elif clip["status"] in CLIP_CURRENT:
+        lines.append("Freshness: not checked yet (`argus-herald clips refresh`)")
+    else:
+        lines.append(f"Freshness: not checked while {clip['status']}")
     return "\n".join(lines)

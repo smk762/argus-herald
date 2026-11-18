@@ -106,6 +106,26 @@ CREATE TABLE IF NOT EXISTS clips (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+-- The last freshness check of each clip (see freshness.py). base_* is what the clip was compared
+-- from; when the clip's own fields no longer match, the row is out of date. A failed check keeps
+-- the last result and fills failed_at and error.
+CREATE TABLE IF NOT EXISTS clip_freshness (
+    clip_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    commits INTEGER NOT NULL DEFAULT 0,
+    ui_files TEXT NOT NULL DEFAULT '[]',
+    files_changed INTEGER NOT NULL DEFAULT 0,
+    truncated INTEGER NOT NULL DEFAULT 0,
+    head_commit TEXT NOT NULL DEFAULT '',
+    branch TEXT NOT NULL DEFAULT '',
+    base_commit TEXT NOT NULL DEFAULT '',
+    base_version TEXT NOT NULL DEFAULT '',
+    newest_version TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    checked_at TEXT NOT NULL DEFAULT '',
+    failed_at TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS feed_sources (
     source TEXT PRIMARY KEY,
     baselined_at TEXT NOT NULL
@@ -384,6 +404,15 @@ class Store:
             rows = self.conn.execute("SELECT version FROM seen WHERE source = ? AND project = ?", (source, project))
         return [row["version"] for row in rows]
 
+    def seen_versions_named(self, project: str) -> list[str]:
+        """Versions seen for a project from any source, matching its name the way PyPI does
+        (case, and '-', '_' and '.' alike)."""
+        from argus_herald.config import normalize_name
+
+        key = normalize_name(project)
+        rows = self.conn.execute("SELECT DISTINCT project, version FROM seen")
+        return [row["version"] for row in rows if normalize_name(row["project"]) == key]
+
     def create_digest(self, period_from: str, period_to: str, closes_at: str) -> int:
         """A digest for one window. Takes every open release seen before the window closed."""
         with self.transaction():
@@ -513,7 +542,37 @@ class Store:
         return added, updated
 
     def delete_clip(self, clip_id: str) -> bool:
-        return bool(self.conn.execute("DELETE FROM clips WHERE id = ?", (clip_id,)).rowcount)
+        with self.transaction():
+            self.conn.execute("DELETE FROM clip_freshness WHERE clip_id = ?", (clip_id,))
+            return bool(self.conn.execute("DELETE FROM clips WHERE id = ?", (clip_id,)).rowcount)
+
+    def clip_freshness(self) -> dict[str, dict]:
+        """The last freshness check of every clip that has one, by clip id."""
+        return {row["clip_id"]: dict(row) for row in self.conn.execute("SELECT * FROM clip_freshness")}
+
+    def save_freshness(self, clip_id: str, **fields: object) -> None:
+        """Record a completed check; it replaces the last one, failure included."""
+        row = {"clip_id": clip_id, **fields, "checked_at": _now(), "failed_at": "", "error": ""}
+        names = ", ".join(row)
+        self.conn.execute(
+            f"INSERT OR REPLACE INTO clip_freshness ({names}) VALUES ({', '.join('?' * len(row))})",
+            tuple(row.values()),
+        )
+
+    def freshness_failed(self, clip_id: str, error: str, *, base_commit: str, base_version: str) -> None:
+        """Record a check that couldn't complete. The last result is kept as it was, unless it was
+        for another commit or version of the clip (then there is no last result)."""
+        with self.transaction():
+            self.conn.execute(
+                "DELETE FROM clip_freshness WHERE clip_id = ? AND (base_commit != ? OR base_version != ?)",
+                (clip_id, base_commit, base_version),
+            )
+            self.conn.execute(
+                "INSERT INTO clip_freshness (clip_id, state, base_commit, base_version, failed_at, error) "
+                "VALUES (?, 'unknown', ?, ?, ?, ?) "
+                "ON CONFLICT(clip_id) DO UPDATE SET failed_at = excluded.failed_at, error = excluded.error",
+                (clip_id, base_commit, base_version, _now(), error[:300]),
+            )
 
     def clip_uses(self, clip_id: str) -> list[dict]:
         """Every post that used a clip: drafts it is attached to, then hand-logged broadcasts."""

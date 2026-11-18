@@ -141,7 +141,7 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
     if args.command == "media":
         return cmd_media(config, store, args)
     if args.command == "clips":
-        return cmd_clips(store, args)
+        return cmd_clips(config, store, args, http)
     if args.command == "log-broadcast":
         return cmd_log_broadcast(store, args)
     if args.command == "broadcasts":
@@ -313,16 +313,24 @@ def cmd_log_broadcast(store: Store, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_clips(store: Store, args: argparse.Namespace) -> int:
-    from argus_herald import clips
+def cmd_clips(config: Config, store: Store, args: argparse.Namespace, http) -> int:
+    from argus_herald import clips, freshness
 
     given = {key: getattr(args, key) for key in CLIP_FIELDS if getattr(args, key) is not None}
     action, rest = args.action, args.args
-    if action in ("list", "export", "import") and given:
+    if action in ("list", "export", "import", "refresh", "ack") and given:
         raise ReviewError(f"clips {action} takes no field options")
     if action == "list":
         print(clips.report(store))
         return 0
+    if action == "refresh":
+        if rest:
+            raise ReviewError("Usage: argus-herald clips refresh")
+        summary = freshness.refresh(store, http, config, (os.environ.get("GITHUB_TOKEN") or "").strip())
+        print(f"Checked {summary.line}")
+        for line in summary.errors:
+            print(f"error {line}", file=sys.stderr)
+        return 1 if summary.errors else 0
     if action == "export":
         if len(rest) > 1:
             raise ReviewError("Usage: argus-herald clips export [file]")
@@ -360,6 +368,11 @@ def cmd_clips(store: Store, args: argparse.Namespace) -> int:
     elif action == "remove":
         clips.remove(store, rest[0])
         print(f"Removed clip {rest[0]}.")
+    elif action == "ack":
+        clip = freshness.ack(store, rest[0])
+        print(
+            f"Clip {clip['id']} is fresh: demo_commit={clip['demo_commit']} project_version={clip['project_version']}"
+        )
     return 0
 
 
@@ -1372,11 +1385,16 @@ def _parser() -> argparse.ArgumentParser:
     media_cmd.add_argument("--clip", help="add: attach this registry clip's file instead of naming a file")
     media_cmd.add_argument("--all-drafts", action="store_true", help="Attach to every draft of the same post")
 
-    clips_cmd = sub.add_parser("clips", help="The demo clip registry: list, add, set, show, import, export")
-    clips_cmd.add_argument(
-        "action", nargs="?", default="list", choices=("list", "add", "set", "show", "remove", "import", "export")
+    clips_cmd = sub.add_parser(
+        "clips", help="The demo clip registry: list, add, set, show, import, export, refresh, ack"
     )
-    clips_cmd.add_argument("args", nargs="*", help="add/set/show/remove: <clip id>; import: <csv>; export: [file]")
+    clips_cmd.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=("list", "add", "set", "show", "remove", "import", "export", "refresh", "ack"),
+    )
+    clips_cmd.add_argument("args", nargs="*", help="add/set/show/remove/ack: <clip id>; import: <csv>; export: [file]")
     clips_cmd.add_argument("--demo", help="The demo it shows")
     clips_cmd.add_argument("--project", help="The package behind the demo")
     clips_cmd.add_argument("--title")

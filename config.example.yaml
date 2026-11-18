@@ -72,6 +72,14 @@ privacy:
 #   bluesky: dragonhound.dev
 #   mastodon: "@name@instance.social"
 
+# Optional: where the demos behind registry clips live, for `clips refresh` and collect.
+# clips:
+#   owner: your-github-user     # for a bare demo_repo; default github.owner, then pypi.discover.github_owner
+#   branch: dev                 # the deploy branch the live demo is built from
+#   ui_paths: ["src/**", "frontend/**", "*.css", "*.html"]   # a change elsewhere asks for a check, not a redo
+#   demos:
+#     your-demo: {branch: main, ui_paths: ["web/**", "*.css"]}
+
 poll:
   interval_seconds: 1800
 
