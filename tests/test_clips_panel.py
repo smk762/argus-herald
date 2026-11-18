@@ -46,7 +46,8 @@ def checked(store, clip, state, *, ui_files=(), commits=0, **fields):
 
 
 def logged(store, platform, url, *, clip=None, at=None):
-    at = at or datetime.now(UTC).isoformat()
+    """A hand-logged post, two days old by default: old enough to be rated (min_age_hours is 24)."""
+    at = at or (datetime.now(UTC) - timedelta(days=2)).isoformat()
     bid = store.log_broadcast(platform=platform, url=url, kind="demo", project="", subject="s", text="t", at=at)
     if clip:
         clips.link_broadcast(store, bid, clip)
@@ -243,6 +244,11 @@ def test_the_dashboard_shows_the_panel_with_the_strong_redo_marker(tmp_path):
     url = "https://x.com/a/status/99"
     logged(store, "twitter", url, clip="atlas-loop")
     _sample(metrics, url, 900)
+    # Posted an hour ago, with a low first sample: too young to rate, so no data, not weak.
+    recorded(store, "young-loop", status="posted", title="Young loop")
+    young = "https://x.com/a/status/100"
+    logged(store, "twitter", young, clip="young-loop", at=(datetime.now(UTC) - timedelta(hours=1)).isoformat())
+    _sample(metrics, young, 10)
     metrics.close()
     store.close()
 
@@ -254,6 +260,10 @@ def test_the_dashboard_shows_the_panel_with_the_strong_redo_marker(tmp_path):
     assert f'<a href="{url}" target="_blank" rel="noopener noreferrer">' in page
     assert "Demos with a current clip: 1/2. None yet: quarry" in page
     assert page.index('data-clip="atlas-loop"') < page.index('data-clip="quarry-loop"')
+    start = page.index('data-clip="young-loop"')
+    row = page[start : page.index("</tr>", start)]
+    assert 'data-best="no data"' in row and ">no data</span>" in row and ">weak</span>" not in row
+    assert "posted less than 24h ago" in row and "10 impressions" in row
     # The CSV exports don't change.
     assert client.get("/dashboard/broadcasts.csv").status_code == 200
 

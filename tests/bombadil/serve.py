@@ -424,7 +424,8 @@ def seed_clips(store_path: Path, metrics_path: Path, now: datetime | None = None
     three_days = (now - timedelta(days=3)).isoformat()
     store.conn.execute("UPDATE clip_freshness SET checked_at = ? WHERE clip_id = 'proof-checkpoints'", (three_days,))
 
-    # X posts from the last month: five plain ones are the baseline, two carry clips.
+    # X posts from the last month: five plain ones are the baseline, two carry clips. They are 8 to
+    # 20 days old: inside the 30-day baseline window and past min_age_hours (24), so all are rated.
     metrics = Metrics(metrics_path)
     posts = [
         (None, 100),
