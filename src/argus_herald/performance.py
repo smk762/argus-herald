@@ -42,6 +42,7 @@ from argus_herald.metrics import PostRef, posts_out
 from argus_herald.store import Store
 
 STRONG, TYPICAL, WEAK, NO_DATA = "strong", "typical", "weak", "no data"
+RATINGS = (STRONG, TYPICAL, WEAK, NO_DATA)  # best first: the listing and the dashboard sort by it
 # Short names for the listing; a platform the dashboard doesn't know keeps its own name.
 _SHORT = {"twitter": "x", "bluesky": "bsky"}
 
@@ -90,6 +91,14 @@ class PlatformPerformance:
     def short(self) -> str:
         return short_name(self.platform)
 
+    @property
+    def value(self) -> int | None:
+        """The total of the rated measure (impressions, or engagements) over the sampled posts."""
+        return self.impressions if self.measure == "impressions" else self.engagements
+
+    def detail(self) -> str:
+        return _detail(self)
+
 
 @dataclass
 class ClipPerformance:
@@ -112,17 +121,23 @@ class ClipPerformance:
         last = self.last
         return last.last_url if last else ""
 
+    @property
+    def best(self) -> str:
+        """The clip's best rating on any platform; no data when it has none."""
+        return min((p.rating.label for p in self.platforms.values()), key=RATINGS.index, default=NO_DATA)
+
     def summary(self) -> str:
         """The listing's cell: `x strong, bsky typical`, or `-` for a clip never posted."""
         if not self.platforms:
             return "-"
-        return ", ".join(f"{p.short} {p.rating.label}" for p in self._ordered())
+        return ", ".join(f"{p.short} {p.rating.label}" for p in self.ordered())
 
     def details(self) -> list[str]:
         """One line per platform: the numbers behind the rating."""
-        return [_detail(p) for p in self._ordered()]
+        return [p.detail() for p in self.ordered()]
 
-    def _ordered(self) -> list[PlatformPerformance]:
+    def ordered(self) -> list[PlatformPerformance]:
+        """Platforms with the most posts first."""
         return sorted(self.platforms.values(), key=lambda p: (-p.posts, p.short))
 
 

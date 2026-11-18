@@ -157,6 +157,48 @@
     <p class="quiet">Nothing to summarise in this range yet.</p>
     {% endif %}
   </section>
+
+  {% set fresh_tone = {"redo": "badge-off", "check": "badge-warn", "unknown": "badge-done", "fresh": "badge-ok"} %}
+  {% set perf_tone = {"strong": "badge-ok", "typical": "", "weak": "badge-warn"} %}
+  <section class="dash-section" id="clips" aria-labelledby="clips-h">
+    <div class="section-head"><h2 id="clips-h">Clips</h2></div>
+    {% if clips.rows %}
+    <p class="hint">The ones to look at first: <strong>redo</strong> (the demo's UI changed), then <strong>check</strong>, then <strong>unknown</strong>; within each, the best-performing first. Performance is each clip's median post against that platform's own recent posts. The range and package filters don't apply here; <code>argus-herald clips</code> prints the same list.</p>
+    <ul class="clip-summary">
+      <li>Demos with a current clip: {{ clips.covered|length }}/{{ clips.covered|length + clips.missing|length }}{% if clips.missing %}. None yet: {{ clips.missing|join(", ") }}{% endif %}</li>
+      <li>{% for status, count in clips.statuses %}<span class="status">{{ status }} {{ count }}</span> {% endfor %}</li>
+    </ul>
+    <div class="scroll"><table class="clips">
+      <thead><tr><th>Clip</th><th>Status</th><th>Freshness</th><th>Performance</th><th>Last posted</th></tr></thead>
+      <tbody>
+        {% for c in clips.rows %}
+        <tr class="{{ 'rerecord' if c.rerecord_first }}" data-clip="{{ c.id }}" data-freshness="{{ c.freshness }}" data-best="{{ c.best }}">
+          <td class="clip">
+            {% if c.rerecord_first %}<span class="badge badge-off rerecord-mark">re-record first</span><br>{% endif %}
+            <strong>{{ c.title or c.id }}</strong>
+            <span class="clip-meta"><code>{{ c.id }}</code> · {{ c.demo or "no demo" }} · {{ c.format }}</span>
+          </td>
+          <td><span class="status">{{ c.status }}</span></td>
+          <td>
+            <span class="badge fresh-badge {{ fresh_tone.get(c.freshness, 'badge-done') }}"{% if c.why %} title="{{ c.why|join('\n') }}"{% endif %}>{{ c.freshness }}</span>{% if c.age %} <span class="quiet">{{ c.age }}</span>{% endif %}
+            {% if c.why %}<details class="why"><summary>{{ "Last check" if c.freshness == "fresh" else "What changed" }}</summary><ul>{% for line in c.why %}<li>{{ line }}</li>{% endfor %}</ul></details>{% endif %}
+          </td>
+          <td>
+            {% for p in c.platforms %}
+            <span class="perf" title="{{ p.detail }}">{{ p.platform }} <span class="badge perf-badge {{ perf_tone.get(p.rating, 'badge-done') }}">{{ p.rating }}</span>{% if p.value is not none %} <span class="quiet">{{ num(p.value) }} {{ p.measure }}</span>{% endif %}</span>
+            {% else %}
+            <span class="quiet">not posted</span>
+            {% endfor %}
+          </td>
+          <td>{% if c.last_posted %}{% if c.last_url %}<a href="{{ c.last_url }}" target="_blank" rel="noopener noreferrer">{{ c.last_posted.isoformat() }}</a>{% else %}{{ c.last_posted.isoformat() }}{% endif %}{% else %}<span class="quiet">never</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}
+    <p class="quiet">No clips yet. Add one with <code>argus-herald clips add &lt;id&gt; --demo ... --title ...</code>, or <code>argus-herald clips import &lt;csv&gt;</code>.</p>
+    {% endif %}
+  </section>
 </section>
 {% endblock %}
 {% block scripts %}<script src="/static/dashboard.js"></script>{% endblock %}

@@ -8,10 +8,12 @@ from collections.abc import Mapping
 from datetime import date
 from urllib.parse import urlencode, urlparse
 
+from argus_herald import clip_panel
 from argus_herald import dashboard as d
 from argus_herald.charts import series_panel, stacked_area
 from argus_herald.config import Config
 from argus_herald.metrics import metrics_path
+from argus_herald.store import Store
 
 RANGES = (30, 90, 180, 365)
 TABLES = ("timeline", "followers", "referrers", "broadcasts", "platforms")
@@ -109,6 +111,11 @@ def context(config: Config, params: Mapping[str, str]) -> dict:
         if conn is not None:
             conn.close()
     present = sorted({d.platform_key(b.platform) for b in everything}, key=d.platform_slot)
+    store = Store(config.store_path)
+    try:
+        clips = clip_panel.load(store, path, config.clips.performance)
+    finally:
+        store.close()
 
     def link(**changes: str) -> str:
         merged = {k: v for k, v in params.items() if v}
@@ -144,6 +151,7 @@ def context(config: Config, params: Mapping[str, str]) -> dict:
         "kinds": sorted({b.format for b in everything}),
         "backends": sorted({b.drafted_by.split(":")[0] for b in everything}),
         "summary": summary,
+        "clips": clips,
         "platform_label": d.platform_label,
         "platform_slot": d.platform_slot,
         "link": link,
