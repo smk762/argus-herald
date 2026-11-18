@@ -114,9 +114,36 @@ class Accounts:
         return f"https://{host}", user
 
 
-# What counts as a demo's UI when deciding whether a clip needs re-recording. A docs or
-# data-only commit doesn't.
-DEFAULT_UI_PATHS = ("src/**", "frontend/**", "*.css", "*.html")
+# What counts as a demo's UI when deciding whether a clip needs re-recording: front-end files by
+# type, so a backend, docs or data-only commit doesn't.
+DEFAULT_UI_PATHS = (
+    "*.css",
+    "*.scss",
+    "*.html",
+    "*.tsx",
+    "*.jsx",
+    "*.ts",
+    "*.js",
+    "*.mjs",
+    "*.svelte",
+    "*.astro",
+    "*.vue",
+)
+# Never UI, even when a UI path matches: tests, docs, scripts, tool config and type declarations.
+# A pattern with a `/` is anchored at the repo root, so the directories are written `**/x/**` to
+# match at any depth.
+DEFAULT_IGNORE_PATHS = (
+    "**/tests/**",
+    "**/test/**",
+    "**/__tests__/**",
+    "**/docs/**",
+    "**/scripts/**",
+    "**/e2e/**",
+    "*.test.*",
+    "*.spec.*",
+    "*.config.*",
+    "*.d.ts",
+)
 
 
 @dataclass(frozen=True)
@@ -137,15 +164,17 @@ class ClipSettings:
     owner: str = ""  # for a bare demo_repo; falls back to github.owner, then pypi.discover.github_owner
     branch: str = "dev"  # the deploy branch the live demo is built from
     ui_paths: tuple[str, ...] = DEFAULT_UI_PATHS
-    demos: tuple[tuple[str, str, tuple[str, ...]], ...] = ()  # (demo, branch, ui_paths) overrides
+    ignore_paths: tuple[str, ...] = DEFAULT_IGNORE_PATHS  # never UI, even when a UI path matches
+    # (demo, branch, ui_paths, ignore_paths) overrides; each one set replaces the global one
+    demos: tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...] = ()
     performance: PerformanceSettings = PerformanceSettings()
 
-    def for_demo(self, demo: str) -> tuple[str, tuple[str, ...]]:
-        """(deploy branch, UI path globs) for one demo."""
-        for name, branch, paths in self.demos:
+    def for_demo(self, demo: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+        """(deploy branch, UI path globs, ignored path globs) for one demo."""
+        for name, branch, paths, ignore in self.demos:
             if name == demo:
-                return branch, paths
-        return self.branch, self.ui_paths
+                return branch, paths, ignore
+        return self.branch, self.ui_paths, self.ignore_paths
 
 
 @dataclass(frozen=True)
@@ -511,36 +540,38 @@ def _clips(value: Any) -> ClipSettings:
         return ClipSettings()
     if not isinstance(value, dict):
         raise ConfigError("clips must be a mapping")
-    unknown = sorted(str(key) for key in set(value) - {"owner", "branch", "ui_paths", "demos", "performance"})
+    known = ("owner", "branch", "ui_paths", "ignore_paths", "demos", "performance")
+    unknown = sorted(str(key) for key in set(value) - set(known))
     if unknown:
-        raise ConfigError(
-            f"Unknown clips keys: {', '.join(unknown)}. Known: owner, branch, ui_paths, demos, performance"
-        )
+        raise ConfigError(f"Unknown clips keys: {', '.join(unknown)}. Known: {', '.join(known)}")
     owner = value.get("owner") or ""
     if not isinstance(owner, str) or (owner.strip() and not _OWNER.match(owner.strip())):
         raise ConfigError("clips.owner must be a GitHub user or organisation name")
     branch = _clip_branch("clips.branch", value.get("branch", "dev"))
     paths = _clip_paths("clips.ui_paths", value.get("ui_paths"), DEFAULT_UI_PATHS)
+    ignore = _clip_paths("clips.ignore_paths", value.get("ignore_paths"), DEFAULT_IGNORE_PATHS, empty=True)
     demos = value.get("demos") or {}
     if not isinstance(demos, dict):
-        raise ConfigError("clips.demos maps a demo name to {branch: ..., ui_paths: [...]}")
+        raise ConfigError("clips.demos maps a demo name to {branch: ..., ui_paths: [...], ignore_paths: [...]}")
     overrides = []
     for name, raw in demos.items():
         where = f"clips.demos.{name}"
         raw = {} if raw is None else raw
-        if not isinstance(raw, dict) or set(raw) - {"branch", "ui_paths"}:
-            raise ConfigError(f"{where} takes branch and ui_paths")
+        if not isinstance(raw, dict) or set(raw) - {"branch", "ui_paths", "ignore_paths"}:
+            raise ConfigError(f"{where} takes branch, ui_paths and ignore_paths")
         overrides.append(
             (
                 str(name).strip(),
                 _clip_branch(f"{where}.branch", raw.get("branch", branch)),
                 _clip_paths(f"{where}.ui_paths", raw.get("ui_paths"), paths),
+                _clip_paths(f"{where}.ignore_paths", raw.get("ignore_paths"), ignore, empty=True),
             )
         )
     return ClipSettings(
         owner=owner.strip(),
         branch=branch,
         ui_paths=paths,
+        ignore_paths=ignore,
         demos=tuple(overrides),
         performance=_clip_performance(value.get("performance")),
     )
@@ -579,14 +610,15 @@ def _clip_branch(where: str, value: Any) -> str:
     return value.strip()
 
 
-def _clip_paths(where: str, value: Any, default: tuple[str, ...]) -> tuple[str, ...]:
+def _clip_paths(where: str, value: Any, default: tuple[str, ...], *, empty: bool = False) -> tuple[str, ...]:
+    """A list of path globs; `empty` allows an empty list (it turns ignore_paths off)."""
     if value is None:
         return default
     try:
         paths = tuple(_strings(value))
     except ConfigError as exc:
-        raise ConfigError(f"{where} must be a list of path globs, like src/**") from exc
-    if not paths:
+        raise ConfigError(f"{where} must be a list of path globs, like web/**") from exc
+    if not paths and not empty:
         raise ConfigError(f"{where} must name at least one path glob")
     return paths
 

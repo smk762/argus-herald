@@ -390,7 +390,11 @@ argus-herald clips set atlas-styles --status stale   # it needs re-recording
 
 - Herald never changes a clip's status. A `stale` clip isn't checked.
 - `demo_repo` is `owner/repo`, or a bare repo name under `clips.owner` (then `github.owner`, then `pypi.discover.github_owner`).
-- The deploy branch (default `dev`) and the UI paths (default `src/**`, `frontend/**`, `*.css`, `*.html`) are set under `clips:` in the config, with per-demo overrides. `**` crosses directories; a pattern without a `/` matches a file name at any depth. A docs or data-only commit asks for a check, not a re-record.
+- The deploy branch (default `dev`), the UI paths and the ignore paths are set under `clips:` in the config, with per-demo overrides under `clips.demos.<demo>`; a demo's own `branch`, `ui_paths` or `ignore_paths` replaces the global one rather than adding to it. A UI file matches a UI path and no ignore path. `**` crosses directories; a pattern without a `/` matches a file name at any depth, and one with a `/` is anchored at the repo root.
+  - UI paths, by default front-end file types: `*.css`, `*.scss`, `*.html`, `*.tsx`, `*.jsx`, `*.ts`, `*.js`, `*.mjs`, `*.svelte`, `*.astro`, `*.vue`. A backend, docs or data-only commit (say `src/pkg/api.py`) asks for a check, not a re-record.
+  - Ignore paths, never UI even when a UI path matches; by default `**/tests/**`, `**/test/**`, `**/__tests__/**`, `**/docs/**`, `**/scripts/**`, `**/e2e/**` (those directories at any depth), `*.test.*`, `*.spec.*`, `*.config.*` and `*.d.ts`.
+  - Setting `ui_paths` keeps exactly your patterns, but the default ignore paths still apply to them unless you set `ignore_paths` too; `ignore_paths: []` turns ignoring off.
+  - Stored results are recomputed on the next `clips refresh` or `collect`, so a change to these settings shows after that.
 - No token is needed for public repos (GitHub allows 60 unauthenticated calls an hour); `GITHUB_TOKEN` is used when set. GitHub lists at most 300 changed files, and the listing says when it stopped there.
 - A failed call keeps the last known state, and the listing says how old it is.
 - `clips ack` needs a comparison first. Changing a clip's `demo_commit` or `project_version` by hand sets it back to not checked.

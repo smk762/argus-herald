@@ -5,8 +5,16 @@ with the head of the demo repo's deploy branch (GitHub's compare API) and with t
 version herald has seen for the package:
 
 - fresh: no commits since, and the same minor version;
-- check: the repo changed, but not under its UI paths; or the minor version moved;
-- redo: files under the UI paths changed.
+- check: the repo changed, but no UI file; or the minor version moved;
+- redo: UI files changed.
+
+A UI file matches one of the demo's UI paths and none of its ignore paths. By default the UI
+paths are front-end file types (`*.css`, `*.scss`, `*.html`, `*.tsx`, `*.jsx`, `*.ts`, `*.js`,
+`*.mjs`, `*.svelte`, `*.astro`, `*.vue`), so a backend-only commit (say `src/pkg/api.py`) asks
+for a check, not a redo. The ignore paths leave out tests, docs, scripts, tool config and type
+declarations (`**/tests/**`, `**/test/**`, `**/__tests__/**`, `**/docs/**`, `**/scripts/**`,
+`**/e2e/**`, `*.test.*`, `*.spec.*`, `*.config.*`, `*.d.ts`). Both are set under `clips:`, and a
+demo's own list replaces the global one.
 
 Herald never changes a clip's status. A person looks, then acks the clip (it still matches) or
 marks it stale. The last result is kept in the draft store, so the listing works offline and a
@@ -70,8 +78,11 @@ def matches(path: str, pattern: str) -> bool:
     return _glob(pattern).fullmatch(path) is not None
 
 
-def ui_files(files: tuple[str, ...] | list[str], globs: tuple[str, ...]) -> list[str]:
-    return [path for path in files if any(matches(path, g) for g in globs)]
+def ui_files(files: tuple[str, ...] | list[str], globs: tuple[str, ...], ignore: tuple[str, ...] = ()) -> list[str]:
+    """The files matching a UI glob and no ignore glob."""
+    return [
+        path for path in files if any(matches(path, g) for g in globs) and not any(matches(path, g) for g in ignore)
+    ]
 
 
 # ---- versions ----------------------------------------------------------------------------
@@ -106,13 +117,15 @@ class Verdict:
     ui_files: tuple[str, ...] = ()
 
 
-def classify(comparison: Comparison | None, recorded: str, newest: str, globs: tuple[str, ...]) -> Verdict:
+def classify(
+    comparison: Comparison | None, recorded: str, newest: str, globs: tuple[str, ...], ignore: tuple[str, ...] = ()
+) -> Verdict:
     """One clip's state. `comparison` is None when the demo source couldn't be compared: a moved
     minor version still says `check`, otherwise the state is unknown."""
     moved = minor_moved(recorded, newest)
     if comparison is None:
         return Verdict(CHECK if moved else UNKNOWN)
-    changed = tuple(ui_files(comparison.files, globs))
+    changed = tuple(ui_files(comparison.files, globs, ignore))
     if changed:
         return Verdict(REDO, changed)
     if comparison.ahead_by or moved:
@@ -164,7 +177,7 @@ def refresh(store: Store, http: Http, config: Config, token: str = "") -> Summar
     for clip in store.clips():
         if clip["status"] not in CLIP_CURRENT:
             continue
-        branch, globs = config.clips.for_demo(clip["demo"])
+        branch, globs, ignore = config.clips.for_demo(clip["demo"])
         newest = newest_version(store.seen_versions_named(clip["project"])) if clip["project"] else ""
         base = {"base_commit": clip["demo_commit"], "base_version": clip["project_version"]}
         where = locate(clip, config)
@@ -181,7 +194,7 @@ def refresh(store: Store, http: Http, config: Config, token: str = "") -> Summar
                 summary.errors.append(f"{clip['id']}: {results[key]}")
                 continue
             comparison = results[key]
-        verdict = classify(comparison, clip["project_version"], newest, globs)
+        verdict = classify(comparison, clip["project_version"], newest, globs, ignore)
         store.save_freshness(
             clip["id"],
             state=verdict.state,

@@ -6,7 +6,7 @@ import pytest
 
 from argus_herald import clips, freshness
 from argus_herald.cli import main
-from argus_herald.config import ConfigError, load_config
+from argus_herald.config import DEFAULT_IGNORE_PATHS, DEFAULT_UI_PATHS, ConfigError, load_config
 from argus_herald.github import Comparison, compare
 from argus_herald.http import HttpError
 from argus_herald.store import Store
@@ -88,6 +88,10 @@ def test_ui_path_globs():
         ("**/test_?.py", "test_x.py", True),
         ("/frontend/**", "frontend/index.html", True),
         ("a+b/[x].js", "a+b/[x].js", True),  # regex characters are literal
+        ("**/tests/**", "tests/x.js", True),  # a leading **/ also matches at the root
+        ("**/tests/**", "a/b/tests/c/x.js", True),
+        ("**/tests/**", "contests/x.js", False),
+        ("**/tests/**", "tests.js", False),
     ]
     for pattern, path, expected in cases:
         assert freshness.matches(path, pattern) is expected, (pattern, path)
@@ -118,6 +122,55 @@ def test_classify_follows_the_table():
     assert (verdict.state, verdict.ui_files) == ("redo", ("public/app.css",))
     assert freshness.classify(None, "0.4.0", "0.4.0", ui).state == "unknown"
     assert freshness.classify(None, "0.4.0", "0.6.0", ui).state == "check"
+
+
+def by_default(*files):
+    return freshness.classify(
+        Comparison(1, HEAD, files, False), "0.4.0", "0.4.0", DEFAULT_UI_PATHS, DEFAULT_IGNORE_PATHS
+    )
+
+
+def test_backend_only_change_asks_for_a_check_not_a_redo():
+    verdict = by_default("src/pkg/api.py", "src/pkg/db.py", "src/pkg/cli.py")
+    assert (verdict.state, verdict.ui_files) == ("check", ())
+
+
+def test_front_end_files_ask_for_a_redo_by_default():
+    for path in ("src/pkg/static/app.js", "frontend/src/App.tsx", "templates/index.html", "site/styles/main.scss"):
+        verdict = by_default("src/pkg/api.py", path)
+        assert (verdict.state, verdict.ui_files) == ("redo", (path,)), path
+
+
+def test_default_ignore_paths():
+    ignored = [
+        *(f"{d}/x.js" for d in ("tests", "test", "__tests__", "docs", "scripts", "e2e")),  # top level
+        *(f"frontend/src/{d}/a.tsx" for d in ("tests", "test", "__tests__", "docs", "scripts", "e2e")),  # nested
+        "tests/ui/x.js",
+        "frontend/src/__tests__/a.tsx",
+        "a.test.ts",
+        "web/a.test.tsx",
+        "a.spec.js",
+        "vite.config.ts",
+        "web/tailwind.config.mjs",
+        "types.d.ts",
+        "src/types/env.d.ts",
+    ]
+    for path in ignored:
+        assert by_default(path).state == "check", path
+    near_misses = [
+        "src/contest/app.js",  # "test" inside a directory name
+        "src/latest.js",
+        "src/tests.js",  # a file, not the tests directory
+        "mytests/app.js",
+        "configure.js",
+        "src/testing/app.ts",
+        "spec.js",
+        "docsite/app.js",
+        "ad.ts",
+    ]
+    for path in near_misses:
+        assert by_default(path).state == "redo", path
+    assert freshness.ui_files(["tests/x.js", "app.js"], ("*.js",), ()) == ["tests/x.js", "app.js"]  # nothing ignored
 
 
 # ---- the GitHub call ---------------------------------------------------------------------------
@@ -234,31 +287,84 @@ def test_owner_resolution_and_per_demo_override(tmp_path):
     )
     gh = GitHub(
         {
-            f"smk762/argus-realms/compare/{BASE}...main": compared(1, ["web/app.ts"]),
-            f"other-org/argus-lens/compare/{BASE}...release": compared(1, ["web/app.ts"]),
+            f"smk762/argus-realms/compare/{BASE}...main": compared(1, ["web/app.py"]),
+            f"other-org/argus-lens/compare/{BASE}...release": compared(1, ["web/app.py"]),
         }
     )
     freshness.refresh(store, gh, cfg)
     rows = store.clip_freshness()
-    assert (rows["bare"]["state"], rows["bare"]["branch"]) == ("check", "main")  # web/ isn't UI by default
+    assert (rows["bare"]["state"], rows["bare"]["branch"]) == ("check", "main")  # a .py file isn't UI by default
     assert (rows["full"]["state"], rows["full"]["branch"]) == ("redo", "release")
     store.close()
 
 
 def test_clips_config_is_checked(tmp_path):
     cfg = config(tmp_path)
-    assert cfg.clips.for_demo("atlas") == ("dev", ("src/**", "frontend/**", "*.css", "*.html"))
+    assert cfg.clips.for_demo("atlas") == ("dev", DEFAULT_UI_PATHS, DEFAULT_IGNORE_PATHS)
+    assert DEFAULT_UI_PATHS == (
+        "*.css",
+        "*.scss",
+        "*.html",
+        "*.tsx",
+        "*.jsx",
+        "*.ts",
+        "*.js",
+        "*.mjs",
+        "*.svelte",
+        "*.astro",
+        "*.vue",
+    )
     for bad in (
         "clips: [x]\n",
         "clips: {owner: 'not an owner!'}\n",
         "clips: {branch: '../x'}\n",
         "clips: {ui_paths: []}\n",
         "clips: {ui_paths: src/**}\n",
+        "clips: {ignore_paths: tests/**}\n",
+        "clips: {ignore_paths: [1]}\n",
+        "clips: {ignore_paths: {a: b}}\n",
+        "clips: {demos: {atlas: {ui_paths: []}}}\n",
+        "clips: {demos: {atlas: {ignore_paths: docs/**}}}\n",
         "clips: {demos: {atlas: {colour: red}}}\n",
         "clips: {colour: red}\n",
     ):
         with pytest.raises(ConfigError):
             config(tmp_path, bad)
+
+
+def test_ignore_paths_are_set_globally_and_per_demo(tmp_path):
+    # Your own ui_paths are kept exactly, and the default ignore_paths still apply to them.
+    cfg = config(tmp_path, "clips:\n  ui_paths: [web/**]\n")
+    assert cfg.clips.for_demo("atlas") == ("dev", ("web/**",), DEFAULT_IGNORE_PATHS)
+
+    # A global list replaces the default; an empty one turns ignoring off.
+    cfg = config(tmp_path, "clips:\n  ignore_paths: [web/vendor/**]\n")
+    assert cfg.clips.for_demo("atlas")[2] == ("web/vendor/**",)
+    assert config(tmp_path, "clips: {ignore_paths: []}\n").clips.for_demo("atlas")[2] == ()
+
+    # A demo's own list replaces the global one; a demo without one inherits it.
+    cfg = config(
+        tmp_path,
+        "clips:\n  ignore_paths: [gen/**]\n  demos:\n"
+        "    lens: {ignore_paths: [web/vendor/**]}\n    realms: {ignore_paths: []}\n    atlas: {branch: main}\n",
+    )
+    assert cfg.clips.for_demo("lens")[2] == ("web/vendor/**",)
+    assert cfg.clips.for_demo("realms")[2] == ()
+    assert cfg.clips.for_demo("atlas") == ("main", DEFAULT_UI_PATHS, ("gen/**",))
+    assert cfg.clips.for_demo("other")[2] == ("gen/**",)
+
+    # And refresh uses them: a change to a test file is a check under the default ignore_paths,
+    # and a redo for the demo that turned ignoring off.
+    cfg = config(tmp_path, "clips:\n  demos:\n    lens: {ignore_paths: []}\n")
+    store = Store(cfg.store_path)
+    recorded(store, "atlas")
+    recorded(store, "lens", demo="lens")
+    gh = GitHub({f"smk762/argus-realms/compare/{BASE}...dev": compared(1, ["tests/ui/x.js"])})
+    freshness.refresh(store, gh, cfg)
+    rows = store.clip_freshness()
+    assert (rows["atlas"]["state"], rows["lens"]["state"]) == ("check", "redo")
+    assert json.loads(rows["lens"]["ui_files"]) == ["tests/ui/x.js"]
+    store.close()
 
 
 def test_failed_call_keeps_the_last_state_and_says_how_old(tmp_path):
