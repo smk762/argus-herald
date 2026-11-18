@@ -343,6 +343,57 @@ Approve is refused while any attachment lacks alt text, when the privacy gate fl
 
 For X and Patreon, the handoff lists the cleaned files to download and attach, each with its alt text ready to copy.
 
+### Clip registry
+
+The registry records what each demo clip shows and what it was recorded against, so herald can say which demos have no current clip and which posts used which clip.
+
+```bash
+argus-herald clips add atlas-styles --demo atlas --project argus-atlas --title "Atlas styles" --format clip --target-seconds 30
+argus-herald clips set atlas-styles --status recorded --path ~/clips/atlas-styles.mp4 \
+    --project-version 0.9.0 --demo-repo argus-realms --demo-commit 16e992da7b
+argus-herald clips                    # every clip, then the demos with no current clip
+argus-herald clips show atlas-styles  # its fields and the posts that used it
+argus-herald clips export clips.csv   # and `clips import clips.csv` to bring a spreadsheet back
+```
+
+- **Formats:** `loop`, `clip`, `short`, `walkthrough`. **Statuses:** `todo`, `scripted`, `recorded`, `edited`, `posted`, `stale`, `hold`. Herald never changes a status by itself.
+- A demo counts as covered while one of its clips is `recorded`, `edited` or `posted`. A demo is known once any clip names it.
+- Setting `--status recorded` fills in today's date unless `--recorded-at` is given.
+- `clips import` checks every row before saving any. A column in the file replaces the stored value, and a column that isn't in the file is left alone. Columns the registry doesn't keep are named and skipped.
+- `clips remove` refuses a clip that a post has used.
+
+Attach a clip by its id and the link is recorded. The file is cleaned like any other attachment, and it still needs alt text:
+
+```bash
+argus-herald media add 12 --clip atlas-styles --alt "Three map styles applied to the same coastline" --all-drafts
+argus-herald log-broadcast --platform reddit --url https://www.reddit.com/r/gis/comments/abc/ --clip atlas-styles
+```
+
+#### Freshness
+
+A clip is out of date when the live demo no longer looks like it. For each clip that is `recorded`, `edited` or `posted`, herald compares its `demo_commit` with the head of the demo repo's deploy branch (GitHub's compare API), and its `project_version` with the newest version herald has seen for `project`:
+
+| State | When |
+|---|---|
+| `fresh` | no commits since `demo_commit`, same minor version |
+| `check` | the demo repo changed, but not under its UI paths; or the minor version moved |
+| `redo` | files under the demo's UI paths changed |
+| `unknown` | it couldn't be compared, for example no `demo_repo` or no owner for a bare repo name |
+
+```bash
+argus-herald clips refresh            # compare now (collect does this too)
+argus-herald clips                    # redo first, then check, unknown, fresh; why, below the table
+argus-herald clips ack atlas-styles   # it still matches: demo_commit and project_version move forward
+argus-herald clips set atlas-styles --status stale   # it needs re-recording
+```
+
+- Herald never changes a clip's status. A `stale` clip isn't checked.
+- `demo_repo` is `owner/repo`, or a bare repo name under `clips.owner` (then `github.owner`, then `pypi.discover.github_owner`).
+- The deploy branch (default `dev`) and the UI paths (default `src/**`, `frontend/**`, `*.css`, `*.html`) are set under `clips:` in the config, with per-demo overrides. `**` crosses directories; a pattern without a `/` matches a file name at any depth. A docs or data-only commit asks for a check, not a re-record.
+- No token is needed for public repos (GitHub allows 60 unauthenticated calls an hour); `GITHUB_TOKEN` is used when set. GitHub lists at most 300 changed files, and the listing says when it stopped there.
+- A failed call keeps the last known state, and the listing says how old it is.
+- `clips ack` needs a comparison first. Changing a clip's `demo_commit` or `project_version` by hand sets it back to not checked.
+
 ## Privacy gate
 
 Every draft passes a privacy gate on approve and again on publish. A hit refuses the draft; text is never rewritten. It catches:

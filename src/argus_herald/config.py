@@ -91,6 +91,7 @@ class Config:
     media_dir: Path | None = None  # where attachments and their cleaned copies live
     drafting: DraftingSettings = field(default_factory=lambda: DraftingSettings())
     accounts: Accounts = field(default_factory=lambda: Accounts())
+    clips: ClipSettings = field(default_factory=lambda: ClipSettings())
 
     @property
     def media_root(self) -> Path:
@@ -111,6 +112,28 @@ class Accounts:
         """(instance base URL, account name)."""
         user, _, host = self.mastodon.lstrip("@").partition("@")
         return f"https://{host}", user
+
+
+# What counts as a demo's UI when deciding whether a clip needs re-recording. A docs or
+# data-only commit doesn't.
+DEFAULT_UI_PATHS = ("src/**", "frontend/**", "*.css", "*.html")
+
+
+@dataclass(frozen=True)
+class ClipSettings:
+    """Where the demos behind registry clips live, for the freshness check."""
+
+    owner: str = ""  # for a bare demo_repo; falls back to github.owner, then pypi.discover.github_owner
+    branch: str = "dev"  # the deploy branch the live demo is built from
+    ui_paths: tuple[str, ...] = DEFAULT_UI_PATHS
+    demos: tuple[tuple[str, str, tuple[str, ...]], ...] = ()  # (demo, branch, ui_paths) overrides
+
+    def for_demo(self, demo: str) -> tuple[str, tuple[str, ...]]:
+        """(deploy branch, UI path globs) for one demo."""
+        for name, branch, paths in self.demos:
+            if name == demo:
+                return branch, paths
+        return self.branch, self.ui_paths
 
 
 @dataclass(frozen=True)
@@ -205,6 +228,7 @@ def load_config(path: Path) -> Config:
     github = _github(data.get("github"))
     drafting = _drafting(data.get("drafting"))
     accounts = _accounts(data.get("accounts"), feeds, destinations)
+    clips = _clips(data.get("clips"))
     media = data.get("media") or {}
     if not isinstance(media, dict) or not isinstance(media.get("dir", ""), str):
         raise ConfigError("media must be a mapping with an optional dir path")
@@ -214,6 +238,7 @@ def load_config(path: Path) -> Config:
         if unknown:
             raise ConfigError(f"digest.platforms aren't in destinations: {', '.join(unknown)}")
     return Config(
+        clips=clips,
         accounts=accounts,
         drafting=drafting,
         media_dir=Path(media["dir"]).expanduser() if media.get("dir") else None,
@@ -465,13 +490,67 @@ def _drafting(value: Any) -> DraftingSettings:
     )
 
 
+_OWNER = re.compile(r"^[A-Za-z0-9-]{1,39}$")
+_BRANCH = re.compile(r"^[A-Za-z0-9._/-]{1,100}$")
+
+
+def _clips(value: Any) -> ClipSettings:
+    if value is None:
+        return ClipSettings()
+    if not isinstance(value, dict):
+        raise ConfigError("clips must be a mapping")
+    unknown = sorted(str(key) for key in set(value) - {"owner", "branch", "ui_paths", "demos"})
+    if unknown:
+        raise ConfigError(f"Unknown clips keys: {', '.join(unknown)}. Known: owner, branch, ui_paths, demos")
+    owner = value.get("owner") or ""
+    if not isinstance(owner, str) or (owner.strip() and not _OWNER.match(owner.strip())):
+        raise ConfigError("clips.owner must be a GitHub user or organisation name")
+    branch = _clip_branch("clips.branch", value.get("branch", "dev"))
+    paths = _clip_paths("clips.ui_paths", value.get("ui_paths"), DEFAULT_UI_PATHS)
+    demos = value.get("demos") or {}
+    if not isinstance(demos, dict):
+        raise ConfigError("clips.demos maps a demo name to {branch: ..., ui_paths: [...]}")
+    overrides = []
+    for name, raw in demos.items():
+        where = f"clips.demos.{name}"
+        raw = {} if raw is None else raw
+        if not isinstance(raw, dict) or set(raw) - {"branch", "ui_paths"}:
+            raise ConfigError(f"{where} takes branch and ui_paths")
+        overrides.append(
+            (
+                str(name).strip(),
+                _clip_branch(f"{where}.branch", raw.get("branch", branch)),
+                _clip_paths(f"{where}.ui_paths", raw.get("ui_paths"), paths),
+            )
+        )
+    return ClipSettings(owner=owner.strip(), branch=branch, ui_paths=paths, demos=tuple(overrides))
+
+
+def _clip_branch(where: str, value: Any) -> str:
+    if not isinstance(value, str) or not _BRANCH.match(value.strip()) or ".." in value:
+        raise ConfigError(f"{where} must be a branch name, like dev")
+    return value.strip()
+
+
+def _clip_paths(where: str, value: Any, default: tuple[str, ...]) -> tuple[str, ...]:
+    if value is None:
+        return default
+    try:
+        paths = tuple(_strings(value))
+    except ConfigError as exc:
+        raise ConfigError(f"{where} must be a list of path globs, like src/**") from exc
+    if not paths:
+        raise ConfigError(f"{where} must name at least one path glob")
+    return paths
+
+
 def _github(value: Any) -> GitHubSource | None:
     if value is None:
         return None
     if not isinstance(value, dict):
         raise ConfigError("github must be a mapping")
     owner = value.get("owner")
-    if not isinstance(owner, str) or not re.match(r"^[A-Za-z0-9-]{1,39}$", owner.strip()):
+    if not isinstance(owner, str) or not _OWNER.match(owner.strip()):
         raise ConfigError("github.owner must be a GitHub user or organisation name")
     repos = tuple(_strings(value.get("repos") or []))
     prefix = value.get("prefix") or ""

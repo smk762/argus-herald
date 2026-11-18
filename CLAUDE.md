@@ -28,6 +28,8 @@ Not checked out? Read https://github.com/smk762/argus-cortex/blob/dev/SUITE.md
 - `config.py` — YAML/JSON config; secrets only ever come from the environment (`.env`).
 - `store.py` / `models.py` / `workflow.py` — the SQLite draft queue and its state machine (`Store.transition`, the privacy gate in `enforce_gate`).
 - `privacy.py` — the fail-closed gate: approve and publish are refused while the private deny-list is missing.
+- `clips.py` — the demo clip registry (`clips` table; `draft_media.clip_id` and `logged_broadcasts.clip_id` record which posts used a clip).
+- `freshness.py` — whether a recorded clip still matches its demo (GitHub compare + newest seen version); the last result is in `clip_freshness`, refreshed by `collect` and `clips refresh`.
 - `platforms/` — publishers, plus the `argus_herald.platforms` entry-point group for plugins.
 - `metrics.py`, `engagement.py`, `dashboard.py`, `charts.py` — collectors (separate `metrics.sqlite`) and the server-rendered SVG dashboard.
 - `ui/` — Starlette + Jinja review UI on 127.0.0.1:8787.

@@ -94,6 +94,7 @@ def attach_media(
     *,
     all_drafts: bool = False,
     name: str | None = None,
+    clip_id: str | None = None,
 ) -> list[int]:
     """Clean a file and attach it to a draft (or every draft of its post). Returns media ids."""
     from argus_herald.media import MediaError, clean
@@ -119,6 +120,7 @@ def attach_media(
                 alt=alt.strip(),
                 size=cleaned.bytes,
                 removed=cleaned.removed,
+                clip_id=clip_id,
             )
         )
         if target.status == APPROVED:  # new media needs a fresh look
