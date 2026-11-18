@@ -365,7 +365,8 @@ def _mark_overlaps(items: list[Broadcast]) -> None:
 DELTA_METRICS = [("downloads", "Downloads"), ("views", "Views"), ("stars", "Stars"), ("referrers", "Referrer uniques")]
 
 
-def _score(row) -> int:
+def engagement_score(row) -> int:
+    """Likes, reposts, replies and quotes: the engagement every platform reports."""
     return sum(int(row[k] or 0) for k in ("likes", "reposts", "replies", "quotes"))
 
 
@@ -391,13 +392,13 @@ def _engagement(conn, b: Broadcast) -> None:
         due, late = b.at + after, b.at + until
         sample = next((r for at, r in timed if due <= at < late), None)
         if sample is not None:
-            setattr(b, attr, _score(sample))
+            setattr(b, attr, engagement_score(sample))
     latest_at, latest = timed[-1]
     if latest["impressions"] is not None:
         b.impressions = int(latest["impressions"])
     # An X import isn't timed to the checkpoints: its latest sample stands in for 7d once a week has passed.
     if b.engagement_7d is None and latest["source"] == "x-analytics" and latest_at - b.at >= timedelta(days=7):
-        b.engagement_7d = _score(latest)
+        b.engagement_7d = engagement_score(latest)
 
 
 def _event_window(daily: dict[str, float], day: date) -> tuple[float | None, float | None]:

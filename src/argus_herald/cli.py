@@ -321,7 +321,7 @@ def cmd_clips(config: Config, store: Store, args: argparse.Namespace, http) -> i
     if action in ("list", "export", "import", "refresh", "ack") and given:
         raise ReviewError(f"clips {action} takes no field options")
     if action == "list":
-        print(clips.report(store))
+        print(clips.report(store, performance=_clip_performance(config, store)))
         return 0
     if action == "refresh":
         if rest:
@@ -364,7 +364,7 @@ def cmd_clips(config: Config, store: Store, args: argparse.Namespace, http) -> i
         clip = clips.update(store, rest[0], **given)
         print(f"Updated clip {clip['id']}: {', '.join(f'{key}={clip[key]}' for key in given)}")
     elif action == "show":
-        print(clips.describe(store, rest[0]))
+        print(clips.describe(store, rest[0], _clip_performance(config, store)))
     elif action == "remove":
         clips.remove(store, rest[0])
         print(f"Removed clip {rest[0]}.")
@@ -374,6 +374,14 @@ def cmd_clips(config: Config, store: Store, args: argparse.Namespace, http) -> i
             f"Clip {clip['id']} is fresh: demo_commit={clip['demo_commit']} project_version={clip['project_version']}"
         )
     return 0
+
+
+def _clip_performance(config: Config, store: Store) -> dict:
+    """Every clip's performance, read from metrics.sqlite (never created here)."""
+    from argus_herald.metrics import metrics_path
+    from argus_herald.performance import clip_performance
+
+    return clip_performance(store, metrics_path(config), config.clips.performance)
 
 
 def cmd_broadcasts(store: Store, args: argparse.Namespace) -> int:

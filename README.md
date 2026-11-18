@@ -394,6 +394,29 @@ argus-herald clips set atlas-styles --status stale   # it needs re-recording
 - A failed call keeps the last known state, and the listing says how old it is.
 - `clips ack` needs a comparison first. Changing a clip's `demo_commit` or `project_version` by hand sets it back to not checked.
 
+#### Performance
+
+Which clips did well, so the format can be repeated. A clip's posts are the drafts it is attached to that went out (published, or handed off and confirmed) and the hand-logged broadcasts that name it. Each post counts with its latest engagement sample (see [Engagement per post](#engagement-per-post); X numbers come from the analytics import).
+
+Per clip and platform, `clips` shows the posts and the sums of impressions, engagements and link clicks, and rates the clip against the account's own posts, so platforms with different audiences read the same way. The ratio is the median of the clip's posts over the median of every post on that platform from the last 30 days (the clip's own included). It compares impressions where the platform reports them, otherwise engagements (likes, reposts, replies and quotes where there is no engagements count).
+
+| Rating | Ratio |
+|---|---|
+| `strong` | 1.5 or more |
+| `typical` | between |
+| `weak` | 0.5 or less |
+| `no data` | no sample yet, fewer than 5 baseline posts, or a baseline median of 0 |
+
+```bash
+argus-herald clips                    # a performance column (x strong, bsky typical), then the numbers per posted clip
+argus-herald clips show atlas-styles  # the same numbers for one clip
+```
+
+- A clip posted more than once (a re-cut, a repost) sums its posts and gets one rating per platform.
+- A clip with no posts, or none sampled yet, is `no data`, never `weak`.
+- It is worked out when you look, from `metrics.sqlite`; nothing is stored. Before the first `collect` everything is `no data`.
+- The thresholds, the minimum baseline posts and the window are under `clips.performance` in the config.
+
 ## Privacy gate
 
 Every draft passes a privacy gate on approve and again on publish. A hit refuses the draft; text is never rewritten. It catches:

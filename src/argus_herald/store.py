@@ -589,6 +589,14 @@ class Store:
         ).fetchall()
         return [dict(row) for row in (*drafts, *logged)]
 
+    def clip_links(self) -> list[tuple[str, str, int]]:
+        """Every (clip id, 'draft' or 'logged', draft or broadcast id) link, for all clips at once."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT clip_id, 'draft', draft_id FROM draft_media WHERE clip_id IS NOT NULL "
+            "UNION SELECT clip_id, 'logged', id FROM logged_broadcasts WHERE clip_id IS NOT NULL"
+        )
+        return [(str(clip_id), via, int(ref)) for clip_id, via, ref in rows]
+
     def feed_baselined(self, source: str) -> bool:
         row = self.conn.execute("SELECT 1 FROM feed_sources WHERE source = ?", (source,)).fetchone()
         return row is not None

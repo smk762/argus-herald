@@ -79,6 +79,11 @@ privacy:
 #   ui_paths: ["src/**", "frontend/**", "*.css", "*.html"]   # a change elsewhere asks for a check, not a redo
 #   demos:
 #     your-demo: {branch: main, ui_paths: ["web/**", "*.css"]}
+#   performance:                # how `clips` rates a clip's posts against your own recent posts
+#     strong: 1.5               # median at or above 1.5x the platform's baseline median
+#     weak: 0.5                 # at or below 0.5x
+#     min_posts: 5              # fewer baseline posts than this on a platform: no data
+#     days: 30                  # the baseline: that platform's posts from the last 30 days
 
 poll:
   interval_seconds: 1800
