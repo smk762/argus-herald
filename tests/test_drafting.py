@@ -211,3 +211,32 @@ def test_dropping_an_item_keeps_the_closing_line():
     text, _ = repair(long_items, x(), "https://e.org", req)
     assert 1 <= text.count("•") < 3 and text.endswith(outro)
     assert problems(text, x(), "https://e.org", req) == [] or text.count("•") == 1
+
+
+def test_clean_only_unwraps_a_wrapping_pair_of_quotes():
+    assert clean('Just finished "Dune"') == 'Just finished "Dune"'
+    assert clean('"Fast" is the word for 0.3') == '"Fast" is the word for 0.3'
+    assert clean(' "Hello there" ') == "Hello there"
+    assert clean('"') == '"'
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        "text",
+        {"choices": None},
+        {"choices": [{"message": "x"}]},
+        {"choices": [{"message": None}]},
+        {"choices": [5]},
+    ],
+)
+def test_a_200_with_the_wrong_shape_is_a_drafting_error(payload):
+    from argus_herald.drafting import OpenAICompatible
+
+    class Odd:
+        def request(self, method, url, body=None, headers=None):
+            return 200, json.dumps(payload).encode()
+
+    with pytest.raises(DraftingError, match="unexpected response"):
+        OpenAICompatible(Odd(), "http://localhost:1/v1", "m").generate("system", "prompt")

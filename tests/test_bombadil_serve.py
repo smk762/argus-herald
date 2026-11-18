@@ -24,3 +24,15 @@ def test_the_socket_is_listening_when_the_ready_file_appears(tmp_path):
         # Nothing accepts yet, as before uvicorn starts: the connection waits in the backlog.
         with socket.create_connection(sock.getsockname(), timeout=2) as client:
             assert client.getpeername() == sock.getsockname()
+
+
+def test_seeded_snapshots_stop_at_the_injected_day(tmp_path):
+    import sqlite3
+    from datetime import date
+
+    path = tmp_path / "metrics.sqlite"
+    _serve().seed_metrics(path, today=date(2026, 1, 1))  # in the past: the wall clock must not decide
+    conn = sqlite3.connect(path)
+    count, latest = conn.execute("SELECT count(*), max(fetched_at) FROM post_metrics").fetchone()
+    conn.close()
+    assert count > 0 and latest < "2026-01-02"

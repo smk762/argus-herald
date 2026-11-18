@@ -310,3 +310,23 @@ def test_checkpoints_compare_times_not_strings(tmp_path):
     (report,) = d.broadcast_report(d.connect(m.path), d.Filters(days=30, end=END))
     assert (report.engagement_24h, report.engagement_7d) == (4, 9)
     assert report.impressions == 900  # the latest sample by time, not by string order
+
+
+def test_connect_opens_a_path_with_uri_characters(tmp_path):
+    folder = tmp_path / "a#b%41?c"
+    folder.mkdir()
+    path = folder / "metrics.sqlite"
+    Metrics(path).close()
+    conn = d.connect(path)
+    assert conn is not None
+    assert "runs" in d._tables(conn)
+    conn.close()
+
+
+def test_summary_tiles_need_whole_weeks():
+    key = d.SERIES[0][0]
+    assert d.summary_tiles({key: [1.0] * 5}) == []  # five days are not "the last 7 days"
+    (tile,) = d.summary_tiles({key: [1.0] * 10})
+    assert tile["value"] == 7 and tile["delta"] is None  # three earlier days are not a week to compare with
+    (tile,) = d.summary_tiles({key: [2.0] * 7 + [1.0] * 7})
+    assert tile["value"] == 7 and tile["delta"] == -7

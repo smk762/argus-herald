@@ -153,10 +153,15 @@ _MASTODON_ID = re.compile(r"^/(?:@[^/]+|users/[^/]+/statuses)/(\d+)/?$")
 def mastodon_ref(url: str) -> tuple[str, str] | None:
     """(https://instance, status id) from a status link."""
     parsed = urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname:
+    try:
+        if parsed.scheme != "https" or not parsed.hostname:
+            return None
+        parsed.port  # noqa: B018 - raises ValueError for a port that isn't a number
+    except ValueError:
         return None
+    host = parsed.netloc.rsplit("@", 1)[-1]  # keeps the port and an IPv6 literal's brackets, drops userinfo
     match = _MASTODON_ID.match(parsed.path)
-    return (f"https://{parsed.hostname}", match.group(1)) if match else None
+    return (f"https://{host}", match.group(1)) if match else None
 
 
 def mastodon_samples(http: Http, posts: list[Post], now: datetime) -> tuple[list[dict], list[str]]:
@@ -289,8 +294,11 @@ def _number(value: str | None) -> int | None:
     if not text or text in ("-", "—"):
         return None
     try:
-        return int(float(text))
-    except ValueError as exc:
+        try:
+            return int(text)  # exact, however large: a float loses whole numbers past 2**53
+        except ValueError:
+            return int(float(text))  # "12.0", "1e3"; int() of inf raises OverflowError, of nan ValueError
+    except (ValueError, OverflowError) as exc:
         raise ValueError(f"not a number: {value!r}") from exc
 
 

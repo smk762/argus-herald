@@ -111,7 +111,8 @@ def referrer_group(referrer: str, own_hosts: tuple[str, ...] = ()) -> str:
 def connect(path: Path) -> sqlite3.Connection | None:
     if not path.exists():
         return None
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    # as_uri percent-encodes the path: a "?", "#" or "%" in a folder name would otherwise change which file opens
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -582,9 +583,10 @@ def summary_tiles(series: dict[str, list[float | None]]) -> list[dict]:
     for key, label in SERIES:
         values = series.get(key) or []
         recent, prior = values[-7:], values[-14:-7]
-        if not recent or any(v is None for v in recent):
-            continue
+        if len(recent) < 7 or any(v is None for v in recent):
+            continue  # a shorter run would be shown as a week's total
         now = sum(v for v in recent if v is not None)
-        before = sum(v for v in prior if v is not None) if prior and all(v is not None for v in prior) else None
+        full_prior = len(prior) == 7 and all(v is not None for v in prior)
+        before = sum(v for v in prior if v is not None) if full_prior else None
         tiles.append({"key": key, "label": label, "value": now, "delta": None if before is None else now - before})
     return tiles

@@ -36,6 +36,30 @@ def _weight_chars(text: str) -> int:
     return sum(1 if any(lo <= ord(char) <= hi for lo, hi in _LIGHT) else 2 for char in text)
 
 
+_JOINERS = "\u200d\ufe0e\ufe0f"
+
+
+def _clusters(text: str) -> list[str]:
+    """Split into the units a reader sees as one character: an emoji sequence (flag, keycap, ZWJ
+    family), or a character with the combining marks, variation selectors and joiners after it."""
+    out: list[str] = []
+    pos = 0
+
+    def chars(run: str) -> None:
+        for char in run:
+            if out and (char in _JOINERS or unicodedata.category(char) in ("Mn", "Mc", "Me")):
+                out[-1] += char
+            else:
+                out.append(char)
+
+    for match in _EMOJI.finditer(text):
+        chars(text[pos : match.start()])
+        out.append(match.group())
+        pos = match.end()
+    chars(text[pos:])
+    return out
+
+
 def weighted_length(text: str) -> int:
     """The length X counts: a URL is 23 (the t.co length), an emoji 2, CJK and most symbols 2."""
 
@@ -109,8 +133,10 @@ def fit_weighted(head: str, link: str, limit: int = 280) -> str:
     body = head + sep + link
     if fits(body):
         return body
+    parts = _clusters(head)  # cut between whole characters: half an emoji or a bare accent reads as broken
     while head and not fits(head + sep + link):
-        head = head[:-1].rstrip()
+        parts.pop()
+        head = "".join(parts).rstrip()
     if head:
         space = head.rfind(" ")
         if space > 20:

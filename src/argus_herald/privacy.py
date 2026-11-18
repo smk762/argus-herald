@@ -243,6 +243,9 @@ def _read_terms(path: Path, warnings: list[str]) -> list[str]:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
         raise GateUnavailable(f"Can't read the deny-list {path}: {exc}") from exc
+    except UnicodeDecodeError:
+        # No "from exc": the decode error carries the file's bytes, and a deny-list is never printed.
+        raise GateUnavailable(f"Can't read the deny-list {path}: it isn't UTF-8 text. Save it as UTF-8.") from None
     terms = [line.split("#", 1)[0].strip() for line in lines]
     return [term for term in terms if term]
 

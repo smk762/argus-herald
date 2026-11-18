@@ -255,8 +255,13 @@ class TelegramPublisher(Publisher):
 
     def render(self, release: Release) -> Rendered:
         head = _headline(release)
-        # Escaping can grow the text. Leave room for the common entities.
-        body = fit_body(head, release.notes, release.url, 3500)
+        # Escaping can grow the text. Leave room for the common entities, then shrink the plain
+        # budget until the escaped body fits: notes full of "&", "<" or "->" can outgrow any fixed margin.
+        budget = 3500
+        body = fit_body(head, release.notes, release.url, budget)
+        while budget > 0 and (escaped := len(html_text(body))) > self.limit:
+            budget = min(budget - 1, budget * self.limit // escaped)
+            body = fit_body(head, release.notes, release.url, budget)
         return Rendered(title=f"{release.project} {release.version}", body=body)
 
     def missing_secrets(self, env: Mapping[str, str]) -> list[str]:
@@ -290,7 +295,8 @@ class TelegramPublisher(Publisher):
             payload = json.loads(body.decode("utf-8"))
             result = payload.get("result") or {}
             external = str(result.get("message_id") or "") or None
-        except json.JSONDecodeError:
+        except (ValueError, AttributeError, TypeError):
+            # The 200 means the message is posted. An odd body must not fail the publish: a retry would post twice.
             external = None
         return PublishResult(external_id=external, detail="Posted to Telegram")
 

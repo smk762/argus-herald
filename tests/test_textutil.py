@@ -1,6 +1,6 @@
 import pytest
 
-from argus_herald.textutil import clip_lines, extract_changelog, weighted_length
+from argus_herald.textutil import clip_lines, extract_changelog, fit_weighted, weighted_length
 
 
 @pytest.mark.parametrize("limit", [5, 6, 10, 40])
@@ -63,3 +63,16 @@ def test_a_cjk_post_over_the_x_limit_is_refused():
     with pytest.raises(ValueError):
         TwitterPublisher().validate("", "漢" * 200)
     TwitterPublisher().validate("", "漢" * 140)
+
+
+@pytest.mark.parametrize(
+    "unit", ["x\u0301", "1\ufe0f\u20e3", "\U0001f468\u200d\U0001f469\u200d\U0001f467", "\U0001f1e6\U0001f1fa"]
+)
+def test_fit_weighted_cuts_between_whole_characters(unit):
+    link = "https://example.org/a"
+    for lead in ("", "a", "ab "):
+        fitted = fit_weighted(lead + unit * 300, link)
+        head = fitted.removesuffix("\n\n" + link)
+        assert weighted_length(fitted) <= 280 and head.startswith(lead + unit)
+        rest = head.removeprefix(lead)
+        assert rest == unit * (len(rest) // len(unit))  # no bare accent, digit, joiner or half a flag

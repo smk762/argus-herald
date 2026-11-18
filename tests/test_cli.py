@@ -19,7 +19,7 @@ def test_platforms_command_lists_the_dragonhound_accounts(tmp_path, capsys):
     code = main(
         [
             "--config",
-            "examples/dragonhound.yaml",
+            str(Path(__file__).resolve().parents[1] / "examples" / "dragonhound.yaml"),
             "--env",
             str(tmp_path / "does-not-exist.env"),
             "--store",
@@ -243,3 +243,17 @@ def test_edit_with_a_missing_editor_is_an_error_not_a_traceback(tmp_path, monkey
     store = Store(tmp_path / "s.sqlite")
     assert store.get(1).body == "Old body"
     store.close()
+
+
+def test_compose_checks_every_media_file_before_it_drafts(tmp_path, capsys):
+    from PIL import Image
+
+    base, path = _seeded(tmp_path)
+    good = tmp_path / "ok.png"
+    Image.new("RGB", (8, 8)).save(good)
+    wrong = ["--media", str(good), "--alt", "a square", "--media", str(tmp_path / "missing.png"), "--alt", "gone"]
+    assert main([*base, "compose", "A build note", *wrong]) == 2
+    assert "No such file" in capsys.readouterr().err
+    assert set(_statuses(path)) == {"1", "2"}  # no image-less draft to approve by mistake, or to duplicate
+    assert main([*base, "compose", "A build note", "--media", str(good), "--alt", "a square"]) == 0
+    assert len(_statuses(path)) == 3

@@ -329,3 +329,22 @@ def test_slot_suggestions_bucket_by_utc(tmp_path):
     metrics.close()
     text = suggest(tmp_path / "m.sqlite")
     assert "Tue 04-08 UTC" in text and "Mon" not in text
+
+
+def test_mastodon_ref_keeps_the_port_and_ipv6_brackets():
+    from argus_herald.engagement import mastodon_ref
+
+    assert mastodon_ref("https://social.example:8443/@user/123") == ("https://social.example:8443", "123")
+    assert mastodon_ref("https://[::1]:8443/@user/5") == ("https://[::1]:8443", "5")
+    assert mastodon_ref("https://name:pw@social.example/@user/123") == ("https://social.example", "123")
+    assert mastodon_ref("https://social.example:port/@user/123") is None
+
+
+def test_a_number_cell_that_overflows_is_not_a_number():
+    from argus_herald.engagement import _number
+
+    for bad in ("inf", "-Infinity", "1e999", "nan", "abc"):
+        with pytest.raises(ValueError, match="not a number"):
+            _number(bad)
+    assert _number("9007199254740993") == 9007199254740993  # exact past 2**53
+    assert _number("1,234") == 1234 and _number("12.0") == 12 and _number("1e3") == 1000 and _number("-") is None

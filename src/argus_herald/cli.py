@@ -908,10 +908,19 @@ def cmd_compose(config: Config, store: Store, publishers: list[Publisher], args:
     media = list(zip(args.media or [], args.alt or [], strict=False))
     if len(args.media or []) != len(args.alt or []):
         raise ReviewError("Give one --alt for each --media, in the same order")
+    sources = [(Path(path).expanduser(), alt) for path, alt in media]
+    if sources:
+        from argus_herald.media import MediaError
+        from argus_herald.media import clean as clean_media
+    for source, _alt in sources:  # every file must clean before a draft exists: a bad path saves nothing
+        try:
+            clean_media(source, config.media_root / "clean")
+        except MediaError as exc:
+            raise ReviewError(str(exc)) from exc
     ids = compose(store, publishers, post)
-    if ids and media:
-        for path, alt in media:
-            attach_media(store, config.media_root, ids[0], Path(path).expanduser(), alt, all_drafts=True)
+    if ids:
+        for source, alt in sources:
+            attach_media(store, config.media_root, ids[0], source, alt, all_drafts=True)
     for draft_id in ids:
         draft = store.get(draft_id)
         if draft:
@@ -930,6 +939,12 @@ def _release_ref(store: Store, ref: str):
     if row is None:
         raise ReviewError(f"{ref} isn't a collected release (digest mode collects releases as they're seen)")
     return row
+
+
+def _digest_id(ref: str) -> int:
+    if not ref.isascii() or not ref.isdigit():
+        raise ReviewError(f"{ref!r} isn't a digest id. Use the number that argus-herald digest lists.")
+    return int(ref)
 
 
 def _digest_settings(config: Config):
@@ -957,8 +972,8 @@ def cmd_digest(config: Config, store: Store, publishers: list[Publisher], args: 
         except GateUnavailable:
             gate = None
         backend = _backend(config)
-        for ref in args.refs:
-            ids, status = build_digest(store, settings, publishers, int(ref), gate, backend)
+        for ref, digest_id in [(ref, _digest_id(ref)) for ref in args.refs]:  # all checked before any rebuild
+            ids, status = build_digest(store, settings, publishers, digest_id, gate, backend)
             print(f"digest {ref}: new drafts {', '.join(f'#{i}' for i in ids) or 'none'}; {status}")
         return 0
     now = datetime.now(UTC)

@@ -1,8 +1,9 @@
 import json
 
 from argus_herald.config import Audience, Destination
-from argus_herald.models import Draft
-from argus_herald.platforms import DiscordPublisher, PatreonPublisher, TwitterPublisher
+from argus_herald.models import Draft, Release
+from argus_herald.platforms import DiscordPublisher, PatreonPublisher, TelegramPublisher, TwitterPublisher
+from argus_herald.textutil import html_text
 
 
 def _draft(**fields) -> Draft:
@@ -59,3 +60,27 @@ def test_discord_posts_ping_nobody():
     result = DiscordPublisher().publish(_draft(platform="discord", body=body), env, Http())
     assert result.external_id == "7"
     assert sent == [{"content": body, "allowed_mentions": {"parse": []}}]
+
+
+def test_telegram_render_fits_after_escaping():
+    url = "https://pypi.org/project/demo/1.0/"
+    for notes in ("- map<K, V> -> Vec<T> & more\n" * 300, "&" * 9000, "plain notes\n" * 20):
+        release = Release("demo", "1.0", "A demo", url, None, {}, False, notes=notes)
+        telegram = TelegramPublisher()
+        rendered = telegram.render(release)
+        telegram.validate(rendered.title, rendered.body)  # raises when the escaped text is over 4096
+        assert len(html_text(rendered.body)) <= 4096 and rendered.body.endswith(url)
+    assert "plain notes" in rendered.body
+
+
+def test_telegram_counts_a_200_as_posted_whatever_the_body():
+    env = {"TELEGRAM_BOT_TOKEN": "123:abc", "TELEGRAM_CHAT_ID": "-100"}
+    for body in (b"\xff\xfe", b"[]", b'{"result": 5}', b'"ok"', b"not json", b'{"result": {"message_id": 9}}'):
+
+        class Http:
+            def request(self, method, url, data=None, headers=None, body=body):
+                return 200, body
+
+        result = TelegramPublisher().publish(_draft(platform="telegram", body="0.2.0 is out."), env, Http())
+        assert result.detail == "Posted to Telegram"
+    assert result.external_id == "9"

@@ -79,7 +79,7 @@ def test_dragonhound_fixture_enables_twitter_and_patreon():
 def load_config_from_repo():
     from pathlib import Path
 
-    return load_config(Path("examples/dragonhound.yaml"))
+    return load_config(Path(__file__).resolve().parents[1] / "examples" / "dragonhound.yaml")
 
 
 def test_profile_parser_reads_snippet_names():

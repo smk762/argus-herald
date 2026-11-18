@@ -32,7 +32,8 @@ export const noConsoleErrors = always(() => consoleErrors.current.length === 0);
 export const localClicks = defaultClicks.filter((action) => {
   if (!isAction(action, "Click")) return true;
   const href = action.Click.fingerprint.href;
-  return !href || href.startsWith("/") || href.startsWith("#") || href.startsWith("?");
+  // "//pypi.org/..." also starts with a slash, and leaves the origin.
+  return !href || (href.startsWith("/") && !href.startsWith("//")) || href.startsWith("#") || href.startsWith("?");
 });
 
 export const goto = registerCustomAction("goto", async (_document, window, path: string) => {
