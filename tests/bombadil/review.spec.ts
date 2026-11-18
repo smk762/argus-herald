@@ -117,13 +117,16 @@ const contrast = extract((state): Contrast => {
     };
     return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
   };
+  const CANVAS = [255, 255, 255, 1];
   const background = (el: Element | null): number[] => {
     for (let node = el; node; node = node.parentElement) {
       const color = parse(win.getComputedStyle(node).backgroundColor);
       if (color && color[3] > 0.5) return color;
     }
-    return parse(win.getComputedStyle(doc.documentElement).backgroundColor) ?? [255, 255, 255, 1];
+    return CANVAS;
   };
+  // An unpainted root computes to rgba(0, 0, 0, 0): what shows is the browser's white canvas, not black.
+  const root = parse(win.getComputedStyle(doc.documentElement).backgroundColor);
   // Plain-text answers (404, an expired form) and static files have no theme to check.
   const styled = doc.querySelector('link[href="/static/review.css"]') !== null;
   const cookie = styled ? /(?:^|;\s*)theme=(light|dark)/.exec(doc.cookie) : null;
@@ -144,7 +147,7 @@ const contrast = extract((state): Contrast => {
   }
   return {
     theme: cookie ? cookie[1] : null,
-    rootLuminance: luminance(parse(win.getComputedStyle(doc.documentElement).backgroundColor) ?? [255, 255, 255]),
+    rootLuminance: luminance(root && root[3] > 0.5 ? root : CANVAS),
     worst: worst.slice(0, 5),
   };
 });

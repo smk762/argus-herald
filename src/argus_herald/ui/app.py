@@ -129,10 +129,13 @@ def _public_url(url: str) -> str | None:
     text = url.strip()
     if any(char in text for char in " \t\r\n\"'<>"):
         return None
-    parts = urlsplit(text)
-    if parts.scheme not in {"http", "https"} or not parts.hostname:
-        return None
-    if parts.username or parts.password:
+    try:
+        parts = urlsplit(text)
+        if parts.scheme not in {"http", "https"} or not parts.hostname:
+            return None
+        if parts.username or parts.password:
+            return None
+    except ValueError:  # urlsplit rejects some malformed input outright, such as "http://[::1"
         return None
     return text
 

@@ -316,6 +316,8 @@ def test_reject_pending_only_touches_pending_rows(tmp_path):
     ]
     store.transition(ids[2], (PENDING,), APPROVED)
     store.conn.execute("UPDATE drafts SET created_at = '2026-10-01T00:00:00+00:00' WHERE id = ?", (ids[0],))
+    # Both sides of the cutoff are fixed: the second draft's real "now" would decide the result.
+    store.conn.execute("UPDATE drafts SET created_at = '2026-12-01T00:00:00+00:00' WHERE id = ?", (ids[1],))
     assert [d.id for d in store.pending_before("2026-11-01")] == [ids[0]]
     assert [d.id for d in store.pending_before(None)] == ids[:2]
     assert store.reject_pending(ids, "stale backlog") == 2

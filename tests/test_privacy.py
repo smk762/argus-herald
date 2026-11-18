@@ -135,3 +135,10 @@ def test_fails_closed_when_the_named_auditor_list_is_missing(tmp_path, monkeypat
     monkeypatch.delenv("AI_AUDIT_OPSEC_DENYLIST")
     monkeypatch.setattr("argus_herald.privacy.AUDITOR_DENYLIST", tmp_path / "not-installed.txt")
     assert load_gate({}).deny_terms
+
+
+def test_a_deny_list_that_is_not_utf8_fails_closed_without_showing_it(private_denylist):
+    private_denylist.write_bytes("caf\u00e9-secret\n".encode("latin-1"))
+    with pytest.raises(GateUnavailable, match="isn't UTF-8") as caught:
+        load_gate({})
+    assert "caf" not in str(caught.value) and caught.value.__cause__ is None

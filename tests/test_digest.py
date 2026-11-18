@@ -331,3 +331,69 @@ def test_release_page_stays_inside_the_site_dir(tmp_path, gate, slug):
     assert all(p.parent == site and not p.name.startswith(".") for p in written), status
     assert not (tmp_path / "escaped.md").exists() and not Path("/abs/escaped.md").exists()
     assert status.startswith("wrote ") == bool(written)
+
+
+def test_cli_digest_rebuild_refuses_an_id_that_is_not_a_number(tmp_path, capsys):
+    from argus_herald.cli import main
+
+    _config(tmp_path)
+    base = [
+        "--config",
+        str(tmp_path / "c.yaml"),
+        "--env",
+        str(tmp_path / "no.env"),
+        "--store",
+        str(tmp_path / "s.sqlite"),
+    ]
+    for ref in ("#3", "2026-11-16", "3.0", "\u00b3"):
+        assert main([*base, "digest", "rebuild", ref]) == 2
+        assert "isn't a digest id" in capsys.readouterr().err
+
+
+def test_a_datetime_anchor_becomes_a_date(tmp_path):
+    cfg = load_config_text(tmp_path, "digest:\n  anchor: 2026-11-16 09:00:00\n")
+    assert cfg.digest.anchor == date(2026, 11, 16) and type(cfg.digest.anchor) is date
+
+
+def test_yaml_scalars_escape_what_yaml_rejects_or_folds():
+    import yaml
+
+    from argus_herald.digest import _yaml
+
+    for value in ("caf\u00e9 \u2014 fine", "a\u0085b", "a\u2028b\u2029c", "del\x7f c1\x9f", "\ufeffbom", 'q"\\'):
+        assert yaml.safe_load(_yaml(value)) == value
+    assert "caf\u00e9" in _yaml("caf\u00e9")  # ordinary text stays readable
+    assert _yaml("lone \udc80").encode("utf-8") == b'"lone ?"'
+
+
+def test_a_page_write_that_fails_keeps_the_old_page(tmp_path, gate, monkeypatch):
+    import os
+
+    from argus_herald.digest import write_page
+
+    cfg = _config(tmp_path)
+    store = Store(cfg.store_path)
+    digest_id = _digest_with(store, [("0.13.0", "2026-11-18T00:00:00+00:00", ADDED)])
+    page = tmp_path / "site" / "slug.md"
+    assert write_page(store, cfg.digest, digest_id, "slug", "first\n", gate) == f"wrote {page}"
+    assert page.stat().st_mode & 0o777 == 0o666 & ~_umask()
+
+    def full_disk(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", full_disk)
+    with pytest.raises(OSError, match="No space left"):
+        write_page(store, cfg.digest, digest_id, "slug", "second\n", gate)
+    monkeypatch.undo()
+    assert page.read_text(encoding="utf-8") == "first\n"
+    assert [p.name for p in page.parent.iterdir()] == ["slug.md"]  # no temporary file left behind
+    assert write_page(store, cfg.digest, digest_id, "slug", "second\n", gate) == f"wrote {page}"  # still ours to update
+    store.close()
+
+
+def _umask():
+    import os
+
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask

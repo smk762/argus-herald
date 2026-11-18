@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -477,12 +477,13 @@ def _github(value: Any) -> GitHubSource | None:
     prefix = value.get("prefix") or ""
     if not isinstance(prefix, str):
         raise ConfigError("github.prefix must be a string")
+    prefix = prefix.strip()
     if not repos and not prefix:
         raise ConfigError("github needs repos: [...] or a prefix")
     pre = value.get("include_prereleases", True)
     if not isinstance(pre, bool):
         raise ConfigError("github.include_prereleases must be true or false")
-    return GitHubSource(owner=owner.strip(), repos=repos, prefix=prefix.strip(), include_prereleases=pre)
+    return GitHubSource(owner=owner.strip(), repos=repos, prefix=prefix, include_prereleases=pre)
 
 
 def _digest(value: Any) -> DigestSettings | None:
@@ -497,7 +498,10 @@ def _digest(value: Any) -> DigestSettings | None:
         return None
     raw_anchor = value.get("anchor")
     try:
-        anchor = raw_anchor if isinstance(raw_anchor, date) else date.fromisoformat(str(raw_anchor))
+        if isinstance(raw_anchor, datetime):  # YAML reads "2026-11-16 09:00" as one; windows compare dates
+            anchor = raw_anchor.date()
+        else:
+            anchor = raw_anchor if isinstance(raw_anchor, date) else date.fromisoformat(str(raw_anchor))
     except ValueError as exc:
         raise ConfigError("digest.anchor must be a date like 2026-11-16") from exc
     days = value.get("window_days", 14)

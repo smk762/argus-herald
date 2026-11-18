@@ -251,3 +251,18 @@ def test_api_releases_beyond_the_first_page_are_listed():
     found = list_releases(http, "smk762", "argus-studio", token="t")
     assert len(found) == 230 and len(http.calls) == 3
     assert (found[0].version, found[-1].version) == ("0.0.0", "0.229.0")
+
+
+def test_github_prefix_of_only_spaces_is_no_prefix(tmp_path):
+    path = tmp_path / "p.yaml"
+    path.write_text(
+        'pypi: {projects: [a]}\ndestinations:\n  twitter: {enabled: true}\ngithub: {owner: smk762, prefix: "  "}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="repos"):
+        load_config(path)
+
+
+def test_html_to_text_keeps_a_tail_the_parser_holds_back():
+    assert html_to_text("<p>Notes from R&D") == "Notes from R&D"
+    assert html_to_text("<p>Now with AT&T</p> and R&D").endswith("and R&D")

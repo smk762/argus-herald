@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
 import sqlite3
+import tempfile
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -211,8 +214,16 @@ def notable(store: Store, releases: list[sqlite3.Row]) -> list[tuple[sqlite3.Row
 
 
 def _yaml(value: str) -> str:
-    """A YAML double-quoted scalar. JSON string syntax is valid YAML."""
-    return json.dumps(value, ensure_ascii=False)
+    """A YAML double-quoted scalar. JSON string syntax is valid YAML once these are escaped too:
+
+    DEL and the C1 controls (not printable in YAML), U+0085/U+2028/U+2029 (line breaks to a YAML 1.1
+    parser, so they would fold) and the BOM. A lone surrogate can't be encoded at all; it becomes "?".
+    """
+    text = json.dumps(value.encode("utf-8", "replace").decode("utf-8"), ensure_ascii=False)
+    return _YAML_UNSAFE.sub(lambda m: f"\\u{ord(m.group()):04x}", text)
+
+
+_YAML_UNSAFE = re.compile("[\x7f-\x9f\u2028\u2029\ufeff]")
 
 
 _PLAIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -296,6 +307,33 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _write_atomic(path: Path, text: str) -> None:
+    """Replace path in one step, so a crash or a full disk leaves the old page, never half of the new one.
+
+    A truncated page would no longer match its stored hash and be left alone for good as "edited by a person".
+    """
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if path.exists():
+            shutil.copymode(path, tmp)
+        else:
+            os.chmod(tmp, 0o666 & ~_umask())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def _umask() -> int:
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
 def write_page(store: Store, settings: DigestSettings, digest_id: int, slug: str, text: str, gate: Gate | None) -> str:
     """Write the site page when it is safe to. Returns what happened, for the reviewer."""
     if settings.site_dir is None:
@@ -320,7 +358,7 @@ def write_page(store: Store, settings: DigestSettings, digest_id: int, slug: str
     if not settings.site_dir.is_dir():
         store.update_digest(digest_id, error=f"site_dir {settings.site_dir} does not exist")
         return f"site_dir {settings.site_dir} does not exist; page not written"
-    path.write_text(text, encoding="utf-8")
+    _write_atomic(path, text)
     store.update_digest(digest_id, site_path=str(path), site_hash=_sha(text), error=None)
     return f"wrote {path}"
 

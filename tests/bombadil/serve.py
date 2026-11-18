@@ -146,7 +146,9 @@ def seed_metrics(path: Path, today: date | None = None) -> None:
 
     from argus_herald.metrics import Metrics
 
-    today = today or datetime.now(UTC).date()
+    # Snapshots exist up to the end of the injected day, not the wall clock: a fixed `today` gives fixed data.
+    now = datetime.now(UTC) if today is None else datetime.combine(today, datetime.max.time(), UTC)
+    today = today or now.date()
     rng = random.Random(7)
     m = Metrics(path)
     days = [today - timedelta(days=i) for i in range(120, -1, -1)]
@@ -301,7 +303,7 @@ def seed_metrics(path: Path, today: date | None = None) -> None:
         )
         if platform in ("bluesky", "mastodon"):
             for hours, scale in ((1, 1), (24, 4), (72, 6), (168, 7)):
-                if at + timedelta(hours=hours) < datetime.now(UTC):
+                if at + timedelta(hours=hours) < now:
                     metrics_rows.append(
                         {
                             "platform": platform,

@@ -146,6 +146,7 @@ def html_to_text(markup: str) -> str:
         return ""
     parser = _Text()
     parser.feed(markup)
+    parser.close()  # flushes text held back as a possible entity or tag, such as a body ending in "R&D"
     text = "".join(parser.parts)
     lines = [line.rstrip() for line in text.splitlines()]
     text = "\n".join(lines)

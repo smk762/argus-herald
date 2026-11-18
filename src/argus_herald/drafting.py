@@ -89,8 +89,10 @@ class OpenAICompatible(Backend):
             raise DraftingError(f"{self.name} answered HTTP {status}")
         try:
             content = json.loads(raw.decode("utf-8"))["choices"][0]["message"].get("content") or ""
-        except (ValueError, KeyError, IndexError) as exc:
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
             raise DraftingError(f"{self.name} returned an unexpected response") from exc
+        if not isinstance(content, str):
+            raise DraftingError(f"{self.name} returned an unexpected response")
         return content
 
 
@@ -271,7 +273,10 @@ def clean(raw: str) -> str:
     text = re.sub(r"^```\w*\n|\n```$", "", text).strip()
     # Social posts are plain text: backticks and bold markers would show literally.
     text = text.replace("`", "").replace("**", "")
-    return text.strip('"').strip()
+    text = text.strip()
+    if len(text) >= 2 and text[0] == text[-1] == '"':  # only a wrapping pair: a post may end on a quoted title
+        text = text[1:-1]
+    return text.strip()
 
 
 def repair(text: str, publisher: Publisher, link: str, request: Request) -> tuple[str, list[str]]:
