@@ -28,6 +28,9 @@ IMAGE_EXT = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP"}
 GIF_EXT = {".gif"}
 VIDEO_EXT = {".mp4", ".mov", ".webm", ".m4v"}
 UNSTRIPPED = "unstripped"
+# Frames x width x height a GIF may decode to. Every frame is held in memory while it is
+# rewritten, and a small file can declare thousands of large frames.
+MAX_GIF_PIXELS = 100_000_000
 
 
 class MediaError(ValueError):
@@ -141,6 +144,9 @@ def _clean_image(source: Path, target: Path) -> str:
             fmt = IMAGE_EXT[source.suffix.lower()]
             if image.format and image.format != fmt and not (fmt == "JPEG" and image.format == "MPO"):
                 raise MediaError(f"{source.name} is really {image.format}, not {fmt}")
+            if image.format != "MPO" and getattr(image, "n_frames", 1) > 1:
+                # Only the first frame would survive the rewrite below.
+                raise MediaError(f"{source.name} is animated; attach it as a GIF or a video instead")
             icc = image.info.get("icc_profile")
             upright = ImageOps.exif_transpose(image) or image
             upright.load()
@@ -169,6 +175,12 @@ def _clean_gif(source: Path, target: Path) -> str:
     try:
         with Image.open(source) as image:
             found = [f for f in _found_metadata(image) if f != "EXIF"] + (["EXIF"] if image.getexif() else [])
+            count = getattr(image, "n_frames", 1)
+            if count * image.width * image.height > MAX_GIF_PIXELS:
+                raise MediaError(
+                    f"{source.name} is too large to clean: {count} frames of {image.width}x{image.height}; "
+                    "shorten it or scale it down"
+                )
             frames, durations = [], []
             for frame in ImageSequence.Iterator(image):
                 copy = frame.copy()
@@ -186,6 +198,8 @@ def _clean_gif(source: Path, target: Path) -> str:
             if len(frames) > 1:
                 options["append_images"] = frames[1:]
             frames[0].save(target, "GIF", **options)
+    except MediaError:
+        raise
     except (OSError, ValueError, IndexError) as exc:
         raise MediaError(f"{source.name} isn't a readable GIF: {exc}") from exc
     return ", ".join(found) or "nothing found"
@@ -197,38 +211,43 @@ def _clean_video(source: Path, target: Path) -> str:
         shutil.copyfile(source, target)
         return UNSTRIPPED
     tags = _video_tags(source)
-    result = subprocess.run(
-        [
-            ffmpeg,
-            "-v",
-            "error",
-            "-y",
-            "-i",
-            str(source),
-            "-map",
-            "0",
-            "-map_metadata",
-            "-1",
-            "-map_chapters",
-            "-1",
-            "-c",
-            "copy",
-            "-fflags",
-            "+bitexact",
-            "-flags:v",
-            "+bitexact",
-            "-flags:a",
-            "+bitexact",
-            str(target),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=300,
-        check=False,
-    )
-    if result.returncode != 0:
-        target.unlink(missing_ok=True)
-        raise MediaError(f"ffmpeg couldn't rewrite {source.name}: {result.stderr.strip()[:200]}")
+    # ffmpeg writes to a side file, moved into place only on success: a failed or timed-out run
+    # never leaves a half-written clip where the cleaned one belongs.
+    partial = target.with_name(f".{target.stem}.partial{target.suffix}")
+    command = [
+        ffmpeg,
+        "-v",
+        "error",
+        "-y",
+        "-i",
+        str(source),
+        "-map",
+        "0",
+        "-map_metadata",
+        "-1",
+        "-map_chapters",
+        "-1",
+        "-c",
+        "copy",
+        "-fflags",
+        "+bitexact",
+        "-flags:v",
+        "+bitexact",
+        "-flags:a",
+        "+bitexact",
+        str(partial),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
+        if result.returncode != 0:
+            raise MediaError(f"ffmpeg couldn't rewrite {source.name}: {result.stderr.strip()[:200]}")
+        partial.replace(target)
+    except subprocess.TimeoutExpired as exc:
+        raise MediaError(f"ffmpeg took too long to rewrite {source.name}") from exc
+    except OSError as exc:
+        raise MediaError(f"ffmpeg couldn't rewrite {source.name}: {exc}") from exc
+    finally:
+        partial.unlink(missing_ok=True)
     return ", ".join(tags) or "nothing found"
 
 
@@ -239,16 +258,24 @@ def _video_tags(source: Path) -> list[str]:
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
         return ["container metadata"]
-    out = subprocess.run(
-        [ffprobe, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(source)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    # A probe that hangs, fails or reads nothing hasn't shown the clip to be clean.
+    try:
+        out = subprocess.run(
+            [ffprobe, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(source)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return ["container metadata"]
+    if out.returncode != 0:
+        return ["container metadata"]
     try:
         data = json.loads(out.stdout or "{}")
     except json.JSONDecodeError:
+        return ["container metadata"]
+    if not isinstance(data, dict) or not (data.get("format") or data.get("streams")):
         return ["container metadata"]
     keys = set((data.get("format") or {}).get("tags") or {})
     for stream in data.get("streams") or []:

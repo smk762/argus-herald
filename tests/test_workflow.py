@@ -316,6 +316,8 @@ def test_reject_pending_only_touches_pending_rows(tmp_path):
     ]
     store.transition(ids[2], (PENDING,), APPROVED)
     store.conn.execute("UPDATE drafts SET created_at = '2026-10-01T00:00:00+00:00' WHERE id = ?", (ids[0],))
+    # Both sides of the cutoff are fixed: the second draft's real "now" would decide the result.
+    store.conn.execute("UPDATE drafts SET created_at = '2026-12-01T00:00:00+00:00' WHERE id = ?", (ids[1],))
     assert [d.id for d in store.pending_before("2026-11-01")] == [ids[0]]
     assert [d.id for d in store.pending_before(None)] == ids[:2]
     assert store.reject_pending(ids, "stale backlog") == 2
@@ -381,3 +383,72 @@ def test_twitter_mode_comes_from_the_destination(tmp_path):
     path.write_text("pypi: {projects: [a]}\ndestinations:\n  twitter: {mode: auto}\n", encoding="utf-8")
     with pytest.raises(Exception, match="mode must be one of"):
         load_config(path)
+
+
+def test_a_draft_being_published_cannot_be_rejected(tmp_path):
+    from argus_herald.models import PUBLISHING
+
+    store, _http, draft = _approved_twitter(tmp_path)
+    assert store.transition(draft.id, (APPROVED,), PUBLISHING) is not None  # a publisher has claimed it
+    with pytest.raises(ReviewError, match="being published"):
+        reject(store, draft.id, "too late")
+    assert store.get(draft.id).status == PUBLISHING
+    # The publisher's result still lands.
+    done = store.transition(draft.id, (PUBLISHING,), PUBLISHED, external_id="https://x.com/a/status/1")
+    assert done is not None and done.external_id == "https://x.com/a/status/1"
+    store.close()
+
+
+def test_a_stale_publish_claim_and_a_handoff_can_still_be_rejected(tmp_path):
+    from argus_herald.models import PUBLISHING
+    from argus_herald.workflow import STALE_PUBLISH
+
+    store, http, draft = _approved_twitter(tmp_path)
+    store.transition(draft.id, (APPROVED,), PUBLISHING)
+    died = (datetime.now(UTC) - STALE_PUBLISH - timedelta(minutes=1)).isoformat()
+    store.conn.execute("UPDATE drafts SET updated_at = ? WHERE id = ?", (died, draft.id))
+    store.conn.commit()
+    assert reject(store, draft.id, "the run died").status == "rejected"
+    other = next(d for d in store.list_drafts() if d.platform == "patreon")
+    approve(store, PatreonPublisher(), other.id, None, gate=load_gate({}))
+    publish_draft(store, PatreonPublisher(), store.get(other.id), {}, http, gate=load_gate({}))
+    assert store.get(other.id).status == HANDED_OFF
+    assert reject(store, other.id, "never posted").status == "rejected"
+    store.close()
+
+
+def test_github_only_config_with_no_destinations_reports_instead_of_crashing(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "github: {owner: smk762, repos: [argus-studio]}\ndestinations:\n  twitter: {enabled: false}\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    store = Store(tmp_path / "state.sqlite")
+    events = poll(cfg, store, FakeHttp({}), [])
+    assert (events[-1].kind, events[-1].project) == ("error", "github smk762")
+    assert "No destinations are enabled" in events[-1].detail
+    store.close()
+
+
+def test_an_http_error_on_one_release_does_not_end_the_poll(tmp_path, monkeypatch):
+    from argus_herald import workflow
+    from argus_herald.http import HttpError
+
+    cfg = config(tmp_path)
+    store = Store(cfg.store_path)
+    http = FakeHttp(routes("1"))
+    poll(cfg, store, http, publishers())
+    http.payloads = routes("1", "2", "3")
+    real = workflow._draft_release
+
+    def flaky(store, http, publishers, project, version):
+        if version == "2":
+            raise HttpError("GET", "https://pypi.org/pypi/argus-atlas/2/json", 503)
+        return real(store, http, publishers, project, version)
+
+    monkeypatch.setattr(workflow, "_draft_release", flaky)
+    events = poll(cfg, store, http, publishers())
+    assert [(e.kind, e.version) for e in events] == [("error", "2"), ("draft", "3")]
+    assert "HTTP 503" in events[0].detail and not store.seen("argus-atlas", "2")
+    store.close()

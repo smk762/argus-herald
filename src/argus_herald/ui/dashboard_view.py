@@ -8,10 +8,12 @@ from collections.abc import Mapping
 from datetime import date
 from urllib.parse import urlencode, urlparse
 
+from argus_herald import clip_panel
 from argus_herald import dashboard as d
 from argus_herald.charts import series_panel, stacked_area
 from argus_herald.config import Config
 from argus_herald.metrics import metrics_path
+from argus_herald.store import Store
 
 RANGES = (30, 90, 180, 365)
 TABLES = ("timeline", "followers", "referrers", "broadcasts", "platforms")
@@ -59,7 +61,9 @@ def _report(
     return everything, shown
 
 
-def context(config: Config, params: Mapping[str, str]) -> dict:
+def context(config: Config, params: Mapping[str, str], *, clips_panel: bool = True) -> dict:
+    """The dashboard page's context. `clips_panel=False` leaves the Clips panel empty and the
+    draft store unopened, for a caller that only reads the metrics tables."""
     path = metrics_path(config)
     conn = d.connect(path)
     try:
@@ -109,6 +113,13 @@ def context(config: Config, params: Mapping[str, str]) -> dict:
         if conn is not None:
             conn.close()
     present = sorted({d.platform_key(b.platform) for b in everything}, key=d.platform_slot)
+    clips = clip_panel.ClipsPanel((), (), (), ())
+    if clips_panel:
+        store = Store(config.store_path)
+        try:
+            clips = clip_panel.load(store, path, config.clips.performance)
+        finally:
+            store.close()
 
     def link(**changes: str) -> str:
         merged = {k: v for k, v in params.items() if v}
@@ -144,6 +155,7 @@ def context(config: Config, params: Mapping[str, str]) -> dict:
         "kinds": sorted({b.format for b in everything}),
         "backends": sorted({b.drafted_by.split(":")[0] for b in everything}),
         "summary": summary,
+        "clips": clips,
         "platform_label": d.platform_label,
         "platform_slot": d.platform_slot,
         "link": link,
@@ -166,7 +178,7 @@ def _fmt(value) -> str:
 
 def export(config: Config, table: str, params: Mapping[str, str]) -> str:
     """One table as CSV, with the same filters as the page."""
-    ctx = context(config, params)
+    ctx = context(config, params, clips_panel=False)  # no table here is the Clips panel
     out = io.StringIO()
     w = csv.writer(out)
     if table == "timeline":

@@ -31,7 +31,7 @@ from urllib.parse import quote
 from argus_herald.config import Config
 from argus_herald.engagement import collect_posts, collect_site, site_configured
 from argus_herald.http import Http, HttpError
-from argus_herald.models import PUBLISHED
+from argus_herald.models import CLIP_CURRENT, PUBLISHED, Draft
 from argus_herald.pypi import list_versions
 from argus_herald.store import Store
 from argus_herald.workflow import tracked_projects
@@ -133,7 +133,8 @@ class Metrics:
         try:
             yield
             self.conn.commit()
-        except Exception:
+        except BaseException:
+            # KeyboardInterrupt and cancellation too: an open transaction wedges the connection.
             self.conn.rollback()
             raise
 
@@ -229,7 +230,23 @@ def collect(
         report.skipped.append(f"site traffic: {', '.join(missing)} not set")
     elif not missing:
         _run(report, metrics, "site_traffic", lambda: collect_site(metrics, http, env))
+    _clip_freshness(report, config, store, http, token)
     return report
+
+
+def _clip_freshness(report: Report, config: Config, store: Store, http: Http, token: str) -> None:
+    """Compare recorded clips with their demos. A clip whose check fails keeps its last state."""
+    from argus_herald.freshness import refresh
+
+    if not any(clip["status"] in CLIP_CURRENT for clip in store.clips()):
+        return
+    try:
+        summary = refresh(store, http, config, token)
+    except (sqlite3.Error, OSError, ValueError, KeyError) as exc:  # the rest of collect has run; say so and stop
+        report.errors.append(f"clip_freshness: {exc}")
+        return
+    report.lines.append(f"clip_freshness: {summary.line}")
+    report.errors += [f"clip_freshness: {line}" for line in summary.errors]
 
 
 def collect_engagement(store: Store, metrics: Metrics, http: Http) -> Report:
@@ -325,32 +342,44 @@ def collect_traffic(metrics: Metrics, http: Http, owner: str, repos: list[str], 
 
 
 def collect_stars(metrics: Metrics, http: Http, owner: str, repos: list[str], token: str) -> str:
-    """Stars with timestamps. After the first run, starts from the page the known stars end on."""
+    """Stars with timestamps. After the first run, starts near the page the known stars end on."""
     headers = _gh_headers(token, "application/vnd.github.star+json")
     added = 0
+
+    def fetch(repo: str, page: int) -> tuple[int, int, int]:
+        """Store one page: (items on the page, stars on it, stars that were new)."""
+        url = f"{GITHUB_API}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/stargazers?per_page=100&page={page}"
+        batch = _get_json(http, url, headers)
+        rows = [
+            {
+                "repo": repo,
+                "user_hash": _hash((item.get("user") or {}).get("login") or ""),
+                "starred_at": str(item.get("starred_at") or ""),
+            }
+            for item in batch
+            if isinstance(item, dict) and item.get("starred_at")
+        ]
+        before = metrics.count("gh_stars", repo=repo)
+        metrics.upsert("gh_stars", rows)
+        return len(batch), len(rows), metrics.count("gh_stars", repo=repo) - before
+
     for repo in repos:
         known = metrics.count("gh_stars", repo=repo)
-        page = known // 100 + 1
-        while page <= 50:
-            url = (
-                f"{GITHUB_API}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/stargazers?per_page=100&page={page}"
-            )
-            batch = _get_json(http, url, headers)
-            rows = [
-                {
-                    "repo": repo,
-                    "user_hash": _hash((item.get("user") or {}).get("login") or ""),
-                    "starred_at": str(item.get("starred_at") or ""),
-                }
-                for item in batch
-                if isinstance(item, dict) and item.get("starred_at")
-            ]
-            before = metrics.count("gh_stars", repo=repo)
-            metrics.upsert("gh_stars", rows)
-            added += metrics.count("gh_stars", repo=repo) - before
-            if len(batch) < 100:
-                break
+        # Local rows are never deleted, but an unstar shortens GitHub's list, so new stars can sit
+        # on an earlier page than the local count says. Start a page early, and walk back until a
+        # page holds a star already known (or page 1).
+        page = min(max(1, known // 100), 50)
+        size, stars, new = fetch(repo, page)
+        added += new
+        back = page - 1
+        while back >= 1 and new == stars:
+            _, stars, new = fetch(repo, back)
+            added += new
+            back -= 1
+        while size >= 100 and page < 50:
             page += 1
+            size, _, new = fetch(repo, page)
+            added += new
     total = int(metrics.conn.execute("SELECT COUNT(*) FROM gh_stars").fetchone()[0])
     return f"{len(repos)} repos, {total} stars ({added} new)"
 
@@ -392,17 +421,43 @@ def collect_events(metrics: Metrics, store: Store, http: Http, packages: list[st
     return f"{len(rows)} releases, {sync_broadcasts(metrics, store)}"
 
 
+@dataclass(frozen=True)
+class PostRef:
+    """A post that went out, keyed the way metrics.sqlite knows it: `platform` and `url` are a
+    broadcast's events.source and events.url, and a sample's post_metrics.platform and external_id."""
+
+    via: str  # "draft" (published, or handed off and confirmed) or "logged" (posted outside herald)
+    id: int
+    platform: str
+    url: str  # the post URL or id; "draft:<id>" for a published draft that has none
+    at: str
+
+
+def posts_out(store: Store) -> list[tuple[PostRef, Draft | sqlite3.Row]]:
+    """Every post that went out, with the draft or logged row it came from."""
+    out: list[tuple[PostRef, Draft | sqlite3.Row]] = []
+    for draft in store.list_drafts(status=PUBLISHED):
+        url = draft.external_id or f"draft:{draft.id}"
+        out.append((PostRef("draft", draft.id, draft.platform, url, draft.updated_at), draft))
+    for row in store.logged_broadcasts():
+        out.append((PostRef("logged", int(row["id"]), row["platform"], row["url"], row["at"]), row))
+    return out
+
+
 def sync_broadcasts(metrics: Metrics, store: Store) -> str:
     broadcasts: list[dict] = []
-    for draft in store.list_drafts(status=PUBLISHED):
+    posts = posts_out(store)
+    for ref, draft in posts:
+        if ref.via != "draft":
+            continue
         broadcasts.append(
             {
                 "kind": "broadcast",
-                "source": draft.platform,
+                "source": ref.platform,
                 "project": draft.project,
                 "version": draft.version,
-                "at": draft.updated_at,
-                "url": draft.external_id or f"draft:{draft.id}",
+                "at": ref.at,
+                "url": ref.url,
                 "detail": json.dumps(
                     {
                         "draft": draft.id,
@@ -417,15 +472,17 @@ def sync_broadcasts(metrics: Metrics, store: Store) -> str:
                 ),
             }
         )
-    for row in store.logged_broadcasts():
+    for ref, row in posts:
+        if ref.via != "logged":
+            continue
         broadcasts.append(
             {
                 "kind": "broadcast",
-                "source": row["platform"],
+                "source": ref.platform,
                 "project": row["project"],
                 "version": "",
-                "at": row["at"],
-                "url": row["url"],
+                "at": ref.at,
+                "url": ref.url,
                 "detail": json.dumps(
                     {
                         "logged": row["id"],

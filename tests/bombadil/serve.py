@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import json
+import os
 import shutil
 import socket
 import sys
@@ -145,7 +146,9 @@ def seed_metrics(path: Path, today: date | None = None) -> None:
 
     from argus_herald.metrics import Metrics
 
-    today = today or datetime.now(UTC).date()
+    # Snapshots exist up to the end of the injected day, not the wall clock: a fixed `today` gives fixed data.
+    now = datetime.now(UTC) if today is None else datetime.combine(today, datetime.max.time(), UTC)
+    today = today or now.date()
     rng = random.Random(7)
     m = Metrics(path)
     days = [today - timedelta(days=i) for i in range(120, -1, -1)]
@@ -300,7 +303,7 @@ def seed_metrics(path: Path, today: date | None = None) -> None:
         )
         if platform in ("bluesky", "mastodon"):
             for hours, scale in ((1, 1), (24, 4), (72, 6), (168, 7)):
-                if at + timedelta(hours=hours) < datetime.now(UTC):
+                if at + timedelta(hours=hours) < now:
                     metrics_rows.append(
                         {
                             "platform": platform,
@@ -365,6 +368,105 @@ def seed_metrics(path: Path, today: date | None = None) -> None:
     m.close()
 
 
+def seed_clips(store_path: Path, metrics_path: Path, now: datetime | None = None) -> None:
+    """A clip registry for the dashboard's Clips panel: one redo clip that did well (re-record
+    first), one fresh, one never posted, one whose last check failed, and one on hold."""
+    from argus_herald import clips
+    from argus_herald.metrics import Metrics
+
+    now = now or datetime.now(UTC)
+    store = Store(store_path)
+    recorded = {"status": "posted", "project_version": "0.3.0", "demo_repo": "herald-test/argus-demos"}
+    styles = clips.add(
+        store,
+        "atlas-styles",
+        demo="atlas",
+        project="argus-atlas",
+        title="Atlas map styles",
+        demo_commit="1" * 40,
+        stale_if="the style picker moves",
+        **recorded,
+    )
+    lens = clips.add(
+        store, "lens-heatmap", demo="lens", project="argus-lens", title="Lens heatmap", demo_commit="2" * 40, **recorded
+    )
+    clips.add(store, "quarry-loop", demo="quarry", project="argus-quarry", title="Quarry licence check", format="loop")
+    proof = clips.add(
+        store,
+        "proof-checkpoints",
+        demo="proof",
+        title="Proof checkpoints",
+        status="recorded",
+        project_version="0.1.0",
+        demo_repo="herald-test/argus-demos",
+        demo_commit="3" * 40,
+    )
+    clips.add(store, "pipeline-tour", title="Pipeline walkthrough", format="walkthrough", status="hold")
+
+    def checked(clip: dict, state: str, ui_files: list[str], commits: int) -> None:
+        store.save_freshness(
+            clip["id"],
+            state=state,
+            commits=commits,
+            ui_files=json.dumps(ui_files),
+            files_changed=len(ui_files) + 2,
+            head_commit="f" * 40,
+            branch="main",
+            newest_version=clip["project_version"],
+            base_commit=clip["demo_commit"],
+            base_version=clip["project_version"],
+        )
+
+    checked(styles, "redo", [f"atlas/src/styles/{n}.ts" for n in ("picker", "legend", "theme", "panel", "menu")], 6)
+    checked(lens, "fresh", [], 0)
+    checked(proof, "check", [], 2)
+    store.freshness_failed("proof-checkpoints", "GitHub answered HTTP 502", base_commit="3" * 40, base_version="0.1.0")
+    three_days = (now - timedelta(days=3)).isoformat()
+    store.conn.execute("UPDATE clip_freshness SET checked_at = ? WHERE clip_id = 'proof-checkpoints'", (three_days,))
+
+    # X posts from the last month: five plain ones are the baseline, two carry clips. They are 8 to
+    # 20 days old: inside the 30-day baseline window and past min_age_hours (24), so all are rated.
+    metrics = Metrics(metrics_path)
+    posts = [
+        (None, 100),
+        (None, 120),
+        (None, 90),
+        (None, 110),
+        (None, 100),
+        ("atlas-styles", 950),
+        ("lens-heatmap", 105),
+    ]
+    for n, (clip_id, impressions) in enumerate(posts):
+        at = now - timedelta(days=20 - 2 * n)
+        url = f"https://x.com/herald_test/status/19100000000000000{n:02d}"
+        bid = store.log_broadcast(
+            platform="twitter", url=url, kind="demo", project="", subject=f"Demo {n}", text="t", at=at.isoformat()
+        )
+        if clip_id:
+            clips.link_broadcast(store, bid, clip_id)
+        sample = {"platform": "twitter", "external_id": url, "fetched_at": (at + timedelta(days=2)).isoformat()}
+        sample.update(likes=impressions // 20, reposts=1, replies=0, quotes=0, impressions=impressions)
+        sample.update(engagements=None, link_clicks=None, profile_visits=None, source="api")
+        metrics.upsert("post_metrics", [sample])
+    metrics.close()
+    store.conn.commit()
+    store.close()
+
+
+def bind_and_announce(sock: socket.socket, ready_file: str | None) -> str:
+    """Bind and listen, then say so. A client that connects on the signal waits in the backlog
+    until uvicorn accepts; before listen() it would be refused."""
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(128)
+    url = f"http://127.0.0.1:{sock.getsockname()[1]}/"
+    if ready_file:
+        # Written whole, then moved into place: a polling reader never sees half a URL.
+        partial = Path(f"{ready_file}.tmp")
+        partial.write_text(url, encoding="utf-8")
+        os.replace(partial, ready_file)
+    return url
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--token", default="", help="Require this review token (ARGUS_HERALD_UI_TOKEN)")
@@ -379,13 +481,17 @@ def main() -> int:
     atexit.register(shutil.rmtree, root, ignore_errors=True)
     config = seed(root)
     seed_metrics(root / "metrics.sqlite")
+    seed_clips(config.store_path, root / "metrics.sqlite")
     deny = root / "denylist.txt"
     deny.write_text(DENY_TERM + "\n", encoding="utf-8")
     deny.chmod(0o600)
+    auditor = root / "auditor-denylist.txt"  # empty: the real auditor list is never read
+    auditor.write_text("", encoding="utf-8")
+    auditor.chmod(0o600)
     env = {
         "ARGUS_HERALD_UI_SECRET": "bombadil-secret",
         "ARGUS_HERALD_OPSEC_DENYLIST": str(deny),
-        "AI_AUDIT_OPSEC_DENYLIST": str(root / "no-auditor-list.txt"),
+        "AI_AUDIT_OPSEC_DENYLIST": str(auditor),
         "DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/1/fixture",
         "TELEGRAM_BOT_TOKEN": "1:fixture",
         "TELEGRAM_CHAT_ID": "@fixture",
@@ -396,10 +502,7 @@ def main() -> int:
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", 0))
-    url = f"http://127.0.0.1:{sock.getsockname()[1]}/"
-    if args.ready_file:
-        Path(args.ready_file).write_text(url, encoding="utf-8")
+    url = bind_and_announce(sock, args.ready_file)
     print(f"READY {url} (data in {root})", flush=True)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
     server.run(sockets=[sock])

@@ -20,28 +20,45 @@ LEFT, RIGHT, TOP, BOTTOM = 52, 14, 10, 22
 
 def compact(value: float) -> str:
     value = float(value)
+    if not math.isfinite(value):
+        return "–"  # a missing or overflowed point gets a placeholder, not a crash
     if abs(value) >= 1_000_000:
         return f"{value / 1_000_000:.1f}M".replace(".0M", "M")
     if abs(value) >= 10_000:
         return f"{value / 1000:.0f}K"
     if abs(value) >= 1000:
         return f"{value:,.0f}"
-    return f"{value:.0f}" if value == int(value) else f"{value:.1f}"
+    return f"{value:.0f}" if value.is_integer() else f"{value:.1f}"
+
+
+def _step(raw: float) -> float:
+    """The smallest clean step (1, 2, 2.5, 5 or 10 times a power of ten) that covers raw, or 0."""
+    if not math.isfinite(raw) or raw <= 0:
+        return 0.0
+    power = 10.0 ** math.floor(math.log10(raw))
+    step = next((m * power for m in (1, 2, 2.5, 5, 10) if m * power >= raw), 0.0)
+    return step if math.isfinite(step) else 0.0
+
+
+def _ticks(start: float, end: float, step: float) -> list[float]:
+    """start, start+step, ... up to the first tick at or past end. Each is a multiple, not a running sum."""
+    count = max(1, math.ceil((end - start) / step - 1e-9))
+    digits = max(0, 2 - math.floor(math.log10(step)))
+    return [round(start + i * step, digits) for i in range(count + 1)]
 
 
 def nice_ticks(top: float, count: int = 3) -> list[float]:
-    if top <= 0:
+    if not math.isfinite(top) or top <= 0 or count <= 0:
         return [0.0, 1.0]
-    raw = top / count
-    power = 10 ** math.floor(math.log10(raw))
-    step = next(m * power for m in (1, 2, 2.5, 5, 10) if m * power >= raw)
-    ticks = [0.0]
-    while ticks[-1] < top:
-        ticks.append(ticks[-1] + step)
-    return ticks
+    step = _step(top / count)
+    if not step:
+        return [0.0, 1.0]
+    return _ticks(0.0, top, step)
 
 
 def _log_ticks(top: float) -> list[float]:
+    if not math.isfinite(top) or top <= 0:
+        return [0.0, 1.0]
     ticks, value = [0.0], 1.0
     while value <= top * 1.0001:
         ticks.append(value)
@@ -53,15 +70,14 @@ def _log_ticks(top: float) -> list[float]:
 
 def range_ticks(lo: float, hi: float, count: int = 3) -> list[float]:
     """Clean ticks spanning lo..hi, for a line that doesn't start at zero."""
+    if not math.isfinite(lo) or not math.isfinite(hi) or count <= 0:
+        return [0.0, 1.0]
     if hi <= lo:
-        hi = lo + 1
-    raw = (hi - lo) / count
-    power = 10 ** math.floor(math.log10(raw))
-    step = next(m * power for m in (1, 2, 2.5, 5, 10) if m * power >= raw)
-    ticks = [math.floor(lo / step) * step]
-    while ticks[-1] < hi:
-        ticks.append(ticks[-1] + step)
-    return ticks
+        hi = lo + max(1.0, abs(lo) * 0.1)  # a flat line still gets a span, however large its value
+    step = _step((hi - lo) / count)
+    if not step:
+        return [lo, hi] if math.isfinite(hi) and hi > lo else [0.0, 1.0]
+    return _ticks(math.floor(lo / step) * step, hi, step)
 
 
 class Scale:
@@ -188,10 +204,10 @@ def series_panel(
     lo = None if zero or not present else min(present)
     scale = Scale(len(dates), max(present) if present else 0, height, log, lo=lo)
     parts = [
-        f'<svg class="chart" viewBox="0 0 {W} {height}" role="img" aria-labelledby="{key}-title" '
+        f'<svg class="chart" viewBox="0 0 {W} {height}" role="img" aria-labelledby="{escape(key)}-title" '
         f'data-series="{escape(key)}" data-label="{escape(title)}" '
         f'data-values="{escape(json.dumps(values))}" data-start="{dates[0].isoformat() if dates else ""}">',
-        f'<title id="{key}-title">{escape(title)}</title>',
+        f'<title id="{escape(key)}-title">{escape(title)}</title>',
     ]
     parts += _axes(scale, dates)
     if not present:

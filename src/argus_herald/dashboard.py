@@ -111,7 +111,8 @@ def referrer_group(referrer: str, own_hosts: tuple[str, ...] = ()) -> str:
 def connect(path: Path) -> sqlite3.Connection | None:
     if not path.exists():
         return None
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    # as_uri percent-encodes the path: a "?", "#" or "%" in a folder name would otherwise change which file opens
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -324,6 +325,12 @@ def broadcasts(conn, f: Filters, *, all_time: bool = False) -> list[Broadcast]:
             at = _parse(r["at"])
         except ValueError:
             continue
+        if not isinstance(detail, dict):
+            continue
+        try:
+            media = int(detail.get("media") or 0)
+        except (TypeError, ValueError):
+            media = 0
         out.append(
             Broadcast(
                 platform=r["source"],
@@ -336,7 +343,7 @@ def broadcasts(conn, f: Filters, *, all_time: bool = False) -> list[Broadcast]:
                 logged=detail.get("logged") not in (False, None),
                 drafted_by=str(detail.get("drafted_by") or ("logged" if detail.get("logged") else "template")),
                 post=str(detail.get("post") or f"{r['project']}|{detail.get('subject')}"),
-                media=int(detail.get("media") or 0),
+                media=media,
             )
         )
     _mark_overlaps(out)
@@ -358,7 +365,8 @@ def _mark_overlaps(items: list[Broadcast]) -> None:
 DELTA_METRICS = [("downloads", "Downloads"), ("views", "Views"), ("stars", "Stars"), ("referrers", "Referrer uniques")]
 
 
-def _score(row) -> int:
+def engagement_score(row) -> int:
+    """Likes, reposts, replies and quotes: the engagement every platform reports."""
     return sum(int(row[k] or 0) for k in ("likes", "reposts", "replies", "quotes"))
 
 
@@ -366,27 +374,31 @@ def _engagement(conn, b: Broadcast) -> None:
     rows = conn.execute(
         "SELECT * FROM post_metrics WHERE platform = ? AND external_id = ? ORDER BY fetched_at", (b.platform, b.url)
     ).fetchall()
-    if not rows:
+    # Compare parsed times, not strings: stored stamps differ in separator, offset and precision.
+    timed = []
+    for r in rows:
+        try:
+            timed.append((_parse(r["fetched_at"]), r))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    if not timed:
         return
+    timed.sort(key=lambda pair: pair[0])
     # Each checkpoint takes the first sample in its own window: 24h up to 72h, 7d from then on.
     for attr, after, until in (
         ("engagement_24h", timedelta(hours=24), timedelta(hours=72)),
         ("engagement_7d", timedelta(days=7), timedelta(days=3650)),
     ):
-        due, late = (b.at + after).isoformat(), (b.at + until).isoformat()
-        sample = next((r for r in rows if due <= r["fetched_at"] < late), None)
+        due, late = b.at + after, b.at + until
+        sample = next((r for at, r in timed if due <= at < late), None)
         if sample is not None:
-            setattr(b, attr, _score(sample))
-    latest = rows[-1]
+            setattr(b, attr, engagement_score(sample))
+    latest_at, latest = timed[-1]
     if latest["impressions"] is not None:
         b.impressions = int(latest["impressions"])
     # An X import isn't timed to the checkpoints: its latest sample stands in for 7d once a week has passed.
-    if (
-        b.engagement_7d is None
-        and latest["source"] == "x-analytics"
-        and _parse(latest["fetched_at"]) - b.at >= timedelta(days=7)
-    ):
-        b.engagement_7d = _score(latest)
+    if b.engagement_7d is None and latest["source"] == "x-analytics" and latest_at - b.at >= timedelta(days=7):
+        b.engagement_7d = engagement_score(latest)
 
 
 def _event_window(daily: dict[str, float], day: date) -> tuple[float | None, float | None]:
@@ -572,9 +584,10 @@ def summary_tiles(series: dict[str, list[float | None]]) -> list[dict]:
     for key, label in SERIES:
         values = series.get(key) or []
         recent, prior = values[-7:], values[-14:-7]
-        if not recent or any(v is None for v in recent):
-            continue
+        if len(recent) < 7 or any(v is None for v in recent):
+            continue  # a shorter run would be shown as a week's total
         now = sum(v for v in recent if v is not None)
-        before = sum(v for v in prior if v is not None) if prior and all(v is not None for v in prior) else None
+        full_prior = len(prior) == 7 and all(v is not None for v in prior)
+        before = sum(v for v in prior if v is not None) if full_prior else None
         tiles.append({"key": key, "label": label, "value": now, "delta": None if before is None else now - before})
     return tiles

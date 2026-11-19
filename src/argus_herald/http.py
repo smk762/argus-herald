@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from http.client import HTTPException
 from typing import Protocol
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -20,6 +21,15 @@ class HttpError(Exception):
         super().__init__(f"{method} {host} failed with HTTP {status}")
         self.status = status
         self.method = method
+
+
+class BodyTooLarge(HttpError):
+    """The response body is over the caller's limit. An HttpError (status 0), so callers that skip on one still do."""
+
+    def __init__(self, method: str, url: str, limit: int):
+        super().__init__(method, url, 0)
+        self.args = (f"{method} {urlparse(url).hostname or 'unknown-host'} answered with more than {limit} bytes",)
+        self.limit = limit
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -61,11 +71,15 @@ def read_json(http: Http, url: str) -> dict:
 
 
 def read_text(http: Http, url: str, limit: int = 1_000_000) -> str:
-    status, body = http.request("GET", url, headers={"Accept": "text/plain, text/markdown"})
+    headers = {"Accept": "text/plain, text/markdown"}
+    if isinstance(http, HttpClient):  # stops reading at the limit; another Http is only checked afterwards
+        status, body = http.request("GET", url, headers=headers, limit=limit)
+    else:
+        status, body = http.request("GET", url, headers=headers)
     if status != 200:
         raise HttpError("GET", url, status)
     if len(body) > limit:
-        raise HttpError("GET", url, status)
+        raise BodyTooLarge("GET", url, limit)
     return body.decode("utf-8", "replace")
 
 
@@ -92,7 +106,10 @@ class HttpClient:
         url: str,
         body: bytes | None = None,
         headers: Mapping[str, str] | None = None,
+        *,
+        limit: int | None = None,
     ) -> tuple[int, bytes]:
+        """`limit` caps a successful body: BodyTooLarge is raised without reading past it."""
         check_url(url)
         merged = {"User-Agent": USER_AGENT}
         if headers:
@@ -100,9 +117,24 @@ class HttpClient:
         request = Request(url, data=body, headers=merged, method=method)
         try:
             with self._opener.open(request, timeout=self.timeout) as response:
-                return response.status, response.read()
+                if limit is None:
+                    return response.status, response.read()
+                declared = response.headers.get("Content-Length") or ""
+                if declared.isdigit() and int(declared) > limit:
+                    raise BodyTooLarge(method, url, limit)
+                payload = response.read(limit + 1)
+                if len(payload) > limit:
+                    raise BodyTooLarge(method, url, limit)
+                return response.status, payload
+        except BodyTooLarge:
+            raise
         except HTTPError as exc:
-            payload = exc.read()
+            try:
+                payload = exc.read()
+            except (OSError, HTTPException) as read_exc:
+                raise HttpError(method, url, 0) from read_exc
             return exc.code, payload
-        except URLError as exc:
+        except (OSError, HTTPException) as exc:
+            # URLError, and what urllib lets through unwrapped: a timeout waiting for headers,
+            # a dropped connection, a body cut short.
             raise HttpError(method, url, 0) from exc

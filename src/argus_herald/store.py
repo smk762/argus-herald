@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from argus_herald.legacy import migrate_data_dir
-from argus_herald.models import DRAFT_FIELDS, Draft
+from argus_herald.models import CLIP_FIELDS, DRAFT_FIELDS, Draft
 
 _SCHEMA = """
 -- Release sources: "pypi" (a PyPI project) or "github" (a repo's GitHub releases).
@@ -88,6 +88,44 @@ CREATE TABLE IF NOT EXISTS logged_broadcasts (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+-- Demo clips: what each one shows and what it was recorded against. `path` is the edited file.
+CREATE TABLE IF NOT EXISTS clips (
+    id TEXT PRIMARY KEY,
+    demo TEXT NOT NULL DEFAULT '',
+    project TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    format TEXT NOT NULL DEFAULT 'clip',
+    target_seconds INTEGER,
+    status TEXT NOT NULL DEFAULT 'todo',
+    recorded_at TEXT NOT NULL DEFAULT '',
+    project_version TEXT NOT NULL DEFAULT '',
+    demo_repo TEXT NOT NULL DEFAULT '',
+    demo_commit TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    stale_if TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+-- The last freshness check of each clip (see freshness.py). base_* is what the clip was compared
+-- from; when the clip's own fields no longer match, the row is out of date. A failed check keeps
+-- the last result and fills failed_at and error.
+CREATE TABLE IF NOT EXISTS clip_freshness (
+    clip_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    commits INTEGER NOT NULL DEFAULT 0,
+    ui_files TEXT NOT NULL DEFAULT '[]',
+    files_changed INTEGER NOT NULL DEFAULT 0,
+    truncated INTEGER NOT NULL DEFAULT 0,
+    head_commit TEXT NOT NULL DEFAULT '',
+    branch TEXT NOT NULL DEFAULT '',
+    base_commit TEXT NOT NULL DEFAULT '',
+    base_version TEXT NOT NULL DEFAULT '',
+    newest_version TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    checked_at TEXT NOT NULL DEFAULT '',
+    failed_at TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS feed_sources (
     source TEXT PRIMARY KEY,
     baselined_at TEXT NOT NULL
@@ -159,6 +197,10 @@ class Store:
             self.conn.execute("ALTER TABLE drafts ADD COLUMN drafted_by TEXT NOT NULL DEFAULT 'template'")
         if "publish_at" not in columns:
             self.conn.execute("ALTER TABLE drafts ADD COLUMN publish_at TEXT")
+        # Which registry clip an attachment or a hand-logged post used (NULL: none).
+        for table in ("draft_media", "logged_broadcasts"):
+            if "clip_id" not in {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN clip_id TEXT")
 
     def _migrate_sources(self) -> None:
         """Add a source column to projects and seen (keys were PyPI names only)."""
@@ -321,7 +363,14 @@ class Store:
                 return False  # already announced as a GitHub release in a closed digest
             notes = twin["notes"] if twin["notes"].strip() else notes
             released_at = min(released_at or twin["released_at"], twin["released_at"])
-            self.conn.execute("DELETE FROM releases WHERE id = ?", (twin["id"],))
+            # One statement turns the GitHub row into the PyPI one: nothing is lost if the process
+            # stops here, and what a person set on it (excluded) stays.
+            cur = self.conn.execute(
+                "UPDATE OR IGNORE releases SET source = ?, released_at = ?, summary = ?, notes = ?, url = ? "
+                "WHERE id = ?",
+                (source, released_at, summary, notes, url, twin["id"]),
+            )
+            return bool(cur.rowcount)
         cur = self.conn.execute(
             "INSERT OR IGNORE INTO releases (source, project, version, released_at, seen_at, summary, notes, url) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -354,6 +403,15 @@ class Store:
         else:
             rows = self.conn.execute("SELECT version FROM seen WHERE source = ? AND project = ?", (source, project))
         return [row["version"] for row in rows]
+
+    def seen_versions_named(self, project: str) -> list[str]:
+        """Versions seen for a project from any source, matching its name the way PyPI does
+        (case, and '-', '_' and '.' alike)."""
+        from argus_herald.config import normalize_name
+
+        key = normalize_name(project)
+        rows = self.conn.execute("SELECT DISTINCT project, version FROM seen")
+        return [row["version"] for row in rows if normalize_name(row["project"]) == key]
 
     def create_digest(self, period_from: str, period_to: str, closes_at: str) -> int:
         """A digest for one window. Takes every open release seen before the window closed."""
@@ -442,6 +500,102 @@ class Store:
 
     def delete_logged(self, broadcast_id: int) -> bool:
         return bool(self.conn.execute("DELETE FROM logged_broadcasts WHERE id = ?", (broadcast_id,)).rowcount)
+
+    def set_logged_clip(self, broadcast_id: int, clip_id: str | None) -> bool:
+        cur = self.conn.execute(
+            "UPDATE logged_broadcasts SET clip_id = ?, updated_at = ? WHERE id = ?", (clip_id, _now(), broadcast_id)
+        )
+        return bool(cur.rowcount)
+
+    # ---- clip registry -----------------------------------------------------------------
+
+    def clips(self) -> list[dict]:
+        return [dict(row) for row in self.conn.execute("SELECT * FROM clips ORDER BY id")]
+
+    def clip(self, clip_id: str) -> dict | None:
+        row = self.conn.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone()
+        return dict(row) if row else None
+
+    def save_clips(self, rows: list[dict]) -> tuple[int, int]:
+        """Add or update clips in one transaction; each row carries `id` and the fields to set.
+        Returns (added, updated)."""
+        now = _now()
+        added = updated = 0
+        with self.transaction():
+            for row in rows:
+                fields = {k: v for k, v in row.items() if k != "id"}
+                if set(fields) - set(CLIP_FIELDS):
+                    raise ValueError(f"Unknown clip fields: {set(fields) - set(CLIP_FIELDS)}")
+                if self.conn.execute("SELECT 1 FROM clips WHERE id = ?", (row["id"],)).fetchone():
+                    sets = "".join(f"{key} = ?, " for key in fields)
+                    self.conn.execute(
+                        f"UPDATE clips SET {sets}updated_at = ? WHERE id = ?", (*fields.values(), now, row["id"])
+                    )
+                    updated += 1
+                else:
+                    names = "".join(f"{key}, " for key in fields)
+                    self.conn.execute(
+                        f"INSERT INTO clips (id, {names}created_at, updated_at) VALUES (?, {'?, ' * len(fields)}?, ?)",
+                        (row["id"], *fields.values(), now, now),
+                    )
+                    added += 1
+        return added, updated
+
+    def delete_clip(self, clip_id: str) -> bool:
+        with self.transaction():
+            self.conn.execute("DELETE FROM clip_freshness WHERE clip_id = ?", (clip_id,))
+            return bool(self.conn.execute("DELETE FROM clips WHERE id = ?", (clip_id,)).rowcount)
+
+    def clip_freshness(self) -> dict[str, dict]:
+        """The last freshness check of every clip that has one, by clip id."""
+        return {row["clip_id"]: dict(row) for row in self.conn.execute("SELECT * FROM clip_freshness")}
+
+    def save_freshness(self, clip_id: str, **fields: object) -> None:
+        """Record a completed check; it replaces the last one, failure included."""
+        row = {"clip_id": clip_id, **fields, "checked_at": _now(), "failed_at": "", "error": ""}
+        names = ", ".join(row)
+        self.conn.execute(
+            f"INSERT OR REPLACE INTO clip_freshness ({names}) VALUES ({', '.join('?' * len(row))})",
+            tuple(row.values()),
+        )
+
+    def freshness_failed(self, clip_id: str, error: str, *, base_commit: str, base_version: str) -> None:
+        """Record a check that couldn't complete. The last result is kept as it was, unless it was
+        for another commit or version of the clip (then there is no last result)."""
+        with self.transaction():
+            self.conn.execute(
+                "DELETE FROM clip_freshness WHERE clip_id = ? AND (base_commit != ? OR base_version != ?)",
+                (clip_id, base_commit, base_version),
+            )
+            self.conn.execute(
+                "INSERT INTO clip_freshness (clip_id, state, base_commit, base_version, failed_at, error) "
+                "VALUES (?, 'unknown', ?, ?, ?, ?) "
+                "ON CONFLICT(clip_id) DO UPDATE SET failed_at = excluded.failed_at, error = excluded.error",
+                (clip_id, base_commit, base_version, _now(), error[:300]),
+            )
+
+    def clip_uses(self, clip_id: str) -> list[dict]:
+        """Every post that used a clip: drafts it is attached to, then hand-logged broadcasts."""
+        drafts = self.conn.execute(
+            "SELECT DISTINCT 'draft' AS via, d.id AS id, d.platform AS platform, d.status AS status, "
+            "d.updated_at AS at, COALESCE(d.external_id, '') AS ref "
+            "FROM draft_media m JOIN drafts d ON d.id = m.draft_id WHERE m.clip_id = ? ORDER BY d.id",
+            (clip_id,),
+        ).fetchall()
+        logged = self.conn.execute(
+            "SELECT 'logged' AS via, id, platform, 'posted' AS status, at, url AS ref FROM logged_broadcasts "
+            "WHERE clip_id = ? ORDER BY at, id",
+            (clip_id,),
+        ).fetchall()
+        return [dict(row) for row in (*drafts, *logged)]
+
+    def clip_links(self) -> list[tuple[str, str, int]]:
+        """Every (clip id, 'draft' or 'logged', draft or broadcast id) link, for all clips at once."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT clip_id, 'draft', draft_id FROM draft_media WHERE clip_id IS NOT NULL "
+            "UNION SELECT clip_id, 'logged', id FROM logged_broadcasts WHERE clip_id IS NOT NULL"
+        )
+        return [(str(clip_id), via, int(ref)) for clip_id, via, ref in rows]
 
     def feed_baselined(self, source: str) -> bool:
         row = self.conn.execute("SELECT 1 FROM feed_sources WHERE source = ?", (source,)).fetchone()
@@ -538,14 +692,25 @@ class Store:
             return None
         return self.get(draft_id)
 
-    def add_media(self, draft_id: int, *, kind: str, path: str, name: str, alt: str, size: int, removed: str) -> int:
+    def add_media(
+        self,
+        draft_id: int,
+        *,
+        kind: str,
+        path: str,
+        name: str,
+        alt: str,
+        size: int,
+        removed: str,
+        clip_id: str | None = None,
+    ) -> int:
         position = self.conn.execute(
             "SELECT COALESCE(MAX(position), -1) + 1 FROM draft_media WHERE draft_id = ?", (draft_id,)
         ).fetchone()[0]
         cur = self.conn.execute(
-            "INSERT INTO draft_media (draft_id, position, kind, path, name, alt, bytes, removed, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (draft_id, position, kind, path, name, alt, size, removed, _now()),
+            "INSERT INTO draft_media (draft_id, position, kind, path, name, alt, bytes, removed, created_at, clip_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (draft_id, position, kind, path, name, alt, size, removed, _now(), clip_id),
         )
         return int(cur.lastrowid)
 

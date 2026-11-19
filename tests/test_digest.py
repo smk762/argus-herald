@@ -260,3 +260,140 @@ def test_cli_digest_status_exclude_and_promote(tmp_path, capsys):
     assert main([*base, "digest", "exclude", "argus-lens==9.9"]) == 2
     assert main([*base, "promote", "argus-lens==0.13.0"]) == 0
     assert "headline drafts: #1, #2" in capsys.readouterr().out
+
+
+def test_cli_promote_finds_a_github_only_release(tmp_path, capsys):
+    from argus_herald.cli import main
+
+    _config(tmp_path)
+    store = Store(tmp_path / "s.sqlite")
+    store.add_release(
+        project="argus-herald",
+        version="0.2.0",
+        released_at="2099-01-01T00:00:00+00:00",
+        summary="",
+        notes=ADDED,
+        url="https://github.com/smk762/argus-herald/releases/tag/v0.2.0",
+        source="github",
+    )
+    store.close()
+    base = [
+        "--config",
+        str(tmp_path / "c.yaml"),
+        "--env",
+        str(tmp_path / "no.env"),
+        "--store",
+        str(tmp_path / "s.sqlite"),
+    ]
+    assert main([*base, "promote", "argus-herald==0.2.0"]) == 0
+    assert "headline drafts: #" in capsys.readouterr().out
+
+
+def test_notable_names_the_newest_release_of_a_package(tmp_path):
+    from argus_herald.digest import notable
+
+    store = Store(tmp_path / "s.sqlite")
+    # Reversed character by character, the older stamp sorts first; the newer one must win.
+    for version, when in (("0.4.1", "2026-11-17T00:00:09+00:00"), ("0.4.2", "2026-11-25T00:00:01+00:00")):
+        store.add_release(
+            project="argus-atlas",
+            version=version,
+            released_at=when,
+            summary="",
+            notes=f"### Fixed\n- Fix in {version}\n",
+            url="",
+        )
+    for version, when in (("0.2.1", "2026-11-18T10:00:00+00:00"), ("0.2.2", "2026-11-19T08:00:05+00:00")):
+        store.add_release(
+            project="argus-lens",
+            version=version,
+            released_at=when,
+            summary="",
+            notes=f"### Fixed\n- Fix in {version}\n",
+            url="",
+        )
+    picked = notable(store, store.releases(open_only=True))
+    assert [(row["project"], row["version"]) for row, _line, _suggested in picked] == [
+        ("argus-atlas", "0.4.2"),
+        ("argus-lens", "0.2.2"),
+    ]
+    store.close()
+
+
+@pytest.mark.parametrize("slug", ["../../escaped", "/abs/escaped", "2026-11-18-pkg/sub-1-0", "..", ".hidden"])
+def test_release_page_stays_inside_the_site_dir(tmp_path, gate, slug):
+    from argus_herald.digest import _write_release_page
+
+    cfg = _config(tmp_path)
+    site = Path(cfg.digest.site_dir)
+    status = _write_release_page(cfg.digest, slug, "page text", gate)
+    written = [p for p in tmp_path.rglob("*.md")]
+    assert all(p.parent == site and not p.name.startswith(".") for p in written), status
+    assert not (tmp_path / "escaped.md").exists() and not Path("/abs/escaped.md").exists()
+    assert status.startswith("wrote ") == bool(written)
+
+
+def test_cli_digest_rebuild_refuses_an_id_that_is_not_a_number(tmp_path, capsys):
+    from argus_herald.cli import main
+
+    _config(tmp_path)
+    base = [
+        "--config",
+        str(tmp_path / "c.yaml"),
+        "--env",
+        str(tmp_path / "no.env"),
+        "--store",
+        str(tmp_path / "s.sqlite"),
+    ]
+    for ref in ("#3", "2026-11-16", "3.0", "\u00b3"):
+        assert main([*base, "digest", "rebuild", ref]) == 2
+        assert "isn't a digest id" in capsys.readouterr().err
+
+
+def test_a_datetime_anchor_becomes_a_date(tmp_path):
+    cfg = load_config_text(tmp_path, "digest:\n  anchor: 2026-11-16 09:00:00\n")
+    assert cfg.digest.anchor == date(2026, 11, 16) and type(cfg.digest.anchor) is date
+
+
+def test_yaml_scalars_escape_what_yaml_rejects_or_folds():
+    import yaml
+
+    from argus_herald.digest import _yaml
+
+    for value in ("caf\u00e9 \u2014 fine", "a\u0085b", "a\u2028b\u2029c", "del\x7f c1\x9f", "\ufeffbom", 'q"\\'):
+        assert yaml.safe_load(_yaml(value)) == value
+    assert "caf\u00e9" in _yaml("caf\u00e9")  # ordinary text stays readable
+    assert _yaml("lone \udc80").encode("utf-8") == b'"lone ?"'
+
+
+def test_a_page_write_that_fails_keeps_the_old_page(tmp_path, gate, monkeypatch):
+    import os
+
+    from argus_herald.digest import write_page
+
+    cfg = _config(tmp_path)
+    store = Store(cfg.store_path)
+    digest_id = _digest_with(store, [("0.13.0", "2026-11-18T00:00:00+00:00", ADDED)])
+    page = tmp_path / "site" / "slug.md"
+    assert write_page(store, cfg.digest, digest_id, "slug", "first\n", gate) == f"wrote {page}"
+    assert page.stat().st_mode & 0o777 == 0o666 & ~_umask()
+
+    def full_disk(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", full_disk)
+    with pytest.raises(OSError, match="No space left"):
+        write_page(store, cfg.digest, digest_id, "slug", "second\n", gate)
+    monkeypatch.undo()
+    assert page.read_text(encoding="utf-8") == "first\n"
+    assert [p.name for p in page.parent.iterdir()] == ["slug.md"]  # no temporary file left behind
+    assert write_page(store, cfg.digest, digest_id, "slug", "second\n", gate) == f"wrote {page}"  # still ours to update
+    store.close()
+
+
+def _umask():
+    import os
+
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask

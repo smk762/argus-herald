@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -24,7 +26,7 @@ from argus_herald.config import (
 )
 from argus_herald.http import HttpClient, HttpError
 from argus_herald.legacy import adopt_legacy_env, warn_once
-from argus_herald.models import APPROVED, PENDING, POST_KINDS, Draft, Post
+from argus_herald.models import APPROVED, CLIP_FIELDS, CLIP_FORMATS, CLIP_STATUSES, PENDING, POST_KINDS, Draft, Post
 from argus_herald.platforms import Publisher, configured_publishers
 from argus_herald.privacy import Gate, GateUnavailable, load_gate
 from argus_herald.pypi import ProfileUnavailable, discover_projects
@@ -53,6 +55,8 @@ from argus_herald.workflow import (
     rebaseline,
     reject,
     reminder_due,
+    remove_media,
+    set_media_alt,
 )
 
 log = logging.getLogger("argus_herald")
@@ -136,6 +140,8 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
         return cmd_publish(config, store, by_id, http, _ids(args, store), args.dry_run, _gate(config))
     if args.command == "media":
         return cmd_media(config, store, args)
+    if args.command == "clips":
+        return cmd_clips(config, store, args, http)
     if args.command == "log-broadcast":
         return cmd_log_broadcast(store, args)
     if args.command == "broadcasts":
@@ -239,6 +245,15 @@ def cmd_discover_check(config: Config, http, env: Mapping[str, str]) -> int:
 
 
 def cmd_media(config: Config, store: Store, args: argparse.Namespace) -> int:
+    if args.action == "add" and args.clip:
+        from argus_herald import clips
+
+        if len(args.args) != 1 or not args.args[0].isdigit() or not args.alt:
+            raise ReviewError("Usage: argus-herald media add <draft id> --clip <clip id> --alt '...' [--all-drafts]")
+        ids = clips.attach(store, config.media_root, int(args.args[0]), args.clip, args.alt, all_drafts=args.all_drafts)
+        item = store.media_item(ids[0])
+        print(f"Attached clip {item['clip_id']} as {item['kind']} to {len(ids)} draft(s); removed: {item['removed']}")
+        return 0
     if args.action == "add":
         if len(args.args) != 2 or not args.alt:
             raise ReviewError("Usage: argus-herald media add <draft id> <file> --alt '...' [--all-drafts]")
@@ -250,15 +265,16 @@ def cmd_media(config: Config, store: Store, args: argparse.Namespace) -> int:
     if args.action == "list":
         for item in store.media(int(args.args[0])):
             print(f"#{item['id']:<4} {item['kind']:<6} {item['bytes'] // 1000:>7} kB  {item['name']}")
-            print(f"      alt: {item['alt'] or '(missing)'}   removed: {item['removed']}")
+            clip = f"   clip: {item['clip_id']}" if item["clip_id"] else ""
+            print(f"      alt: {item['alt'] or '(missing)'}   removed: {item['removed']}{clip}")
         return 0
     if args.action == "alt":
-        if len(args.args) != 2 or not store.set_alt(int(args.args[0]), args.args[1].strip()):
+        if len(args.args) != 2 or not set_media_alt(store, int(args.args[0]), args.args[1].strip()):
             raise ReviewError("Usage: argus-herald media alt <media id> 'text'")
         print("Saved.")
         return 0
     if args.action == "remove":
-        if not args.args or not store.remove_media(int(args.args[0])):
+        if not args.args or not remove_media(store, int(args.args[0])):
             raise ReviewError("Usage: argus-herald media remove <media id>")
         print("Removed.")
         return 0
@@ -275,17 +291,100 @@ def cmd_log_broadcast(store: Store, args: argparse.Namespace) -> int:
         "text": args.text,
         "at": args.at,
     }
+    from argus_herald import clips
+
+    if args.clip:
+        clips.require(store, args.clip)  # before anything is written
     if args.id:
         edit_logged(store, args.id, **fields)
+        if args.clip:
+            clips.link_broadcast(store, args.id, args.clip)
         print(f"Updated logged broadcast {args.id}.")
         return 0
     if not args.platform or not args.url:
         raise ReviewError("--platform and --url are required (or --id to edit one)")
     defaults = {"kind": "other", "project": "", "subject": "", "text": ""}
     broadcast_id = log_broadcast(store, **{k: (v if v is not None else defaults.get(k)) for k, v in fields.items()})
+    if args.clip:
+        clips.link_broadcast(store, broadcast_id, args.clip)
     row = store.logged_broadcast(broadcast_id)
-    print(f"Logged #{broadcast_id}: {row['platform']} {row['url']} at {row['at']}")
+    used = f" (clip {row['clip_id']})" if row["clip_id"] else ""
+    print(f"Logged #{broadcast_id}: {row['platform']} {row['url']} at {row['at']}{used}")
     return 0
+
+
+def cmd_clips(config: Config, store: Store, args: argparse.Namespace, http) -> int:
+    from argus_herald import clips, freshness
+
+    given = {key: getattr(args, key) for key in CLIP_FIELDS if getattr(args, key) is not None}
+    action, rest = args.action, args.args
+    if action not in ("add", "set") and given:
+        raise ReviewError(f"clips {action} takes no field options; change a clip with `clips set <clip id> ...`")
+    if action == "list":
+        print(clips.report(store, performance=_clip_performance(config, store)))
+        return 0
+    if action == "refresh":
+        if rest:
+            raise ReviewError("Usage: argus-herald clips refresh")
+        summary = freshness.refresh(store, http, config, (os.environ.get("GITHUB_TOKEN") or "").strip())
+        print(f"Checked {summary.line}")
+        for line in summary.errors:
+            print(f"error {line}", file=sys.stderr)
+        return 1 if summary.errors else 0
+    if action == "export":
+        if len(rest) > 1:
+            raise ReviewError("Usage: argus-herald clips export [file]")
+        text = clips.export_csv(store)
+        if rest:
+            try:
+                Path(rest[0]).expanduser().write_text(text, encoding="utf-8", newline="")
+            except OSError as exc:
+                raise ReviewError(f"Can't write {rest[0]}: {exc}") from exc
+            print(f"Wrote {len(store.clips())} clips to {rest[0]}")
+        else:
+            sys.stdout.write(text)
+        return 0
+    if action == "import":
+        if len(rest) != 1:
+            raise ReviewError("Usage: argus-herald clips import <csv>")
+        try:
+            text = Path(rest[0]).expanduser().read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ReviewError(f"Can't read {rest[0]}: {exc}") from exc
+        added, updated, ignored = clips.import_csv(store, text)
+        print(f"Imported {added + updated} clips ({added} new, {updated} updated).")
+        if ignored:
+            print(f"Columns the registry doesn't keep: {', '.join(ignored)}")
+        return 0
+    if len(rest) != 1:
+        raise ReviewError(
+            f"Usage: argus-herald clips {action} <clip id>" + (" [--field value ...]" * (action in ("add", "set")))
+        )
+    if action == "add":
+        clip = clips.add(store, rest[0], **given)
+        print(f"Added clip {clip['id']} ({clip['status']}).")
+    elif action == "set":
+        clip = clips.update(store, rest[0], **given)
+        print(f"Updated clip {clip['id']}: {', '.join(f'{key}={clip[key]}' for key in given)}")
+    elif action == "show":
+        print(clips.describe(store, rest[0], _clip_performance(config, store)))
+    elif action == "remove":
+        clips.remove(store, rest[0])
+        print(f"Removed clip {rest[0]}.")
+    elif action == "ack":
+        clip = freshness.ack(store, rest[0])
+        print(
+            f"Clip {clip['id']} is fresh: demo_commit={clip['demo_commit']} project_version={clip['project_version']}"
+        )
+    return 0
+
+
+def _clip_performance(config: Config, store: Store) -> dict:
+    """Every clip's performance, read from metrics.sqlite (never created here)."""
+    from argus_herald.metrics import metrics_path
+    from argus_herald.performance import clip_performance
+
+    return clip_performance(store, metrics_path(config), config.clips.performance)
 
 
 def cmd_broadcasts(store: Store, args: argparse.Namespace) -> int:
@@ -828,13 +927,25 @@ def cmd_edit(store: Store, publishers: Mapping[str, Publisher], draft_id: int) -
     draft = _one(store, draft_id)
     publisher = _publisher(publishers, draft.platform)
     original = f"title: {draft.title}\n\n{draft.body}\n"
-    path = _temp_path(draft_id)
-    path.write_text(original, encoding="utf-8")
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
-    completed = subprocess.run([editor, str(path)], check=False)
-    if completed.returncode != 0:
-        raise ReviewError(f"Editor exited {completed.returncode}. The draft was not changed.")
-    title, body = parse_edit(path.read_text(encoding="utf-8"), draft.title)
+    try:
+        command = shlex.split(editor)  # "code --wait", "emacsclient -t"
+    except ValueError as exc:
+        raise ReviewError(f"Can't read the editor command {editor!r}: {exc}") from exc
+    if not command:
+        raise ReviewError("The editor command is empty. Set VISUAL or EDITOR.")
+    path = _temp_path(draft_id)
+    try:
+        path.write_text(original, encoding="utf-8")
+        try:
+            completed = subprocess.run([*command, str(path)], check=False)
+        except OSError as exc:
+            raise ReviewError(f"Can't run the editor {editor!r}: {exc}. The draft was not changed.") from exc
+        if completed.returncode != 0:
+            raise ReviewError(f"Editor exited {completed.returncode}. The draft was not changed.")
+        title, body = parse_edit(path.read_text(encoding="utf-8"), draft.title)
+    finally:
+        path.unlink(missing_ok=True)
     edit_draft(store, publisher, draft_id, title, body)
     print(f"Updated draft {draft_id}. It is pending approval.")
     return 0
@@ -892,10 +1003,19 @@ def cmd_compose(config: Config, store: Store, publishers: list[Publisher], args:
     media = list(zip(args.media or [], args.alt or [], strict=False))
     if len(args.media or []) != len(args.alt or []):
         raise ReviewError("Give one --alt for each --media, in the same order")
+    sources = [(Path(path).expanduser(), alt) for path, alt in media]
+    if sources:
+        from argus_herald.media import MediaError
+        from argus_herald.media import clean as clean_media
+    for source, _alt in sources:  # every file must clean before a draft exists: a bad path saves nothing
+        try:
+            clean_media(source, config.media_root / "clean")
+        except MediaError as exc:
+            raise ReviewError(str(exc)) from exc
     ids = compose(store, publishers, post)
-    if ids and media:
-        for path, alt in media:
-            attach_media(store, config.media_root, ids[0], Path(path).expanduser(), alt, all_drafts=True)
+    if ids:
+        for source, alt in sources:
+            attach_media(store, config.media_root, ids[0], source, alt, all_drafts=True)
     for draft_id in ids:
         draft = store.get(draft_id)
         if draft:
@@ -909,10 +1029,17 @@ def _release_ref(store: Store, ref: str):
     if "==" not in ref:
         raise ReviewError("Name a release as project==version")
     project, version = ref.split("==", 1)
-    row = store.release(project, version)
+    # A project that isn't on the PyPI list may still have a GitHub release (sources.github).
+    row = store.release(project, version) or store.release(project, version, source="github")
     if row is None:
         raise ReviewError(f"{ref} isn't a collected release (digest mode collects releases as they're seen)")
     return row
+
+
+def _digest_id(ref: str) -> int:
+    if not ref.isascii() or not ref.isdigit():
+        raise ReviewError(f"{ref!r} isn't a digest id. Use the number that argus-herald digest lists.")
+    return int(ref)
 
 
 def _digest_settings(config: Config):
@@ -940,8 +1067,8 @@ def cmd_digest(config: Config, store: Store, publishers: list[Publisher], args: 
         except GateUnavailable:
             gate = None
         backend = _backend(config)
-        for ref in args.refs:
-            ids, status = build_digest(store, settings, publishers, int(ref), gate, backend)
+        for ref, digest_id in [(ref, _digest_id(ref)) for ref in args.refs]:  # all checked before any rebuild
+            ids, status = build_digest(store, settings, publishers, digest_id, gate, backend)
             print(f"digest {ref}: new drafts {', '.join(f'#{i}' for i in ids) or 'none'}; {status}")
         return 0
     now = datetime.now(UTC)
@@ -1194,6 +1321,7 @@ def _parser() -> argparse.ArgumentParser:
     logb.add_argument("--text", help="What it said, for the dashboard")
     logb.add_argument("--at", help="When it was posted (ISO date or timestamp; default now, UTC)")
     logb.add_argument("--id", type=int, help="Edit this logged broadcast instead of adding one")
+    logb.add_argument("--clip", help="The registry clip this post used (see `clips`)")
 
     bcasts = sub.add_parser("broadcasts", help="List or delete broadcasts logged by hand")
     bcasts.add_argument("action", nargs="?", default="list", choices=("list", "delete"))
@@ -1265,7 +1393,35 @@ def _parser() -> argparse.ArgumentParser:
         "args", nargs="*", help="add: <draft id> <file>; list: <draft id>; alt: <media id> 'text'; remove: <media id>"
     )
     media_cmd.add_argument("--alt", help="Alt text (required for add)")
+    media_cmd.add_argument("--clip", help="add: attach this registry clip's file instead of naming a file")
     media_cmd.add_argument("--all-drafts", action="store_true", help="Attach to every draft of the same post")
+
+    clips_cmd = sub.add_parser(
+        "clips", help="The demo clip registry: list, add, set, show, import, export, refresh, ack"
+    )
+    clips_cmd.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=("list", "add", "set", "show", "remove", "import", "export", "refresh", "ack"),
+    )
+    clips_cmd.add_argument("args", nargs="*", help="add/set/show/remove/ack: <clip id>; import: <csv>; export: [file]")
+    clips_cmd.add_argument("--demo", help="The demo it shows")
+    clips_cmd.add_argument("--project", help="The package behind the demo")
+    clips_cmd.add_argument("--title")
+    clips_cmd.add_argument("--format", choices=CLIP_FORMATS)
+    clips_cmd.add_argument("--target-seconds", dest="target_seconds", help="Planned length")
+    clips_cmd.add_argument("--status", choices=CLIP_STATUSES)
+    clips_cmd.add_argument(
+        "--recorded-at", dest="recorded_at", help="ISO date or timestamp (default: today, on --status recorded)"
+    )
+    clips_cmd.add_argument(
+        "--project-version", dest="project_version", help="The package version it was recorded against"
+    )
+    clips_cmd.add_argument("--demo-repo", dest="demo_repo", help="The demo's source repository")
+    clips_cmd.add_argument("--demo-commit", dest="demo_commit", help="The demo commit that was live when recorded")
+    clips_cmd.add_argument("--path", help="The edited file")
+    clips_cmd.add_argument("--stale-if", dest="stale_if", help="What change would date this clip")
 
     check = sub.add_parser("check", help="Run the privacy gate over drafts (default: pending and approved)")
     check.add_argument("ids", nargs="*", type=int)
@@ -1392,5 +1548,7 @@ def _copy(source: Path, dest: Path, force: bool) -> None:
 
 
 def _temp_path(draft_id: int) -> Path:
-    directory = Path(os.environ.get("TMPDIR") or "/tmp")
-    return directory / f"argus-herald-{draft_id}.txt"
+    """A new, private (0600) file with a random name: nobody else can have made it first."""
+    handle, name = tempfile.mkstemp(prefix=f"argus-herald-{draft_id}-", suffix=".txt")
+    os.close(handle)
+    return Path(name)

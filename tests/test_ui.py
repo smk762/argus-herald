@@ -7,7 +7,7 @@ from argus_herald.cli import main
 from argus_herald.config import load_config
 from argus_herald.platforms import load_publishers
 from argus_herald.store import Store
-from argus_herald.ui.app import account_links, assert_ui_bind, create_app
+from argus_herald.ui.app import _public_url, account_links, assert_ui_bind, create_app
 
 
 def _config(tmp_path):
@@ -138,19 +138,40 @@ def test_approve_publish_and_confirm_patreon(tmp_path):
     store.close()
 
 
-def test_reject_and_missing_csrf(tmp_path):
-    app, _config = _app(tmp_path)
+def _status(config, draft_id):
+    store = Store(config.store_path)
+    try:
+        return store.get(draft_id).status
+    finally:
+        store.close()
+
+
+def test_reject_then_approve_is_refused_as_stale(tmp_path):
+    app, config = _app(tmp_path)
     client = TestClient(app)
     draft = client.get("/drafts/1")
-    rejected = client.post(
-        "/drafts/1/reject",
-        data={"csrf": _csrf(draft.text), "note": "hold"},
-        follow_redirects=True,
-    )
+    token = _csrf(draft.text)
+    rejected = client.post("/drafts/1/reject", data={"csrf": token, "note": "hold"}, follow_redirects=True)
     assert "Rejected" in rejected.text
     assert "hold" in rejected.text
-    stale = client.post("/drafts/1/approve", data={"title": "", "body": "x"})
-    assert stale.status_code == 400
+    # A valid token and a valid form: only the draft's state is in the way.
+    stale = client.post("/drafts/1/approve", data={"csrf": token, "title": "", "body": "x"}, follow_redirects=True)
+    assert "This form expired" not in stale.text
+    assert _status(config, 1) == "rejected"
+
+
+@pytest.mark.parametrize("csrf", [None, "not-the-token"])
+def test_approve_without_the_csrf_token_is_refused(tmp_path, csrf):
+    app, config = _app(tmp_path)
+    client = TestClient(app)
+    page = client.get("/drafts/2")  # still pending, and the form below is the page's own
+    form = {"title": "argus-atlas 0.2.0", "body": "argus-atlas 0.2.0 is out."}
+    refused = client.post("/drafts/2/approve", data=form if csrf is None else {**form, "csrf": csrf})
+    assert refused.status_code == 400 and "This form expired" in refused.text
+    assert _status(config, 2) == "pending"
+    # The same form with the token goes through, so the token was the only thing missing.
+    client.post("/drafts/2/approve", data={**form, "csrf": _csrf(page.text)})
+    assert _status(config, 2) == "approved"
 
 
 def test_token_gates_the_queue(tmp_path):
@@ -550,3 +571,30 @@ def test_schedule_on_approve_and_change_it(tmp_path):
     assert "That time has passed" in past.text
     cleared = client.post("/drafts/1/schedule", data={"csrf": _csrf(past.text), "when": "clear"}, follow_redirects=True)
     assert "Unscheduled." in cleared.text and "Not scheduled" in cleared.text
+
+
+def test_removing_media_sends_an_approved_draft_back_to_review(tmp_path):
+    from PIL import Image
+
+    from argus_herald.models import APPROVED, PENDING
+    from argus_herald.workflow import attach_media
+
+    app, config = _app(tmp_path)
+    client = TestClient(app)
+    Image.new("RGB", (16, 16), (0, 90, 0)).save(tmp_path / "shot.png")
+    store = Store(config.store_path)
+    (media_id,) = attach_media(store, config.media_root, 1, tmp_path / "shot.png", "A green square")
+    assert store.transition(1, (PENDING,), APPROVED) is not None
+    store.close()
+    page = client.get("/drafts/1")
+    removed = client.post(f"/media/{media_id}/remove", data={"csrf": _csrf(page.text)}, follow_redirects=True)
+    assert "Removed shot.png" in removed.text
+    store = Store(config.store_path)
+    assert store.media(1) == [] and store.get(1).status == PENDING  # the post changed: approve it again
+    store.close()
+
+
+def test_public_url_drops_a_url_that_does_not_parse():
+    assert _public_url("http://[::1") is None
+    assert _public_url("https://[zz]/x") is None
+    assert _public_url("https://example.org/a?b=1") == "https://example.org/a?b=1"

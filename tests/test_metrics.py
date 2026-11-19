@@ -138,3 +138,56 @@ def test_cli_collect_reports_errors(tmp_path, capsys, monkeypatch):
     err = capsys.readouterr().err
     assert "error pypi_downloads" in err and "skipped GitHub traffic" in err
     assert (tmp_path / "metrics.sqlite").exists()
+
+
+class Stargazers:
+    """GitHub's list, which shrinks when someone unstars."""
+
+    def __init__(self, logins):
+        self.logins = list(logins)
+        self.pages = []
+
+    def request(self, method, url, body=None, headers=None):
+        page = int(url.rsplit("page=", 1)[1])
+        self.pages.append(page)
+        items = [{"starred_at": "2026-11-10T00:00:00Z", "user": {"login": login}} for login in self.logins]
+        return 200, json.dumps(items[(page - 1) * 100 : page * 100]).encode()
+
+
+def test_new_stars_are_found_after_unstars(tmp_path):
+    from argus_herald.metrics import collect_stars
+
+    m = Metrics(tmp_path / "m.sqlite")
+    http = Stargazers(f"u{i}" for i in range(200))
+    collect_stars(m, http, "smk762", ["argus-atlas"], "t")
+    assert m.count("gh_stars", repo="argus-atlas") == 200
+    # One unstar, one new star: the new one is at index 199, on page 2, not page 3.
+    http.logins = [f"u{i}" for i in range(200) if i != 5] + ["new-a"]
+    assert "(1 new)" in collect_stars(m, http, "smk762", ["argus-atlas"], "t")
+    # Many unstars: the list is two pages shorter than the local count says.
+    http.logins = [f"u{i}" for i in range(40)] + ["new-b", "new-c"]
+    http.pages.clear()
+    assert "(2 new)" in collect_stars(m, http, "smk762", ["argus-atlas"], "t")
+    assert http.pages == [2, 1]
+    # A steady list is read from the page the known stars end on.
+    m2 = Metrics(tmp_path / "m2.sqlite")
+    steady = Stargazers(f"u{i}" for i in range(250))
+    collect_stars(m2, steady, "smk762", ["argus-atlas"], "t")
+    steady.pages.clear()
+    assert "(0 new)" in collect_stars(m2, steady, "smk762", ["argus-atlas"], "t")
+    assert steady.pages == [2, 3]
+
+
+def test_an_interrupted_transaction_is_rolled_back(tmp_path):
+    import pytest
+
+    m = Metrics(tmp_path / "m.sqlite")
+    row = {"repo": "argus-atlas", "user_hash": "h", "starred_at": "2026-11-10T00:00:00Z"}
+    for interrupt in (KeyboardInterrupt, SystemExit, GeneratorExit):
+        with pytest.raises(interrupt), m.transaction():
+            m.conn.execute(
+                "INSERT INTO gh_stars (repo, user_hash, starred_at) VALUES (:repo, :user_hash, :starred_at)", row
+            )
+            raise interrupt
+        assert not m.conn.in_transaction and m.count("gh_stars") == 0
+    assert m.upsert("gh_stars", [row]) and m.count("gh_stars") == 1  # the connection still works

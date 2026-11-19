@@ -18,6 +18,7 @@ from argus_herald.feeds import parse_atom
 from argus_herald.http import Http, HttpError
 
 API = "https://api.github.com"
+MAX_PAGES = 50  # 100 releases a page
 _VERSION = re.compile(r"^[vV]?(\d+\.\d+(?:\.\d+)?(?:[-.]?[A-Za-z0-9.]+)?)$")
 
 
@@ -45,19 +46,27 @@ def list_releases(http: Http, owner: str, repo: str, token: str = "") -> list[Gi
 
     out: list[GitHubRelease] = []
     if token:
-        url = f"{API}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/releases?per_page=100"
-        status, body = http.request(
-            "GET",
-            url,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-                "Authorization": f"Bearer {token}",
-            },
-        )
-        if status != 200:
-            raise HttpError("GET", url, status)
-        for item in json.loads(body.decode("utf-8")):
+        items: list[dict] = []
+        for page in range(1, MAX_PAGES + 1):
+            url = f"{API}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/releases?per_page=100&page={page}"
+            status, body = http.request(
+                "GET",
+                url,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+            if status != 200:
+                raise HttpError("GET", url, status)
+            batch = json.loads(body.decode("utf-8"))
+            if not isinstance(batch, list):
+                raise ValueError("Unexpected GitHub response")
+            items.extend(item for item in batch if isinstance(item, dict))
+            if len(batch) < 100:
+                break
+        for item in items:
             if item.get("draft"):
                 continue
             version = version_from_tag(str(item.get("tag_name") or ""))
@@ -101,6 +110,71 @@ def list_releases(http: Http, owner: str, repo: str, token: str = "") -> list[Gi
     return out
 
 
+COMPARE_FILES = 300  # GitHub lists at most this many changed files in a comparison
+COMPARE_LIMIT = 25_000_000  # bytes; a comparison carries every patch
+
+
+@dataclass(frozen=True)
+class Comparison:
+    """What changed on `head` since `base`."""
+
+    ahead_by: int  # commits on head that base doesn't have
+    head_commit: str  # full sha of head at the time of the call
+    files: tuple[str, ...]  # changed paths, renamed files under both names
+    truncated: bool  # GitHub stopped listing files at COMPARE_FILES
+    behind_by: int = 0  # commits on base that head doesn't have: base isn't on head's branch (yet)
+
+
+def compare(http: Http, owner: str, repo: str, base: str, head: str, token: str = "") -> Comparison:
+    """Compare two refs of a repo. Works without a token for public repos (60 calls an hour)."""
+    from argus_herald.http import BodyTooLarge, HttpClient
+
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    repo_url = f"{API}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
+    url = f"{repo_url}/compare/{quote(base, safe='')}...{quote(head, safe='')}"
+    if isinstance(http, HttpClient):  # stops reading at the limit
+        status, body = http.request("GET", url, headers=headers, limit=COMPARE_LIMIT)
+    else:
+        status, body = http.request("GET", url, headers=headers)
+    if status != 200:
+        raise HttpError("GET", url, status)
+    if len(body) > COMPARE_LIMIT:
+        raise BodyTooLarge("GET", url, COMPARE_LIMIT)
+    data = json.loads(body.decode("utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("ahead_by"), int):
+        raise ValueError("Unexpected GitHub response")
+    raw_files = [f for f in data.get("files") or [] if isinstance(f, dict)]
+    names: dict[str, None] = {}
+    for item in raw_files:
+        for key in ("filename", "previous_filename"):
+            if item.get(key):
+                names[str(item[key])] = None
+    commits = [c for c in data.get("commits") or [] if isinstance(c, dict)]
+    if data["ahead_by"] == 0:  # head is base or one of its ancestors, so it is the merge base
+        head_commit = str((data.get("merge_base_commit") or {}).get("sha") or "")
+    elif commits and len(commits) == data.get("total_commits"):
+        head_commit = str(commits[-1].get("sha") or "")
+    else:
+        head_commit = ""
+    if not head_commit:  # GitHub lists at most 250 commits; ask for the tip by itself
+        tip_url = f"{repo_url}/commits/{quote(head, safe='')}"
+        status, body = http.request("GET", tip_url, headers={**headers, "Accept": "application/vnd.github.sha"})
+        if status != 200:
+            raise HttpError("GET", tip_url, status)
+        head_commit = body.decode("utf-8", "replace").strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", head_commit):
+        raise ValueError("GitHub did not name the head commit")
+    return Comparison(
+        ahead_by=int(data["ahead_by"]),
+        head_commit=head_commit,
+        files=tuple(names),
+        truncated=len(raw_files) >= COMPARE_FILES,
+        behind_by=data["behind_by"] if type(data.get("behind_by")) is int and data["behind_by"] > 0 else 0,
+    )
+
+
 class _Text(HTMLParser):
     """Rough HTML to Markdown-ish text: headings, list items and paragraphs keep their shape."""
 
@@ -137,6 +211,7 @@ def html_to_text(markup: str) -> str:
         return ""
     parser = _Text()
     parser.feed(markup)
+    parser.close()  # flushes text held back as a possible entity or tag, such as a body ending in "R&D"
     text = "".join(parser.parts)
     lines = [line.rstrip() for line in text.splitlines()]
     text = "\n".join(lines)

@@ -94,6 +94,7 @@ def attach_media(
     *,
     all_drafts: bool = False,
     name: str | None = None,
+    clip_id: str | None = None,
 ) -> list[int]:
     """Clean a file and attach it to a draft (or every draft of its post). Returns media ids."""
     from argus_herald.media import MediaError, clean
@@ -119,11 +120,30 @@ def attach_media(
                 alt=alt.strip(),
                 size=cleaned.bytes,
                 removed=cleaned.removed,
+                clip_id=clip_id,
             )
         )
         if target.status == APPROVED:  # new media needs a fresh look
             store.transition(target.id, (APPROVED,), PENDING)
     return ids
+
+
+def remove_media(store: Store, media_id: int) -> bool:
+    """Take an attachment off its draft. An approved draft goes back to review: the post changed."""
+    item = store.media_item(media_id)
+    if item is None or not store.remove_media(media_id):
+        return False
+    store.transition(item["draft_id"], (APPROVED,), PENDING)
+    return True
+
+
+def set_media_alt(store: Store, media_id: int, alt: str) -> bool:
+    """Change an attachment's alt text. An approved draft goes back to review."""
+    item = store.media_item(media_id)
+    if item is None or not store.set_alt(media_id, alt):
+        return False
+    store.transition(item["draft_id"], (APPROVED,), PENDING)
+    return True
 
 
 def enforce_gate(store: Store, gate: Gate, draft: Draft) -> None:
@@ -177,10 +197,16 @@ def poll(
                 events.extend(_baseline_only(store, http, project))
         events.extend(poll_feeds(config, store, http, [], draft=False))
         events.extend(poll_github(config, store, http, [], draft=False))
+        if projects:
+            subject = projects[0]
+        elif config.feeds:
+            subject = config.feeds[0].name
+        else:
+            subject = f"github {config.github.owner}" if config.github else "herald"
         events.append(
             PollEvent(
                 "error",
-                (projects or [config.feeds[0].name])[0],
+                subject,
                 detail="No destinations are enabled, so new releases were left unseen",
             )
         )
@@ -215,7 +241,7 @@ def poll(
                     events.append(_collect_release(store, http, project, item.version, item.upload_time))
                 else:
                     events.append(_draft_release(store, http, publishers, project, item.version))
-            except (OSError, ValueError) as exc:
+            except (HttpError, OSError, ValueError) as exc:
                 events.append(PollEvent("error", project, item.version, detail=str(exc)))
     events.extend(poll_github(config, store, http, publishers))
     events.extend(poll_feeds(config, store, http, publishers))
@@ -666,14 +692,29 @@ def approve(
     return updated
 
 
+STALE_PUBLISH = timedelta(minutes=10)
+
+
 def reject(store: Store, draft_id: int, note: str | None) -> Draft:
     draft = _require_draft(store, draft_id)
-    updated = store.transition(
-        draft_id,
-        (PENDING, APPROVED, FAILED, HANDED_OFF, PUBLISHING),
-        "rejected",
-        note=note,
-    )
+    # handed_off waits on a person, so it can be dropped. publishing is a post in flight:
+    # rejecting it wouldn't stop the post and would lose its result, so only a claim left
+    # behind by a run that died (older than STALE_PUBLISH) can be rejected.
+    sources: tuple[str, ...] = (PENDING, APPROVED, FAILED, HANDED_OFF)
+    if draft.status == PUBLISHING:
+        try:
+            claimed = datetime.fromisoformat(draft.updated_at)
+            if claimed.tzinfo is None:
+                claimed = claimed.replace(tzinfo=UTC)
+        except ValueError:
+            claimed = None
+        if claimed is None or datetime.now(UTC) - claimed < STALE_PUBLISH:
+            raise ReviewError(
+                f"Draft {draft_id} is being published and cannot be rejected. If the publish run died, "
+                f"it can be rejected {int(STALE_PUBLISH.total_seconds() // 60)} minutes after it started."
+            )
+        sources = (*sources, PUBLISHING)
+    updated = store.transition(draft_id, sources, "rejected", note=note)
     if updated is None:
         raise ReviewError(f"Draft {draft_id} is {draft.status} and cannot be rejected")
     return updated

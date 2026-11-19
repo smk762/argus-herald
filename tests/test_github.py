@@ -224,3 +224,45 @@ def test_github_config_and_seen_migration(tmp_path):
     store.mark_seen("argus-lens", "0.12.0", "github")
     assert store.seen_versions("argus-lens") == ["0.12.0"]
     store.close()
+
+
+def test_api_releases_beyond_the_first_page_are_listed():
+    def page(start, count):
+        return json.loads(
+            rest(
+                *[
+                    (f"v0.{i}.0", "", "", f"2020-01-01T00:{i // 60:02d}:{i % 60:02d}Z", False, False)
+                    for i in range(start, start + count)
+                ]
+            )
+        )
+
+    newest_first = page(0, 230)[::-1]
+
+    class Paged:
+        calls: list = []
+
+        def request(self, method, url, body=None, headers=None):
+            self.calls.append(url)
+            number = int(url.split("page=")[-1]) if "&page=" in url else 1
+            return 200, json.dumps(newest_first[(number - 1) * 100 : number * 100]).encode()
+
+    http = Paged()
+    found = list_releases(http, "smk762", "argus-studio", token="t")
+    assert len(found) == 230 and len(http.calls) == 3
+    assert (found[0].version, found[-1].version) == ("0.0.0", "0.229.0")
+
+
+def test_github_prefix_of_only_spaces_is_no_prefix(tmp_path):
+    path = tmp_path / "p.yaml"
+    path.write_text(
+        'pypi: {projects: [a]}\ndestinations:\n  twitter: {enabled: true}\ngithub: {owner: smk762, prefix: "  "}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="repos"):
+        load_config(path)
+
+
+def test_html_to_text_keeps_a_tail_the_parser_holds_back():
+    assert html_to_text("<p>Notes from R&D") == "Notes from R&D"
+    assert html_to_text("<p>Now with AT&T</p> and R&D").endswith("and R&D")

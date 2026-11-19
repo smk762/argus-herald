@@ -108,8 +108,16 @@ def bluesky_samples(http: Http, posts: list[Post], now: datetime) -> tuple[list[
         actor, rkey = ref
         if not actor.startswith("did:"):
             if actor not in dids:
-                data = _get(http, f"{BSKY}/com.atproto.identity.resolveHandle?handle={quote(actor, safe='')}")
-                dids[actor] = str(data["did"])
+                # A renamed or deleted handle costs its own posts only, and is asked about once.
+                try:
+                    data = _get(http, f"{BSKY}/com.atproto.identity.resolveHandle?handle={quote(actor, safe='')}")
+                    did = data.get("did") if isinstance(data, dict) else None
+                except (HttpError, OSError, ValueError):
+                    did = None
+                dids[actor] = str(did) if did else ""
+            if not dids[actor]:
+                problems.append(f"bluesky: can't resolve handle {actor} for {post.url}")
+                continue
             actor = dids[actor]
         wanted[f"at://{actor}/app.bsky.feed.post/{rkey}"] = post
     uris = list(wanted)
@@ -145,10 +153,15 @@ _MASTODON_ID = re.compile(r"^/(?:@[^/]+|users/[^/]+/statuses)/(\d+)/?$")
 def mastodon_ref(url: str) -> tuple[str, str] | None:
     """(https://instance, status id) from a status link."""
     parsed = urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname:
+    try:
+        if parsed.scheme != "https" or not parsed.hostname:
+            return None
+        parsed.port  # noqa: B018 - raises ValueError for a port that isn't a number
+    except ValueError:
         return None
+    host = parsed.netloc.rsplit("@", 1)[-1]  # keeps the port and an IPv6 literal's brackets, drops userinfo
     match = _MASTODON_ID.match(parsed.path)
-    return (f"https://{parsed.hostname}", match.group(1)) if match else None
+    return (f"https://{host}", match.group(1)) if match else None
 
 
 def mastodon_samples(http: Http, posts: list[Post], now: datetime) -> tuple[list[dict], list[str]]:
@@ -281,8 +294,11 @@ def _number(value: str | None) -> int | None:
     if not text or text in ("-", "—"):
         return None
     try:
-        return int(float(text))
-    except ValueError as exc:
+        try:
+            return int(text)  # exact, however large: a float loses whole numbers past 2**53
+        except ValueError:
+            return int(float(text))  # "12.0", "1e3"; int() of inf raises OverflowError, of nan ValueError
+    except (ValueError, OverflowError) as exc:
         raise ValueError(f"not a number: {value!r}") from exc
 
 
@@ -405,6 +421,10 @@ query ($account: String!, $filter: AccountRumPageloadEventsAdaptiveGroupsFilter_
 
 def collect_site(metrics, http: Http, env: Mapping[str, str], today: date | None = None, days: int = 7) -> str:
     """The last `days` days of page views per path and per referrer. Re-fetching a day replaces it."""
+    missing = site_configured(env)
+    if missing:
+        # A blank site tag can answer with no rows, and no rows would replace the stored days.
+        raise ValueError(f"Cloudflare site traffic isn't configured: set {', '.join(missing)}")
     token, account, site = (env.get(k, "").strip() for k in ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_SITE_TAG"))
     today = today or datetime.now(UTC).date()
     start = today - timedelta(days=days - 1)
@@ -453,7 +473,10 @@ def collect_site(metrics, http: Http, env: Mapping[str, str], today: date | None
         )
     with metrics.transaction():
         for table, rows, key in (("site_traffic", paths, "path"), ("site_referrers", refs, "referrer")):
-            metrics.conn.execute(f"DELETE FROM {table} WHERE date >= ?", (start.isoformat(),))
+            # Only the fetched window: a backfill of earlier days must not erase later ones.
+            metrics.conn.execute(
+                f"DELETE FROM {table} WHERE date BETWEEN ? AND ?", (start.isoformat(), today.isoformat())
+            )
             metrics.conn.executemany(
                 f"INSERT OR REPLACE INTO {table} (date, {key}, pageviews, visits) VALUES (?, ?, ?, ?)",
                 [(r["date"], r[key], r["pageviews"], r["visits"]) for r in rows],

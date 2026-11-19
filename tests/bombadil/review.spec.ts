@@ -117,18 +117,21 @@ const contrast = extract((state): Contrast => {
     };
     return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
   };
+  const CANVAS = [255, 255, 255, 1];
   const background = (el: Element | null): number[] => {
     for (let node = el; node; node = node.parentElement) {
       const color = parse(win.getComputedStyle(node).backgroundColor);
       if (color && color[3] > 0.5) return color;
     }
-    return parse(win.getComputedStyle(doc.documentElement).backgroundColor) ?? [255, 255, 255, 1];
+    return CANVAS;
   };
+  // An unpainted root computes to rgba(0, 0, 0, 0): what shows is the browser's white canvas, not black.
+  const root = parse(win.getComputedStyle(doc.documentElement).backgroundColor);
   // Plain-text answers (404, an expired form) and static files have no theme to check.
   const styled = doc.querySelector('link[href="/static/review.css"]') !== null;
   const cookie = styled ? /(?:^|;\s*)theme=(light|dark)/.exec(doc.cookie) : null;
   const worst: { text: string; ratio: number }[] = [];
-  const selector = "main p, main a, main label, main li, main h1, main h2, .status, .flash, .kind, button:not(:disabled), .top a";
+  const selector = "main p, main a, main label, main li, main h1, main h2, .status, .badge, .flash, .kind, button:not(:disabled), .top a";
   for (const el of styled ? Array.from(doc.querySelectorAll(selector)).slice(0, 300) : []) {
     const style = win.getComputedStyle(el);
     const text = (el.textContent ?? "").trim();
@@ -144,7 +147,7 @@ const contrast = extract((state): Contrast => {
   }
   return {
     theme: cookie ? cookie[1] : null,
-    rootLuminance: luminance(parse(win.getComputedStyle(doc.documentElement).backgroundColor) ?? [255, 255, 255]),
+    rootLuminance: luminance(root && root[3] > 0.5 ? root : CANVAS),
     worst: worst.slice(0, 5),
   };
 });
@@ -241,6 +244,60 @@ export const tooltipListsEverySeries = always(
 
 export const dashboardShowsNoRawValues = always(() => dash.current === null || !dash.current.rawMarkup);
 
+// ---- dashboard: clips panel ------------------------------------------------------------------
+
+const FRESHNESS = ["redo", "check", "unknown", "fresh", "not checked"]; // the panel's sort order
+const RATINGS = ["strong", "typical", "weak", "no data"];
+
+const clipPanel = extract((state) => {
+  const doc = state.document;
+  if (state.window.location.pathname !== "/dashboard") return null;
+  const rows = Array.from(doc.querySelectorAll<HTMLTableRowElement>("table.clips tbody tr")).map((tr) => ({
+    freshness: tr.getAttribute("data-freshness") ?? "",
+    best: tr.getAttribute("data-best") ?? "",
+    freshBadges: Array.from(tr.querySelectorAll(".fresh-badge")).map((b) => (b.textContent ?? "").trim()),
+    perfBadges: Array.from(tr.querySelectorAll(".perf-badge")).map((b) => (b.textContent ?? "").trim()),
+    marked: tr.classList.contains("rerecord"),
+    markText: (tr.querySelector(".rerecord-mark")?.textContent ?? "").trim(),
+    links: Array.from(tr.querySelectorAll("a")).map((a) => a.getAttribute("href") ?? ""),
+  }));
+  return { rows };
+});
+
+// Every badge says its state in words, from the known set; colour only repeats it.
+export const clipBadgesCarryText = always(
+  () =>
+    clipPanel.current === null ||
+    clipPanel.current.rows.every(
+      (r) =>
+        r.freshBadges.length === 1 &&
+        r.freshBadges[0] === r.freshness &&
+        FRESHNESS.includes(r.freshness) &&
+        r.perfBadges.every((t) => RATINGS.includes(t)),
+    ),
+);
+
+// redo first, then check, then unknown, then the rest; within one freshness, best rating first.
+export const clipsSortedFreshnessFirst = always(() => {
+  if (clipPanel.current === null) return true;
+  const keys = clipPanel.current.rows.map((r) => [FRESHNESS.indexOf(r.freshness), RATINGS.indexOf(r.best)]);
+  return keys.every((k, i) => i === 0 || keys[i - 1][0] < k[0] || (keys[i - 1][0] === k[0] && keys[i - 1][1] <= k[1]));
+});
+
+// A clip that is both redo and strong is marked in words, and only such a clip.
+export const strongRedoIsMarked = always(
+  () =>
+    clipPanel.current === null ||
+    clipPanel.current.rows.every(
+      (r) => r.marked === (r.freshness === "redo" && r.best === "strong") && (!r.marked || r.markText === "re-record first"),
+    ),
+);
+
+// Last-posted links go to https:// posts only.
+export const clipLinksAreHttps = always(
+  () => clipPanel.current === null || clipPanel.current.rows.every((r) => r.links.every((h) => h.startsWith("https://"))),
+);
+
 // Bombadil has no hover action: move the pointer over a chart the way a mouse would.
 const hoverChart = registerCustomAction("hoverChart", async (document, window, index: number, frac: number) => {
   const charts = Array.from(document.querySelectorAll<SVGSVGElement>("svg.chart[data-values]"));
@@ -253,8 +310,22 @@ const hoverChart = registerCustomAction("hoverChart", async (document, window, i
   }));
 });
 
+// Opens a clip's "What changed" details, so the text inside is checked (contrast, raw markup) too.
+const openWhy = registerCustomAction("openWhy", async (document, _window, index: number) => {
+  const all = Array.from(document.querySelectorAll<HTMLDetailsElement>("table.clips details.why"));
+  const details = all[index % Math.max(all.length, 1)];
+  if (!details) throw new Error("no clip details");
+  details.open = true;
+  details.scrollIntoView({ block: "center" });
+});
+
 export const dashboardActions = actions(() =>
-  dash.current === null ? [] : [0, 2, 5, 6].flatMap((i) => [0.02, 0.5, 0.98].map((x) => hoverChart(i, x))),
+  dash.current === null
+    ? []
+    : [
+        ...[0, 2, 5, 6].flatMap((i) => [0.02, 0.5, 0.98].map((x) => hoverChart(i, x))),
+        ...(clipPanel.current && clipPanel.current.rows.length ? [0, 1, 2].map((i) => openWhy(i)) : []),
+      ],
 );
 
 export const explore = weighted([

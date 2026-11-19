@@ -1,0 +1,45 @@
+from argus_herald.store import Store
+
+
+def _add(store, source, **fields):
+    base = {
+        "project": "argus-atlas",
+        "version": "0.4.0",
+        "released_at": "2026-11-18T00:00:00+00:00",
+        "summary": "",
+        "notes": "",
+        "url": "",
+    }
+    return store.add_release(source=source, **{**base, **fields})
+
+
+def test_a_pypi_release_keeps_what_was_set_on_its_github_twin(tmp_path):
+    store = Store(tmp_path / "s.sqlite")
+    assert _add(store, "github", notes="### Added\n- From GitHub\n", summary="v0.4.0")
+    twin = store.release("argus-atlas", "0.4.0", source="github")
+    store.set_excluded(twin["id"], True)
+    _add(store, "pypi", summary="Bake tiles", url="https://pypi.org/project/argus-atlas/0.4.0/")
+    assert store.release("argus-atlas", "0.4.0", source="github") is None
+    merged = store.release("argus-atlas", "0.4.0")
+    assert merged["excluded"] == 1  # the maintainer's exclusion survives the merge
+    assert (merged["id"], merged["summary"]) == (twin["id"], "Bake tiles")
+    assert "From GitHub" in merged["notes"] and merged["url"].startswith("https://pypi.org/")
+    assert len(store.releases()) == 1
+    store.close()
+
+
+def test_a_merge_that_meets_an_existing_pypi_row_loses_nothing(tmp_path):
+    store = Store(tmp_path / "s.sqlite")
+    _add(store, "github", notes="GitHub notes")
+    # Another poller recorded the PyPI release in between.
+    store.conn.execute(
+        "INSERT INTO releases (source, project, version, released_at, seen_at) "
+        "VALUES ('pypi', 'argus-atlas', '0.4.0', '2026-11-18', '2026-11-18')"
+    )
+    twin = store.conn.execute("SELECT * FROM releases WHERE source = 'github'").fetchone()
+    # What add_release does once it has read the twin: the GitHub row and its notes must survive.
+    store.release = lambda project, version, source="pypi": twin if source == "github" else None
+    assert _add(store, "pypi") is False
+    kept = {row["source"]: row["notes"] for row in store.conn.execute("SELECT * FROM releases")}
+    assert kept == {"github": "GitHub notes", "pypi": ""}
+    store.close()

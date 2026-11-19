@@ -72,6 +72,24 @@ privacy:
 #   bluesky: dragonhound.dev
 #   mastodon: "@name@instance.social"
 
+# Optional: where the demos behind registry clips live, for `clips refresh` and collect.
+# clips:
+#   owner: your-github-user     # for a bare demo_repo; default github.owner, then pypi.discover.github_owner
+#   branch: dev                 # the deploy branch the live demo is built from
+#   # A UI file matches ui_paths and not ignore_paths; a change to any other file asks for a check, not a redo.
+#   # These are the defaults. Setting ui_paths keeps the default ignore_paths; `ignore_paths: []` turns it off.
+#   ui_paths: ["*.css", "*.scss", "*.html", "*.tsx", "*.jsx", "*.ts", "*.js", "*.mjs", "*.svelte", "*.astro", "*.vue"]
+#   ignore_paths: ["**/tests/**", "**/test/**", "**/__tests__/**", "**/docs/**", "**/scripts/**", "**/e2e/**",
+#                  "*.test.*", "*.spec.*", "*.config.*", "*.d.ts"]
+#   demos:                      # a demo's own branch, ui_paths or ignore_paths replaces the global one
+#     your-demo: {branch: main, ui_paths: ["web/**", "*.css"], ignore_paths: ["web/vendor/**"]}
+#   performance:                # how `clips` rates a clip's posts against your own recent posts
+#     strong: 1.5               # median at or above 1.5x the platform's baseline median
+#     weak: 0.5                 # at or below 0.5x
+#     min_posts: 5              # fewer baseline posts than this on a platform: no data
+#     days: 30                  # the baseline: that platform's posts from the last 30 days
+#     min_age_hours: 24         # a post younger than this is left out of the rating; 0 turns that off
+
 poll:
   interval_seconds: 1800
 

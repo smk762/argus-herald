@@ -10,7 +10,12 @@ def private_denylist(tmp_path, monkeypatch):
     path.write_text(f"# test deny-list\n{DENY_TERM}\n", encoding="utf-8")
     path.chmod(0o600)
     monkeypatch.setenv("ARGUS_HERALD_OPSEC_DENYLIST", str(path))
-    monkeypatch.setenv("AI_AUDIT_OPSEC_DENYLIST", str(tmp_path / "no-auditor-list.txt"))
+    # An empty auditor list, so the real one is never read. It has to exist: a list named in
+    # the environment but missing makes the gate unavailable.
+    auditor = tmp_path / "auditor-denylist.txt"
+    auditor.write_text("", encoding="utf-8")
+    auditor.chmod(0o600)
+    monkeypatch.setenv("AI_AUDIT_OPSEC_DENYLIST", str(auditor))
     return path
 
 

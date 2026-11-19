@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +91,7 @@ class Config:
     media_dir: Path | None = None  # where attachments and their cleaned copies live
     drafting: DraftingSettings = field(default_factory=lambda: DraftingSettings())
     accounts: Accounts = field(default_factory=lambda: Accounts())
+    clips: ClipSettings = field(default_factory=lambda: ClipSettings())
 
     @property
     def media_root(self) -> Path:
@@ -111,6 +112,69 @@ class Accounts:
         """(instance base URL, account name)."""
         user, _, host = self.mastodon.lstrip("@").partition("@")
         return f"https://{host}", user
+
+
+# What counts as a demo's UI when deciding whether a clip needs re-recording: front-end files by
+# type, so a backend, docs or data-only commit doesn't.
+DEFAULT_UI_PATHS = (
+    "*.css",
+    "*.scss",
+    "*.html",
+    "*.tsx",
+    "*.jsx",
+    "*.ts",
+    "*.js",
+    "*.mjs",
+    "*.svelte",
+    "*.astro",
+    "*.vue",
+)
+# Never UI, even when a UI path matches: tests, docs, scripts, tool config and type declarations.
+# A pattern with a `/` is anchored at the repo root, so the directories are written `**/x/**` to
+# match at any depth.
+DEFAULT_IGNORE_PATHS = (
+    "**/tests/**",
+    "**/test/**",
+    "**/__tests__/**",
+    "**/docs/**",
+    "**/scripts/**",
+    "**/e2e/**",
+    "*.test.*",
+    "*.spec.*",
+    "*.config.*",
+    "*.d.ts",
+)
+
+
+@dataclass(frozen=True)
+class PerformanceSettings:
+    """How a clip's posts are rated against the account's own recent posts (see performance.py)."""
+
+    strong: float = 1.5  # ratio at or above this is strong
+    weak: float = 0.5  # at or below this is weak
+    min_posts: int = 5  # fewer baseline posts than this on a platform: no data
+    days: int = 30  # the baseline is a platform's posts from the last this many days
+    min_age_hours: int = 24  # a post younger than this is left out of the rating; 0 turns that off
+
+
+@dataclass(frozen=True)
+class ClipSettings:
+    """Where the demos behind registry clips live, for the freshness check, and how their posts are rated."""
+
+    owner: str = ""  # for a bare demo_repo; falls back to github.owner, then pypi.discover.github_owner
+    branch: str = "dev"  # the deploy branch the live demo is built from
+    ui_paths: tuple[str, ...] = DEFAULT_UI_PATHS
+    ignore_paths: tuple[str, ...] = DEFAULT_IGNORE_PATHS  # never UI, even when a UI path matches
+    # (demo, branch, ui_paths, ignore_paths) overrides; each one set replaces the global one
+    demos: tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...] = ()
+    performance: PerformanceSettings = PerformanceSettings()
+
+    def for_demo(self, demo: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+        """(deploy branch, UI path globs, ignored path globs) for one demo."""
+        for name, branch, paths, ignore in self.demos:
+            if name == demo:
+                return branch, paths, ignore
+        return self.branch, self.ui_paths, self.ignore_paths
 
 
 @dataclass(frozen=True)
@@ -205,6 +269,7 @@ def load_config(path: Path) -> Config:
     github = _github(data.get("github"))
     drafting = _drafting(data.get("drafting"))
     accounts = _accounts(data.get("accounts"), feeds, destinations)
+    clips = _clips(data.get("clips"))
     media = data.get("media") or {}
     if not isinstance(media, dict) or not isinstance(media.get("dir", ""), str):
         raise ConfigError("media must be a mapping with an optional dir path")
@@ -214,6 +279,7 @@ def load_config(path: Path) -> Config:
         if unknown:
             raise ConfigError(f"digest.platforms aren't in destinations: {', '.join(unknown)}")
     return Config(
+        clips=clips,
         accounts=accounts,
         drafting=drafting,
         media_dir=Path(media["dir"]).expanduser() if media.get("dir") else None,
@@ -465,24 +531,117 @@ def _drafting(value: Any) -> DraftingSettings:
     )
 
 
+_OWNER = re.compile(r"^[A-Za-z0-9-]{1,39}$")
+_BRANCH = re.compile(r"^[A-Za-z0-9._/-]{1,100}$")
+
+
+def _clips(value: Any) -> ClipSettings:
+    if value is None:
+        return ClipSettings()
+    if not isinstance(value, dict):
+        raise ConfigError("clips must be a mapping")
+    known = ("owner", "branch", "ui_paths", "ignore_paths", "demos", "performance")
+    unknown = sorted(str(key) for key in set(value) - set(known))
+    if unknown:
+        raise ConfigError(f"Unknown clips keys: {', '.join(unknown)}. Known: {', '.join(known)}")
+    owner = value.get("owner") or ""
+    if not isinstance(owner, str) or (owner.strip() and not _OWNER.match(owner.strip())):
+        raise ConfigError("clips.owner must be a GitHub user or organisation name")
+    branch = _clip_branch("clips.branch", value.get("branch", "dev"))
+    paths = _clip_paths("clips.ui_paths", value.get("ui_paths"), DEFAULT_UI_PATHS)
+    ignore = _clip_paths("clips.ignore_paths", value.get("ignore_paths"), DEFAULT_IGNORE_PATHS, empty=True)
+    demos = value.get("demos") or {}
+    if not isinstance(demos, dict):
+        raise ConfigError("clips.demos maps a demo name to {branch: ..., ui_paths: [...], ignore_paths: [...]}")
+    overrides = []
+    for name, raw in demos.items():
+        where = f"clips.demos.{name}"
+        raw = {} if raw is None else raw
+        if not isinstance(raw, dict) or set(raw) - {"branch", "ui_paths", "ignore_paths"}:
+            raise ConfigError(f"{where} takes branch, ui_paths and ignore_paths")
+        overrides.append(
+            (
+                str(name).strip(),
+                _clip_branch(f"{where}.branch", raw.get("branch", branch)),
+                _clip_paths(f"{where}.ui_paths", raw.get("ui_paths"), paths),
+                _clip_paths(f"{where}.ignore_paths", raw.get("ignore_paths"), ignore, empty=True),
+            )
+        )
+    return ClipSettings(
+        owner=owner.strip(),
+        branch=branch,
+        ui_paths=paths,
+        ignore_paths=ignore,
+        demos=tuple(overrides),
+        performance=_clip_performance(value.get("performance")),
+    )
+
+
+def _clip_performance(value: Any) -> PerformanceSettings:
+    if value is None:
+        return PerformanceSettings()
+    known = ("strong", "weak", "min_posts", "days", "min_age_hours")
+    if not isinstance(value, dict) or set(value) - set(known):
+        raise ConfigError(f"clips.performance is a mapping of {', '.join(known)}")
+    default = PerformanceSettings()
+    ratios = {}
+    for key in ("strong", "weak"):
+        raw = value.get(key, getattr(default, key))
+        if isinstance(raw, bool) or not isinstance(raw, int | float) or not 0 < raw < float("inf"):
+            raise ConfigError(f"clips.performance.{key} is a ratio above 0, like {getattr(default, key)}")
+        ratios[key] = float(raw)
+    if ratios["strong"] <= ratios["weak"]:
+        raise ConfigError("clips.performance.strong must be above clips.performance.weak")
+    counts = {}
+    for key in ("min_posts", "days"):
+        raw = value.get(key, getattr(default, key))
+        if isinstance(raw, bool) or not isinstance(raw, int) or not 0 < raw <= 3650:
+            raise ConfigError(f"clips.performance.{key} is a whole number from 1 to 3650")
+        counts[key] = raw
+    raw = value.get("min_age_hours", default.min_age_hours)
+    if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= 8760:
+        raise ConfigError("clips.performance.min_age_hours is a whole number from 0 to 8760")
+    return PerformanceSettings(**ratios, **counts, min_age_hours=raw)
+
+
+def _clip_branch(where: str, value: Any) -> str:
+    if not isinstance(value, str) or not _BRANCH.match(value.strip()) or ".." in value:
+        raise ConfigError(f"{where} must be a branch name, like dev")
+    return value.strip()
+
+
+def _clip_paths(where: str, value: Any, default: tuple[str, ...], *, empty: bool = False) -> tuple[str, ...]:
+    """A list of path globs; `empty` allows an empty list (it turns ignore_paths off)."""
+    if value is None:
+        return default
+    try:
+        paths = tuple(_strings(value))
+    except ConfigError as exc:
+        raise ConfigError(f"{where} must be a list of path globs, like web/**") from exc
+    if not paths and not empty:
+        raise ConfigError(f"{where} must name at least one path glob")
+    return paths
+
+
 def _github(value: Any) -> GitHubSource | None:
     if value is None:
         return None
     if not isinstance(value, dict):
         raise ConfigError("github must be a mapping")
     owner = value.get("owner")
-    if not isinstance(owner, str) or not re.match(r"^[A-Za-z0-9-]{1,39}$", owner.strip()):
+    if not isinstance(owner, str) or not _OWNER.match(owner.strip()):
         raise ConfigError("github.owner must be a GitHub user or organisation name")
     repos = tuple(_strings(value.get("repos") or []))
     prefix = value.get("prefix") or ""
     if not isinstance(prefix, str):
         raise ConfigError("github.prefix must be a string")
+    prefix = prefix.strip()
     if not repos and not prefix:
         raise ConfigError("github needs repos: [...] or a prefix")
     pre = value.get("include_prereleases", True)
     if not isinstance(pre, bool):
         raise ConfigError("github.include_prereleases must be true or false")
-    return GitHubSource(owner=owner.strip(), repos=repos, prefix=prefix.strip(), include_prereleases=pre)
+    return GitHubSource(owner=owner.strip(), repos=repos, prefix=prefix, include_prereleases=pre)
 
 
 def _digest(value: Any) -> DigestSettings | None:
@@ -497,7 +656,10 @@ def _digest(value: Any) -> DigestSettings | None:
         return None
     raw_anchor = value.get("anchor")
     try:
-        anchor = raw_anchor if isinstance(raw_anchor, date) else date.fromisoformat(str(raw_anchor))
+        if isinstance(raw_anchor, datetime):  # YAML reads "2026-11-16 09:00" as one; windows compare dates
+            anchor = raw_anchor.date()
+        else:
+            anchor = raw_anchor if isinstance(raw_anchor, date) else date.fromisoformat(str(raw_anchor))
     except ValueError as exc:
         raise ConfigError("digest.anchor must be a date like 2026-11-16") from exc
     days = value.get("window_days", 14)
