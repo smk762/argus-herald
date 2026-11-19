@@ -318,8 +318,8 @@ def cmd_clips(config: Config, store: Store, args: argparse.Namespace, http) -> i
 
     given = {key: getattr(args, key) for key in CLIP_FIELDS if getattr(args, key) is not None}
     action, rest = args.action, args.args
-    if action in ("list", "export", "import", "refresh", "ack") and given:
-        raise ReviewError(f"clips {action} takes no field options")
+    if action not in ("add", "set") and given:
+        raise ReviewError(f"clips {action} takes no field options; change a clip with `clips set <clip id> ...`")
     if action == "list":
         print(clips.report(store, performance=_clip_performance(config, store)))
         return 0
@@ -336,7 +336,10 @@ def cmd_clips(config: Config, store: Store, args: argparse.Namespace, http) -> i
             raise ReviewError("Usage: argus-herald clips export [file]")
         text = clips.export_csv(store)
         if rest:
-            Path(rest[0]).expanduser().write_text(text, encoding="utf-8", newline="")
+            try:
+                Path(rest[0]).expanduser().write_text(text, encoding="utf-8", newline="")
+            except OSError as exc:
+                raise ReviewError(f"Can't write {rest[0]}: {exc}") from exc
             print(f"Wrote {len(store.clips())} clips to {rest[0]}")
         else:
             sys.stdout.write(text)

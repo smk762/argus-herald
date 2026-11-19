@@ -75,7 +75,8 @@ def clean_fields(fields: dict[str, object]) -> dict[str, object]:
         elif key == "demo_commit" and value and not _COMMIT.match(value):
             raise ReviewError(f"demo_commit is a commit hash (7 to 40 hex digits), not {value!r}")
         elif key == "path" and value:
-            value = str(Path(value).expanduser())
+            # Absolute: the file is attached later, from whatever directory that command runs in.
+            value = str(Path(value).expanduser().absolute())
         if len(value) > _MAX_TEXT:
             raise ReviewError(f"{key} is longer than {_MAX_TEXT} characters")
         out[key] = value
@@ -169,7 +170,8 @@ def import_csv(store: Store, text: str) -> tuple[int, int, list[str]]:
     mapped = {name: ALIASES.get(name, name) for name in header}
     if "id" not in mapped.values():
         raise ReviewError("The CSV needs an id column (or clip_id)")
-    targets = [target for target in mapped.values() if target in COLUMNS]
+    # From the header, not the mapping: the same name twice is two columns for one field too.
+    targets = [mapped[name] for name in header if mapped[name] in COLUMNS]
     if len(targets) != len(set(targets)):
         raise ReviewError("Two columns in the CSV fill the same field (for example id and clip_id)")
     ignored = [name for name, target in mapped.items() if target not in COLUMNS and name]

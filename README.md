@@ -377,7 +377,7 @@ A clip is out of date when the live demo no longer looks like it. For each clip 
 | State | When |
 |---|---|
 | `fresh` | no commits since `demo_commit`, same minor version |
-| `check` | the demo repo changed, but not under its UI paths; or the minor version moved |
+| `check` | the demo repo changed, but not under its UI paths; or `demo_commit` isn't on the deploy branch; or the minor version moved |
 | `redo` | files under the demo's UI paths changed |
 | `unknown` | it couldn't be compared, for example no `demo_repo` or no owner for a bare repo name |
 

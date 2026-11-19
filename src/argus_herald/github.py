@@ -122,6 +122,7 @@ class Comparison:
     head_commit: str  # full sha of head at the time of the call
     files: tuple[str, ...]  # changed paths, renamed files under both names
     truncated: bool  # GitHub stopped listing files at COMPARE_FILES
+    behind_by: int = 0  # commits on base that head doesn't have: base isn't on head's branch (yet)
 
 
 def compare(http: Http, owner: str, repo: str, base: str, head: str, token: str = "") -> Comparison:
@@ -170,6 +171,7 @@ def compare(http: Http, owner: str, repo: str, base: str, head: str, token: str 
         head_commit=head_commit,
         files=tuple(names),
         truncated=len(raw_files) >= COMPARE_FILES,
+        behind_by=data["behind_by"] if type(data.get("behind_by")) is int and data["behind_by"] > 0 else 0,
     )
 
 

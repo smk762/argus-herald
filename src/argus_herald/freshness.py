@@ -5,7 +5,8 @@ with the head of the demo repo's deploy branch (GitHub's compare API) and with t
 version herald has seen for the package:
 
 - fresh: no commits since, and the same minor version;
-- check: the repo changed, but no UI file; or the minor version moved;
+- check: the repo changed, but no UI file; or the recorded commit isn't on the deploy branch; or the
+  minor version moved;
 - redo: UI files changed.
 
 A UI file matches one of the demo's UI paths and none of its ignore paths. By default the UI
@@ -128,7 +129,8 @@ def classify(
     changed = tuple(ui_files(comparison.files, globs, ignore))
     if changed:
         return Verdict(REDO, changed)
-    if comparison.ahead_by or moved:
+    # behind_by: the recorded commit isn't on the deploy branch, so the live demo lacks what the clip shows.
+    if comparison.ahead_by or comparison.behind_by or moved:
         return Verdict(CHECK)
     return Verdict(FRESH)
 
@@ -149,7 +151,7 @@ def locate(clip: dict, config: Config) -> tuple[str, str] | str:
                 f"demo_repo {name} has no owner; write it as owner/{name} or set clips.owner, "
                 "github.owner or pypi.discover.github_owner in the config"
             )
-    if not _NAME.match(owner) or not _NAME.match(repo) or "/" in owner:
+    if not _NAME.match(owner) or not _NAME.match(repo) or "/" in owner or {owner, repo} & {".", ".."}:
         return f"demo_repo {clip['demo_repo']!r} isn't a GitHub repo (owner/repo)"
     return owner, repo
 
@@ -195,6 +197,15 @@ def refresh(store: Store, http: Http, config: Config, token: str = "") -> Summar
                 continue
             comparison = results[key]
         verdict = classify(comparison, clip["project_version"], newest, globs, ignore)
+        if comparison is None:
+            reason = f"demo source not compared: {where}"
+        elif comparison.behind_by:
+            reason = (
+                f"recorded commit {clip['demo_commit'][:7]} isn't on {branch}: "
+                f"{comparison.behind_by} commit{'s' * (comparison.behind_by != 1)} it has are missing there"
+            )
+        else:
+            reason = ""
         store.save_freshness(
             clip["id"],
             state=verdict.state,
@@ -205,7 +216,7 @@ def refresh(store: Store, http: Http, config: Config, token: str = "") -> Summar
             head_commit=comparison.head_commit if comparison else "",
             branch=branch,
             newest_version=newest,
-            reason="" if comparison else f"demo source not compared: {where}",
+            reason=reason,
             **base,
         )
         summary.states[verdict.state] += 1
