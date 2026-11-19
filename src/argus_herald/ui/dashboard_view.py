@@ -61,7 +61,9 @@ def _report(
     return everything, shown
 
 
-def context(config: Config, params: Mapping[str, str]) -> dict:
+def context(config: Config, params: Mapping[str, str], *, clips_panel: bool = True) -> dict:
+    """The dashboard page's context. `clips_panel=False` leaves the Clips panel empty and the
+    draft store unopened, for a caller that only reads the metrics tables."""
     path = metrics_path(config)
     conn = d.connect(path)
     try:
@@ -111,11 +113,13 @@ def context(config: Config, params: Mapping[str, str]) -> dict:
         if conn is not None:
             conn.close()
     present = sorted({d.platform_key(b.platform) for b in everything}, key=d.platform_slot)
-    store = Store(config.store_path)
-    try:
-        clips = clip_panel.load(store, path, config.clips.performance)
-    finally:
-        store.close()
+    clips = clip_panel.ClipsPanel((), (), (), ())
+    if clips_panel:
+        store = Store(config.store_path)
+        try:
+            clips = clip_panel.load(store, path, config.clips.performance)
+        finally:
+            store.close()
 
     def link(**changes: str) -> str:
         merged = {k: v for k, v in params.items() if v}
@@ -174,7 +178,7 @@ def _fmt(value) -> str:
 
 def export(config: Config, table: str, params: Mapping[str, str]) -> str:
     """One table as CSV, with the same filters as the page."""
-    ctx = context(config, params)
+    ctx = context(config, params, clips_panel=False)  # no table here is the Clips panel
     out = io.StringIO()
     w = csv.writer(out)
     if table == "timeline":
