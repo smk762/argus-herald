@@ -36,8 +36,6 @@ claude = ["anthropic>=2.8"]
 
 [project.scripts]
 argus-herald = "argus_herald.cli:main"
-# Deprecated alias, removed in 0.3.
-pip-release = "argus_herald.cli:legacy_main"
 
 [project.entry-points."argus_herald.platforms"]
 twitter = "argus_herald.platforms:TwitterPublisher"
@@ -60,8 +58,7 @@ only-include = ["src", "tests", "examples", "contrib", "README.md", "LICENSE", "
 exclude = ["tests/bombadil/node_modules", "tests/bombadil/out", "**/__pycache__"]
 
 [tool.hatch.build.targets.wheel]
-# pip_release is a deprecated import alias for plugins written against the old name.
-packages = ["src/argus_herald", "src/pip_release"]
+packages = ["src/argus_herald"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

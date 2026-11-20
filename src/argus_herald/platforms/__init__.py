@@ -13,7 +13,6 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 from argus_herald.config import Audience, Config, Destination, Schedule
 from argus_herald.http import Http, send_json
-from argus_herald.legacy import LEGACY_PLATFORM_GROUP, warn_once
 from argus_herald.media import PATREON_LIMITS, X_LIMITS, MediaLimits
 from argus_herald.models import Draft, Post, PublishResult, Release, Rendered
 from argus_herald.oauth1 import authorization_header
@@ -352,19 +351,11 @@ def configured_publishers(config: Config) -> dict[str, Publisher]:
 
 def load_publishers() -> list[Publisher]:
     found = {publisher.id: publisher for publisher in builtin_publishers()}
-    extras = []
-    for group in ("argus_herald.platforms", LEGACY_PLATFORM_GROUP):
-        try:
-            extras += [(group, item) for item in entry_points(group=group)]
-        except Exception:
-            continue
-    for group, item in extras:
-        if group == LEGACY_PLATFORM_GROUP:
-            warn_once(
-                f"ep:{item.name}",
-                f"Platform {item.name!r} registers under {LEGACY_PLATFORM_GROUP}, which is "
-                "deprecated and no longer loaded from 0.3: register it under argus_herald.platforms.",
-            )
+    try:
+        extras = list(entry_points(group="argus_herald.platforms"))
+    except Exception:
+        extras = []
+    for item in extras:
         try:
             obj = item.load()
             publisher = obj() if isinstance(obj, type) else obj
