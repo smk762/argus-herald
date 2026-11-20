@@ -22,7 +22,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from argus_herald.config import Audience, DraftingSettings
-from argus_herald.http import Http, HttpClient, HttpError
+from argus_herald.http import Http, HttpClient, HttpError, LanHttpClient, check_lan_url
 from argus_herald.models import Post
 from argus_herald.platforms import Publisher
 from argus_herald.privacy import Gate
@@ -159,47 +159,14 @@ def configured_backend(settings: DraftingSettings, env: Mapping[str, str], http:
 
 def _check_local_url(url: str) -> None:
     """https anywhere; plain http only to this machine or a private network address."""
-    import ipaddress
-    from urllib.parse import urlparse
-
-    parsed = urlparse(url)
-    if parsed.username or parsed.password:
-        raise DraftingError("The model URL must not include credentials")
-    if parsed.scheme == "https":
-        return
-    host = (parsed.hostname or "").lower()
-    if parsed.scheme == "http" and host:
-        if host == "localhost" or host.endswith((".local", ".lan", ".internal", ".home.arpa")):
-            return
-        try:
-            ip = ipaddress.ip_address(host)
-        except ValueError:
-            ip = None
-        if ip is not None and (ip.is_private or ip.is_loopback):
-            return
-    raise DraftingError("ARGUS_HERALD_LLM_BASE_URL must be https://, or http:// to this machine or the LAN")
-
-
-class LanHttpClient(HttpClient):
-    """HttpClient that also allows plain http to a local or private-network model server."""
-
-    def request(self, method, url, body=None, headers=None):  # noqa: ANN001
-        _check_local_url(url)
-        from urllib.error import HTTPError, URLError
-        from urllib.request import Request as UrlRequest
-
-        from argus_herald.http import USER_AGENT
-
-        merged = {"User-Agent": USER_AGENT, **(headers or {})}
-        try:
-            with self._opener.open(
-                UrlRequest(url, data=body, headers=merged, method=method), timeout=self.timeout
-            ) as response:
-                return response.status, response.read()
-        except HTTPError as exc:
-            return exc.code, exc.read()
-        except (URLError, TimeoutError) as exc:
-            raise HttpError(method, url, 0) from exc
+    try:
+        check_lan_url(url)
+    except ValueError as exc:
+        if "credentials" in str(exc):
+            raise DraftingError("The model URL must not include credentials") from exc
+        raise DraftingError(
+            "ARGUS_HERALD_LLM_BASE_URL must be https://, or http:// to this machine or the LAN"
+        ) from exc
 
 
 # ---- prompting and checking ------------------------------------------------------------

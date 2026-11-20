@@ -184,9 +184,13 @@ def poll(
     publishers: list[Publisher],
     *,
     now: datetime | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> list[PollEvent]:
+    from argus_herald.mint import poll_mint  # mint builds on this module
+
+    env = os.environ if env is None else env
     projects = tracked_projects(config)
-    if not projects and not config.feeds and not config.github:
+    if not projects and not config.feeds and not config.github and not config.mint:
         raise ReviewError(
             "Nothing to watch. Add pypi.projects or sources. PyPI does not publish a per-user release feed."
         )
@@ -197,10 +201,13 @@ def poll(
                 events.extend(_baseline_only(store, http, project))
         events.extend(poll_feeds(config, store, http, [], draft=False))
         events.extend(poll_github(config, store, http, [], draft=False))
+        events.extend(poll_mint(config, store, http, [], env, draft=False))
         if projects:
             subject = projects[0]
         elif config.feeds:
             subject = config.feeds[0].name
+        elif config.mint and not config.github:
+            subject = "mint"
         else:
             subject = f"github {config.github.owner}" if config.github else "herald"
         events.append(
@@ -245,6 +252,7 @@ def poll(
                 events.append(PollEvent("error", project, item.version, detail=str(exc)))
     events.extend(poll_github(config, store, http, publishers))
     events.extend(poll_feeds(config, store, http, publishers))
+    events.extend(poll_mint(config, store, http, publishers, env))
     if config.digest is not None:
         events.extend(close_digests(config, store, publishers, now=now))
     return events
@@ -425,11 +433,13 @@ def close_digests(
 
 # Site categories that may become posts, and the draft kind each one gets.
 _SITE_KINDS = {"note": "note", "release": "headline", "digest": "digest"}
+# Kinds only a source may create; `compose` on the command line offers POST_KINDS.
+_SOURCE_KINDS = {*_SITE_KINDS.values(), "teaser"}
 
 
 def compose(store: Store, publishers: list[Publisher], post: Post, *, post_key: str | None = None) -> list[int]:
     """One pending draft per destination for a post that isn't a release. Returns new ids."""
-    if post.kind not in POST_KINDS and post.kind not in _SITE_KINDS.values():
+    if post.kind not in POST_KINDS and post.kind not in _SOURCE_KINDS:
         raise ReviewError(f"Unknown post kind {post.kind!r}. Use one of: {', '.join(POST_KINDS)}")
     if not post.text.strip() and not post.link.strip():
         raise ReviewError("A post needs text, a link, or both")
@@ -769,7 +779,22 @@ def publish_draft(
         error=None,
         note=result.detail if result.handed_off else locked.note,
     )
+    if not result.handed_off:
+        _queue_mint_report(store, draft.id)
     return result
+
+
+def _queue_mint_report(store: Store, draft_id: int, at: str | None = None) -> None:
+    """A published mint teaser gets a report queued for mint; the next poll (or confirm) sends it.
+    Never fails the publish or confirm it follows: the post is already out."""
+    from argus_herald.mint import record_post
+
+    draft = store.get(draft_id)
+    try:
+        if draft is not None:
+            record_post(store, draft, at=at)
+    except Exception:  # the report is bookkeeping; the post itself went out
+        log.warning("Couldn't queue the mint report for draft %s", draft_id, exc_info=True)
 
 
 def confirm(store: Store, draft_id: int, url: str | None = None) -> Draft:
@@ -783,6 +808,10 @@ def confirm(store: Store, draft_id: int, url: str | None = None) -> Draft:
     updated = store.transition(draft_id, allowed, PUBLISHED, **fields)
     if updated is None:
         raise ReviewError(f"Draft {draft_id} is {draft.status}. Confirm is for a manual handoff (X, Patreon).")
+    if updated.external_id:
+        # Mint is told once the post has its URL. A URL added afterwards belongs to the post made
+        # when the draft was first marked published.
+        _queue_mint_report(store, draft_id, at=draft.updated_at if draft.status == PUBLISHED else None)
     return updated
 
 

@@ -92,6 +92,7 @@ class Config:
     drafting: DraftingSettings = field(default_factory=lambda: DraftingSettings())
     accounts: Accounts = field(default_factory=lambda: Accounts())
     clips: ClipSettings = field(default_factory=lambda: ClipSettings())
+    mint: MintSource | None = None  # sources.mint: approved teasers from argus-mint
 
     @property
     def media_root(self) -> Path:
@@ -205,6 +206,14 @@ class GitHubSource:
 
 
 @dataclass(frozen=True)
+class MintSource:
+    """Approved teasers from argus-mint. Its address and the poster token come from the environment."""
+
+    project: str = ""  # only this mint project's teasers; empty: every project
+    platforms: tuple[str, ...] = ()  # empty: every enabled destination that takes images
+
+
+@dataclass(frozen=True)
 class DigestSettings:
     """Digest mode: releases are collected into windows instead of drafted one by one."""
 
@@ -262,8 +271,13 @@ def load_config(path: Path) -> Config:
     env_store = os.environ.get("ARGUS_HERALD_STORE")
     if env_store:
         store_path = Path(env_store)
-    feeds = _feeds(data.get("sources") or {})
-    unknown = sorted({p for feed in feeds for p in feed.platforms} - set(destinations))
+    sources = data.get("sources") or {}
+    if not isinstance(sources, dict):
+        raise ConfigError("sources must be a mapping")
+    mint = _mint(sources.get("mint"))
+    feeds = _feeds({name: raw for name, raw in sources.items() if name != "mint"})
+    named = {p for feed in feeds for p in feed.platforms} | set(mint.platforms if mint else ())
+    unknown = sorted(named - set(destinations))
     if unknown:
         raise ConfigError(f"sources name platforms that aren't in destinations: {', '.join(unknown)}")
     github = _github(data.get("github"))
@@ -279,6 +293,7 @@ def load_config(path: Path) -> Config:
         if unknown:
             raise ConfigError(f"digest.platforms aren't in destinations: {', '.join(unknown)}")
     return Config(
+        mint=mint,
         clips=clips,
         accounts=accounts,
         drafting=drafting,
@@ -686,7 +701,7 @@ def _feeds(value: Any) -> list[FeedSource]:
         raise ConfigError("sources must be a mapping")
     unknown = sorted(set(value) - {"site", "youtube"})
     if unknown:
-        raise ConfigError(f"Unknown sources: {', '.join(unknown)}. Known: site, youtube")
+        raise ConfigError(f"Unknown sources: {', '.join(unknown)}. Known: site, youtube, mint")
     feeds: list[FeedSource] = []
     for name, raw in value.items():
         if not isinstance(raw, dict):
@@ -710,6 +725,29 @@ def _feeds(value: Any) -> list[FeedSource]:
                 raise ConfigError(str(exc)) from exc
             feeds.append(FeedSource("youtube", url, "video", (), platforms))
     return feeds
+
+
+_MINT_PROJECT = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+
+def _mint(value: Any) -> MintSource | None:
+    """`sources.mint`: teasers approved in argus-mint. No address here: that is ARGUS_MINT_URL in .env."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ConfigError("sources.mint must be a mapping")
+    unknown = sorted(str(key) for key in set(value) - {"enabled", "project", "platforms"})
+    if unknown:
+        raise ConfigError(
+            f"Unknown sources.mint keys: {', '.join(unknown)}. Known: enabled, project, platforms "
+            "(mint's address goes in .env as ARGUS_MINT_URL)"
+        )
+    if value.get("enabled") is False:
+        return None
+    project = value.get("project") or ""
+    if not isinstance(project, str) or (project.strip() and not _MINT_PROJECT.match(project.strip())):
+        raise ConfigError("sources.mint.project is a mint project id, like example-teasers")
+    return MintSource(project=project.strip(), platforms=tuple(_strings(value.get("platforms") or [])))
 
 
 def _optional_str(value: Any) -> str | None:

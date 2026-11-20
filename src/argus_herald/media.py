@@ -4,7 +4,8 @@ Every attached file gets a cleaned copy, and only the cleaned copy is ever poste
 
 - images (JPEG, PNG, WebP): the EXIF orientation is applied to the pixels, then the image is
   saved again with no EXIF, XMP, IPTC, comments or text chunks (GPS goes with EXIF). The colour
-  profile is kept;
+  profile is kept. A PNG that already holds nothing but its image data is copied byte for byte,
+  so its hash still matches the file it came from;
 - GIFs: every frame is kept with its timing, and comments and extensions are dropped;
 - video (MP4, MOV, WebM): ffmpeg copies the streams with all metadata dropped. Without ffmpeg
   the clip is kept but marked unstripped, and approve refuses it (fail closed).
@@ -137,6 +138,26 @@ def _found_metadata(image: Image.Image) -> list[str]:
     return found
 
 
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_PNG_CRITICAL = {b"IHDR", b"PLTE", b"IDAT", b"IEND"}
+
+
+def png_is_bare(data: bytes) -> bool:
+    """Whether a PNG holds only critical chunks and ends at IEND: nothing a strip would remove."""
+    if not data.startswith(_PNG_SIGNATURE):
+        return False
+    at = len(_PNG_SIGNATURE)
+    while at + 12 <= len(data):
+        length = int.from_bytes(data[at : at + 4], "big")
+        name = data[at + 4 : at + 8]
+        if name not in _PNG_CRITICAL:
+            return False
+        at += 12 + length
+        if name == b"IEND":
+            return length == 0 and at == len(data)
+    return False
+
+
 def _clean_image(source: Path, target: Path) -> str:
     try:
         with Image.open(source) as image:
@@ -144,6 +165,10 @@ def _clean_image(source: Path, target: Path) -> str:
             fmt = IMAGE_EXT[source.suffix.lower()]
             if image.format and image.format != fmt and not (fmt == "JPEG" and image.format == "MPO"):
                 raise MediaError(f"{source.name} is really {image.format}, not {fmt}")
+            if fmt == "PNG" and not found and png_is_bare(source.read_bytes()):
+                image.load()  # decodes every chunk and checks its CRC: a broken file is still refused
+                shutil.copyfile(source, target)
+                return "nothing found"
             if image.format != "MPO" and getattr(image, "n_frames", 1) > 1:
                 # Only the first frame would survive the rewrite below.
                 raise MediaError(f"{source.name} is animated; attach it as a GIF or a video instead")

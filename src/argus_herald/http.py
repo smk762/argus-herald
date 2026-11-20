@@ -60,6 +60,31 @@ def check_url(url: str) -> None:
     raise ValueError("URLs must use HTTPS")
 
 
+_LAN_SUFFIXES = (".local", ".lan", ".internal", ".home.arpa")
+
+
+def check_lan_url(url: str) -> None:
+    """https anywhere; plain http only to this machine or a private network address."""
+    import ipaddress
+
+    parsed = urlparse(url)
+    if parsed.username or parsed.password:
+        raise ValueError("URLs must not include credentials")
+    if parsed.scheme == "https":
+        return
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme == "http" and host:
+        if host == "localhost" or host.endswith(_LAN_SUFFIXES):
+            return
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            ip = None
+        if ip is not None and (ip.is_private or ip.is_loopback):
+            return
+    raise ValueError("URLs must use https://, or http:// to this machine or the LAN")
+
+
 def read_json(http: Http, url: str) -> dict:
     status, body = http.request("GET", url, headers={"Accept": "application/json"})
     if status != 200:
@@ -111,6 +136,11 @@ class HttpClient:
     ) -> tuple[int, bytes]:
         """`limit` caps a successful body: BodyTooLarge is raised without reading past it."""
         check_url(url)
+        return self._send(method, url, body, headers, limit)
+
+    def _send(
+        self, method: str, url: str, body: bytes | None, headers: Mapping[str, str] | None, limit: int | None
+    ) -> tuple[int, bytes]:
         merged = {"User-Agent": USER_AGENT}
         if headers:
             merged.update(headers)
@@ -138,3 +168,19 @@ class HttpClient:
             # URLError, and what urllib lets through unwrapped: a timeout waiting for headers,
             # a dropped connection, a body cut short.
             raise HttpError(method, url, 0) from exc
+
+
+class LanHttpClient(HttpClient):
+    """HttpClient that also allows plain http to a service on this machine or the private network."""
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        body: bytes | None = None,
+        headers: Mapping[str, str] | None = None,
+        *,
+        limit: int | None = None,
+    ) -> tuple[int, bytes]:
+        check_lan_url(url)
+        return self._send(method, url, body, headers, limit)

@@ -8,7 +8,7 @@ Guidance for AI agents working in this repo. Human-facing usage lives in [README
 
 The Argus suite's release broadcaster, usable by any maintainer: it polls PyPI (and GitHub Releases, feeds and digests), drafts one announcement per platform, holds every draft for a person to approve, then publishes or hands off. It also records adoption and engagement metrics and shows them on a dashboard.
 
-Herald has no wire contract with the other Argus services and doesn't depend on argus-cortex: it only reads public PyPI and GitHub data about them.
+Herald doesn't depend on argus-cortex and mostly reads only public PyPI and GitHub data about the other Argus services. The one wire contract is with argus-mint (`mint.py`): `GET /posts/ready`, the draft image, and `POST /drafts/{id}/posted`.
 
 ## Argus suite
 <!-- argus-suite: keep this block; argus-ci checks for it -->
@@ -31,6 +31,7 @@ Not checked out? Read https://github.com/smk762/argus-cortex/blob/dev/SUITE.md
 - `clips.py` — the demo clip registry (`clips` table; `draft_media.clip_id` and `logged_broadcasts.clip_id` record which posts used a clip).
 - `freshness.py` — whether a recorded clip still matches its demo (GitHub compare + newest seen version); the last result is in `clip_freshness`, refreshed by `collect` and `clips refresh`.
 - `performance.py` — how each clip's posts did per platform against the account's last 30 days (computed on read from `post_metrics`; `clip_performance` is the all-clips call for the dashboard).
+- `mint.py` — `sources.mint`: approved argus-mint teasers become drafts with their PNG attached, and their posts are reported back (`mint_reports` queue, sent on confirm and on each poll). Herald pulls; mint never pushes.
 - `platforms/` — publishers, plus the `argus_herald.platforms` entry-point group for plugins.
 - `metrics.py`, `engagement.py`, `dashboard.py`, `charts.py` — collectors (separate `metrics.sqlite`) and the server-rendered SVG dashboard.
 - `ui/` — Starlette + Jinja review UI on 127.0.0.1:8787.

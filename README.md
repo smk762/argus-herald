@@ -264,6 +264,26 @@ sources:
 
 Feeds are read on every `poll`, so the watcher picks them up too. Drafts from a feed are keyed by the item's id, so a feed entry is never drafted twice.
 
+### Teasers from argus-mint
+
+`sources.mint` turns each teaser approved in [argus-mint](https://github.com/smk762/argus-mint) into a draft, with mint's PNG attached and its reviewed alt text:
+
+```yaml
+sources:
+  mint:
+    project: example-teasers   # optional: only this mint project's teasers
+    platforms: [twitter]       # default: every enabled destination that takes images
+```
+
+Mint's address goes in `.env` as `ARGUS_MINT_URL`, never in the config (plain `http://` is accepted only for this machine or a private address). Herald pulls from mint and mint never calls herald, so it works from a laptop that is only sometimes on mint's network: while mint is out of reach the poll skips it.
+
+- The first read baselines the source, so teasers already approved are not drafted.
+- A teaser that has been superseded by a newer draft, or already has a post, is skipped.
+- Drafts are keyed by mint's draft id (`mint:<id>`), so a teaser is never drafted twice.
+- Only destinations that carry images get a draft (X and Patreon of the built-in ones).
+
+When the post is live, herald tells mint: `argus-herald confirm <id> --url <post url>` (or the same in the review UI) sends the URL, the time and the sha256 of the image herald posted to mint's `POST /drafts/{id}/posted`. This needs `ARGUS_MINT_POSTER_TOKEN` in `.env`. Mint records only a post of the exact image it reviewed, so herald refuses to draft a teaser whose image it would have to change to clean. A confirm without a URL doesn't report yet; add the URL later and it does. A report that can't be delivered stays queued and is sent on the next poll.
+
 ## Audiences
 
 Each destination can describe who follows it and what they should get:
@@ -330,7 +350,7 @@ argus-herald compose "Coastlines, painted." --kind demo --media shot.png --alt "
 
 **Metadata never leaves the machine.** Each file gets a cleaned copy, and only that copy is posted or handed off:
 
-- **JPEG, PNG and WebP:** the EXIF rotation is applied, then EXIF (including GPS), XMP, IPTC, comments and text chunks are dropped. The colour profile is kept.
+- **JPEG, PNG and WebP:** the EXIF rotation is applied, then EXIF (including GPS), XMP, IPTC, comments and text chunks are dropped. The colour profile is kept. A PNG that already holds nothing but its image data is copied byte for byte.
 - **GIF:** frames and timing are kept, and comments are dropped.
 - **MP4, MOV and WebM:** `ffmpeg -map_metadata -1 -c copy`. Without ffmpeg, a clip is attached but marked unstripped, and approve refuses it.
 
