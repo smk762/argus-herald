@@ -14,7 +14,7 @@ from argus_herald.media import clean, png_is_bare
 from argus_herald.models import HANDED_OFF, PUBLISHED
 from argus_herald.platforms import DiscordPublisher, PatreonPublisher, TwitterPublisher
 from argus_herald.store import Store
-from argus_herald.workflow import approve, confirm, poll, publish_draft
+from argus_herald.workflow import ReviewError, approve, confirm, poll, publish_draft
 
 BASE = "http://mint.lan:8000"
 ENV = {"ARGUS_MINT_URL": BASE + "/", "ARGUS_MINT_POSTER_TOKEN": "poster-token"}
@@ -297,3 +297,42 @@ def test_cli_confirm_says_where_the_report_stands(tmp_path, gate, capsys, monkey
     assert cmd_confirm(store, draft_id, "https://x.com/someone/status/77", http) == 0
     assert "Mint has recorded the post." in capsys.readouterr().out
     assert len(http.posted) == 1
+
+
+def test_a_report_stuck_on_the_token_is_said_on_the_poll_and_in_the_note(tmp_path, gate):
+    cfg, store, http, _ = _ready(tmp_path)
+    poll(cfg, store, http, PUBS, env=ENV)
+    draft_id = _handed_off(store, gate)
+    confirmed = confirm(store, draft_id, "https://x.com/someone/status/5")
+    no_token = {"ARGUS_MINT_URL": BASE}
+    note = mint.report_note(store, confirmed, no_token, http)
+    assert "ARGUS_MINT_POSTER_TOKEN" in note and "next poll" in note
+    (event,) = poll(cfg, store, http, PUBS, env=no_token)
+    assert event.kind == "error" and "ARGUS_MINT_POSTER_TOKEN" in event.detail
+    (event,) = poll(cfg, store, http, PUBS, env={})  # the missing address is said once, not twice
+    assert event.kind == "error" and "ARGUS_MINT_URL" in event.detail
+    assert not store.mint_report(draft_id)["reported_at"]
+
+
+def test_another_project_is_baselined_on_its_own(tmp_path):
+    cfg, store, http, image = _ready(tmp_path, "sources:\n  mint: {project: one}\n")
+    http.items[0]["project"] = "two"  # approved in a project this source wasn't reading
+    assert poll(cfg, store, http, PUBS, env=ENV) == []
+    cfg = _config(tmp_path, "sources:\n  mint: {project: two}\n")
+    assert [e.kind for e in poll(cfg, store, http, PUBS, env=ENV)] == ["baseline"]
+    assert poll(cfg, store, http, PUBS, env=ENV) == [] and store.list_drafts() == []
+
+
+def test_a_draft_left_without_its_image_gets_it_on_the_next_poll(tmp_path, monkeypatch):
+    cfg, store, http, image = _ready(tmp_path)
+    real = mint.attach_media
+
+    def busy(*args, **kwargs):
+        raise ReviewError("the store is busy")
+
+    monkeypatch.setattr(mint, "attach_media", busy)
+    (event,) = poll(cfg, store, http, PUBS, env=ENV)
+    assert event.kind == "error" and all(not store.media(d.id) for d in store.list_drafts())
+    monkeypatch.setattr(mint, "attach_media", real)
+    assert [e.kind for e in poll(cfg, store, http, PUBS, env=ENV)] == ["draft"]
+    assert all(len(store.media(d.id)) == 1 for d in store.list_drafts())
