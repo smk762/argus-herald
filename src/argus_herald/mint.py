@@ -29,7 +29,7 @@ from urllib.parse import quote
 from argus_herald.config import Config
 from argus_herald.http import BodyTooLarge, Http, HttpClient, HttpError, LanHttpClient, check_lan_url, send_json
 from argus_herald.media import MediaError, clean
-from argus_herald.models import PUBLISHED, Draft, Post
+from argus_herald.models import APPROVED, FAILED, PENDING, PUBLISHED, Draft, Post
 from argus_herald.platforms import Publisher
 from argus_herald.store import Store
 from argus_herald.workflow import PollEvent, ReviewError, attach_media, compose
@@ -44,6 +44,7 @@ MAX_IMAGE_BYTES = 20_000_000
 PAGE = 200
 MAX_TEASERS = 5000
 TIMEOUT = 10  # seconds; mint is often out of reach, and a confirm in the UI waits on this
+_AWAY = "mint is unreachable; the report is sent on a later poll"  # expected, so never an error
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -197,11 +198,16 @@ def poll_mint(
     source = config.mint
     if source is None:
         return []
+    reports = send_reports(store, env, http)
     events = [
         PollEvent("error", SOURCE, detail=f"post of draft #{r.draft_id} not recorded: {r.detail}")
-        for r in send_reports(store, env, http)
+        for r in reports
         if r.outcome == "refused"
     ]
+    # A report that waits on something a person has to fix (no token, a refused token, a failing
+    # mint) is said once per cause; one that waits because mint is out of reach is expected.
+    stuck = list(dict.fromkeys(r.detail for r in reports if r.outcome == "waiting" and r.detail != _AWAY))
+    events += [PollEvent("error", SOURCE, detail=f"posts not reported to mint yet: {detail}") for detail in stuck]
     client = _client(http)
     try:
         base = base_url(env)
@@ -211,9 +217,14 @@ def poll_mint(
             return [*events, PollEvent("skip", SOURCE, detail="unreachable; trying again on the next poll")]
         return [*events, PollEvent("error", SOURCE, detail=str(exc))]
     except (MintError, OSError, ValueError) as exc:
+        if str(exc) in stuck:  # already said above
+            return events
         return [*events, PollEvent("error", SOURCE, detail=str(exc))]
-    if not store.feed_baselined(SOURCE):
-        store.baseline_feed(SOURCE, [teaser.id for teaser in teasers])
+    # Baselined per project filter: pointing the source at another project must not draft
+    # everything that project already had approved.
+    feed = f"{SOURCE}:{source.project}" if source.project else SOURCE
+    if not store.feed_baselined(feed):
+        store.baseline_feed(feed, [teaser.id for teaser in teasers])
         events.append(PollEvent("baseline", SOURCE, detail=f"{len(teasers)} teasers already approved"))
         return events
     if not draft:
@@ -226,10 +237,10 @@ def poll_mint(
         and "png" in p.media_limits.formats
     ]
     for teaser in teasers:
-        if store.feed_seen(SOURCE, teaser.id):
+        if store.feed_seen(feed, teaser.id):
             continue
         if not teaser.current or teaser.posted:  # superseded, or already posted by someone
-            store.mark_feed_seen(SOURCE, teaser.id)
+            store.mark_feed_seen(feed, teaser.id)
             continue
         if not targets:
             events.append(PollEvent("error", SOURCE, teaser.label, detail="no enabled destination that takes images"))
@@ -239,7 +250,7 @@ def poll_mint(
         except (MintError, HttpError, ReviewError, MediaError, OSError) as exc:
             events.append(PollEvent("error", SOURCE, teaser.label, detail=str(exc)))
             continue
-        store.mark_feed_seen(SOURCE, teaser.id)
+        store.mark_feed_seen(feed, teaser.id)
         labels = ", ".join(f"#{i}" for i in ids) or "drafts already existed"
         events.append(PollEvent("draft", SOURCE, teaser.label, detail=labels, draft_ids=ids))
     return events
@@ -262,9 +273,16 @@ def _draft_teaser(
             "the image carries more than its pixels, so the cleaned copy differs from the one mint "
             "reviewed and mint would not record its post"
         )
-    ids = compose(store, targets, teaser_post(teaser), post_key=KEY_PREFIX + teaser.id)
-    for draft_id in ids:
-        attach_media(store, config.media_root, draft_id, path, teaser.alt)
+    key = KEY_PREFIX + teaser.id
+    ids = compose(store, targets, teaser_post(teaser), post_key=key)
+    # Also a draft an earlier poll made and then failed to give its image (it died, or the store
+    # was busy): that teaser isn't marked seen, so this poll finishes it.
+    platforms = {p.id for p in targets}
+    for draft in store.list_drafts(post_key=key):
+        if draft.id in ids or (
+            draft.platform in platforms and draft.status in (PENDING, APPROVED, FAILED) and not store.media(draft.id)
+        ):
+            attach_media(store, config.media_root, draft.id, path, teaser.alt)
     return ids
 
 
@@ -320,7 +338,7 @@ def send_reports(store: Store, env: Mapping[str, str], http: Http) -> list[Repor
         try:
             outcome, detail = _send(client, base, token, row)
         except HttpError as exc:
-            detail = "mint is unreachable; the report is sent on a later poll" if exc.status == 0 else str(exc)
+            detail = _AWAY if exc.status == 0 else str(exc)
             results += [Reported(r["draft_id"], "waiting", detail) for r in due[index:]]
             break
         if outcome != "waiting":
@@ -333,17 +351,23 @@ def send_reports(store: Store, env: Mapping[str, str], http: Http) -> list[Repor
 
 def report_note(store: Store, draft: Draft, env: Mapping[str, str], http: Http) -> str:
     """Send what's queued and say, in one line, where this teaser draft's report stands."""
+    results: list[Reported] = []
     try:
-        send_reports(store, env, http)
+        results = send_reports(store, env, http)
     except (OSError, ValueError) as exc:  # the confirm already happened; the report waits
         log.warning("Reporting to mint failed: %s", exc)
     row = store.mint_report(draft.id)
     if row is None:
+        if (draft.external_id or "").strip():  # the URL is there, so it was the image that was missing
+            return "Mint isn't told about this post: the draft no longer has its image."
         return "Mint is told about this post once its URL is recorded (confirm --url)."
     if row["reported_at"]:
         return "Mint has recorded the post."
     if row["refused"]:
         return f"Mint did not record the post: {row['error']}"
+    why = next((r.detail for r in results if r.draft_id == draft.id and r.outcome == "waiting"), "")
+    if why and why != _AWAY:
+        return f"Mint hasn't been told yet ({why}); the next poll tries again."
     return "Mint hasn't been told yet; the next poll tries again."
 
 
