@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-from argus_herald.legacy import migrate_data_dir
 from argus_herald.models import CLIP_FIELDS, DRAFT_FIELDS, Draft
 
 _SCHEMA = """
@@ -178,7 +177,6 @@ def _now() -> str:
 
 class Store:
     def __init__(self, path: Path) -> None:
-        migrate_data_dir(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self.conn = sqlite3.connect(path, isolation_level=None, timeout=30)
