@@ -35,7 +35,6 @@ Not checked out? Read https://github.com/smk762/argus-cortex/blob/dev/SUITE.md
 - `platforms/` — publishers, plus the `argus_herald.platforms` entry-point group for plugins.
 - `metrics.py`, `engagement.py`, `dashboard.py`, `charts.py` — collectors (separate `metrics.sqlite`) and the server-rendered SVG dashboard.
 - `ui/` — Starlette + Jinja review UI on 127.0.0.1:8787.
-- `legacy.py` and `src/pip_release/` — the pip-release names, honoured with a warning until 0.3. Delete both then.
 
 ## Commands
 

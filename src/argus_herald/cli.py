@@ -25,7 +25,6 @@ from argus_herald.config import (
     resolve_config_path,
 )
 from argus_herald.http import HttpClient, HttpError
-from argus_herald.legacy import adopt_legacy_env, warn_once
 from argus_herald.models import APPROVED, CLIP_FIELDS, CLIP_FORMATS, CLIP_STATUSES, PENDING, POST_KINDS, Draft, Post
 from argus_herald.platforms import Publisher, configured_publishers
 from argus_herald.privacy import Gate, GateUnavailable, load_gate
@@ -66,14 +65,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    adopt_legacy_env(os.environ)
     try:
         if args.command == "init":
             return cmd_init(args.example, args.force)
         if args.command == "healthcheck":
             return cmd_healthcheck()
         load_env_file(Path(args.env))
-        adopt_legacy_env(os.environ)
         config = load_config(resolve_config_path(args.config))
         if args.store:
             config.store_path = Path(args.store)
@@ -93,13 +90,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     except KeyboardInterrupt:
         return 130
-
-
-def legacy_main(argv: Sequence[str] | None = None) -> int:
-    """The pip-release command: argus-herald under its old name, until 0.3."""
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    warn_once("cli", "The pip-release command is deprecated and goes away in 0.3: use argus-herald.")
-    return main(argv)
 
 
 def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
