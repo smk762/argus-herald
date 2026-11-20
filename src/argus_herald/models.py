@@ -15,7 +15,8 @@ PUBLISHING = "publishing"
 STATUSES = (PENDING, APPROVED, REJECTED, PUBLISHED, FAILED, HANDED_OFF, PUBLISHING)
 
 # What a draft announces. `release` is one PyPI version; the rest are posts not tied to one.
-KINDS = ("release", "digest", "headline", "demo", "note", "video", "page")
+# `teaser` comes only from the mint source.
+KINDS = ("release", "digest", "headline", "demo", "note", "video", "page", "teaser")
 POST_KINDS = ("demo", "note", "video", "page")
 DRAFT_FIELDS = {"title", "body", "reply", "edited", "note", "external_id", "error", "publish_at"}
 

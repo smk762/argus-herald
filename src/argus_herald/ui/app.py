@@ -18,6 +18,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
+from argus_herald import mint
 from argus_herald.config import Config, Destination
 from argus_herald.http import Http, HttpClient, HttpError
 from argus_herald.models import APPROVED, FAILED, HANDED_OFF, PENDING, POST_KINDS, PUBLISHING, STATUSES, Draft, Post
@@ -567,7 +568,10 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
         url = str(form.get("url") or "").strip() or None
         confirmed = confirm(store, draft.id, url)
         where = " with its post URL" if confirmed.external_id else ""
-        return f"Marked {draft.label} published on {publisher.label}{where}."
+        message = f"Marked {draft.label} published on {publisher.label}{where}."
+        if mint.is_teaser(confirmed):
+            message += " " + mint.report_note(store, confirmed, state["env"], state["http"] or HttpClient())
+        return message
     if action == "schedule":
         from argus_herald.schedule import iso, parse
 

@@ -54,6 +54,9 @@ privacy:
 #   youtube:
 #     channel_id: UC...                       # youtube.com/channel/UC...
 #     platforms: [twitter]                    # default: every enabled destination
+#   mint:                                     # teasers approved in argus-mint; ARGUS_MINT_URL in .env
+#     project: example-teasers                # optional: only this mint project
+#     platforms: [twitter]                    # default: every enabled destination that takes images
 
 # Optional: collect releases into windows instead of one post per release.
 # digest:

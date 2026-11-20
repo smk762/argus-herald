@@ -135,6 +135,20 @@ CREATE TABLE IF NOT EXISTS feed_items (
     seen_at TEXT NOT NULL,
     PRIMARY KEY (source, item_id)
 );
+-- Posts of mint teasers to report back to argus-mint (see mint.py). A row is written when the
+-- post is known to be live; `at` is fixed then, so a retry sends the same report. reported_at is
+-- filled when mint has it; refused is 1 when mint turned it down for good (error says why).
+CREATE TABLE IF NOT EXISTS mint_reports (
+    draft_id INTEGER PRIMARY KEY REFERENCES drafts(id) ON DELETE CASCADE,
+    mint_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    url TEXT,
+    at TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    reported_at TEXT NOT NULL DEFAULT '',
+    refused INTEGER NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT ''
+);
 """
 
 # One row per draft. `post_key` ties the per-platform drafts of one piece of content together:
@@ -619,6 +633,34 @@ class Store:
             "INSERT OR IGNORE INTO feed_items (source, item_id, seen_at) VALUES (?, ?, ?)",
             (source, item_id, _now()),
         )
+
+    def add_mint_report(
+        self, draft_id: int, *, mint_id: str, platform: str, url: str | None, at: str, sha256: str
+    ) -> bool:
+        """Queue one report per draft. False when the draft already has one."""
+        cur = self.conn.execute(
+            "INSERT OR IGNORE INTO mint_reports (draft_id, mint_id, platform, url, at, sha256) VALUES (?, ?, ?, ?, ?, ?)",
+            (draft_id, mint_id, platform, url, at, sha256),
+        )
+        self.conn.commit()
+        return cur.rowcount == 1
+
+    def mint_report(self, draft_id: int) -> dict | None:
+        row = self.conn.execute("SELECT * FROM mint_reports WHERE draft_id = ?", (draft_id,)).fetchone()
+        return dict(row) if row else None
+
+    def mint_reports_due(self) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM mint_reports WHERE reported_at = '' AND refused = 0 ORDER BY draft_id"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def settle_mint_report(self, draft_id: int, *, reported: bool, refused: bool = False, error: str = "") -> None:
+        self.conn.execute(
+            "UPDATE mint_reports SET reported_at = ?, refused = ?, error = ? WHERE draft_id = ?",
+            (_now() if reported else "", int(refused), error[:500], draft_id),
+        )
+        self.conn.commit()
 
     def get(self, draft_id: int) -> Draft | None:
         row = self.conn.execute("SELECT * FROM drafts WHERE id = ?", (draft_id,)).fetchone()

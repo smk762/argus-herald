@@ -167,7 +167,7 @@ def _dispatch(args: argparse.Namespace, config: Config, store: Store) -> int:
         print(f"Accepted {args.key!r} for draft {args.id}.")
         return 0
     if args.command == "confirm":
-        return cmd_confirm(store, args.id, args.url)
+        return cmd_confirm(store, args.id, args.url, http)
     raise ReviewError(f"Unknown command {args.command}")
 
 
@@ -738,7 +738,7 @@ def _publish_due(config: Config, store: Store, http: HttpClient) -> None:
 
 def cmd_poll(config: Config, store: Store, http: HttpClient, publishers: list[Publisher]) -> int:
     _publish_due(config, store, http)
-    events = poll(config, store, http, publishers)
+    events = poll(config, store, http, publishers, env=os.environ)
     new_ids: list[int] = []
     errors = 0
     for event in events:
@@ -1189,12 +1189,15 @@ def cmd_publish(
     return 1 if failed else 0
 
 
-def cmd_confirm(store: Store, draft_id: int, url: str | None = None) -> int:
+def cmd_confirm(store: Store, draft_id: int, url: str | None = None, http: HttpClient | None = None) -> int:
+    from argus_herald import mint
     from argus_herald.platforms import TwitterPublisher
 
     draft = confirm(store, draft_id, url)
     where = f" at {draft.external_id}" if draft.external_id else ""
     print(f"Marked {draft_id} published{where}.")
+    if mint.is_teaser(draft):
+        print(mint.report_note(store, draft, os.environ, http or HttpClient()))
     reply = TwitterPublisher().reply_url(draft) if draft.platform == "twitter" else None
     if reply:
         print(f"Now post the link as a reply:\n{reply}")
@@ -1484,13 +1487,13 @@ def _format_event(event: PollEvent) -> str:
     if event.kind == "baseline":
         return f"baselined {event.project} ({event.detail}); no drafts"
     if event.kind == "draft":
-        return f"drafted {event.project} {event.version}: {event.detail}"
+        return f"drafted {' '.join(part for part in (event.project, event.version) if part)}: {event.detail}"
     if event.kind == "collect":
         return f"collected {event.project} {event.version} for the next digest"
     if event.kind == "digest":
         return f"{event.project} to {event.version}: drafts {', '.join(f'#{i}' for i in event.draft_ids) or 'none new'}; {event.detail}"
     if event.kind == "skip":
-        return f"skipped {event.project} {event.version}: {event.detail}"
+        return f"skipped {' '.join(part for part in (event.project, event.version) if part)}: {event.detail}"
     return f"error {event.project}: {event.detail}"
 
 
