@@ -18,14 +18,14 @@ Discord and Telegram publish through their APIs. X and Patreon are handed to a p
 
 ## Upgrading from pip-release
 
-This project used to be called pip-release. Until 0.3 the old names keep working and log a warning that names the new one:
+This project used to be called pip-release. The old names kept working, with a warning, through 0.3. They are gone now, so rename anything that still uses them:
 
 | Before | Now |
 |---|---|
 | `pip-release` command | `argus-herald` |
-| `PIP_RELEASE_*` variables | `ARGUS_HERALD_*` (the new name wins when both are set) |
-| `.pip-release/` data directory | `.argus-herald/`, moved on first run unless `store.path` names the old one |
-| `~/.config/pip-release/opsec-denylist.txt` | `~/.config/argus-herald/opsec-denylist.txt` (the old file is read until you move it) |
+| `PIP_RELEASE_*` variables | `ARGUS_HERALD_*` |
+| `.pip-release/` data directory | `.argus-herald/`: move the directory yourself, or point `store.path` at the old one |
+| `~/.config/pip-release/opsec-denylist.txt` | `~/.config/argus-herald/opsec-denylist.txt`: move the file, since approve and publish are refused without it |
 | `pip-release-watch` / `pip-release-ui` user services | `argus-herald-watch` / `argus-herald-ui`: rerun `contrib/install-user-services.sh` |
 | `pip_release.platforms` entry points, `import pip_release` | `argus_herald.platforms`, `import argus_herald` |
 

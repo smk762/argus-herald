@@ -27,7 +27,6 @@ from pathlib import Path
 
 DENYLIST_ENV = "ARGUS_HERALD_OPSEC_DENYLIST"
 DEFAULT_DENYLIST = Path.home() / ".config" / "argus-herald" / "opsec-denylist.txt"
-LEGACY_DENYLIST = Path.home() / ".config" / "pip-release" / "opsec-denylist.txt"  # read until 0.3
 # The auditor keeps its own list. Terms added to either list are enforced by both tools.
 AUDITOR_DENYLIST_ENV = "AI_AUDIT_OPSEC_DENYLIST"
 AUDITOR_DENYLIST = Path.home() / ".config" / "ai-code-auditor" / "opsec-denylist.txt"
@@ -179,12 +178,6 @@ def load_gate(privacy: Mapping[str, object] | None = None, env: Mapping[str, str
     privacy = privacy or {}
     warnings: list[str] = []
     path = Path(env.get(DENYLIST_ENV) or DEFAULT_DENYLIST).expanduser()
-    if not env.get(DENYLIST_ENV) and not path.is_file() and LEGACY_DENYLIST.is_file():
-        warnings.append(
-            f"Reading the deny-list from its old place, {LEGACY_DENYLIST}. Move it to {path}: "
-            "the old place is no longer read from 0.3."
-        )
-        path = LEGACY_DENYLIST
     if not path.is_file():
         raise GateUnavailable(
             f"The privacy deny-list is missing ({path}). Approve and publish stay refused until it "
