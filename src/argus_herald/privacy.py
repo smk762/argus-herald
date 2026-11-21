@@ -260,10 +260,18 @@ def _read_terms(path: Path, warnings: list[str]) -> list[str]:
                     "To deny a hashtag, write it as \\#tag."
                 )
             continue
-        term = _INLINE_COMMENT.split(text, maxsplit=1)[0].strip().replace("\\#", "#")
-        if term:
-            terms.append(term)
+        term = _INLINE_COMMENT.split(text, maxsplit=1)[0].strip()
+        # Lists written when every '#' started a comment meant "name#note" to deny "name". Deny that
+        # part too, so no existing list denies less than it used to.
+        head = _UNESCAPED_HASH.split(term, maxsplit=1)[0].strip()
+        for value in (term, head):
+            value = value.replace("\\#", "#")
+            if value and value not in terms:
+                terms.append(value)
     return terms
+
+
+_UNESCAPED_HASH = re.compile(r"(?<!\\)#")
 
 
 _B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"

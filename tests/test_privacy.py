@@ -144,13 +144,12 @@ def test_deny_terms_can_hold_a_hash_and_comments_still_work(private_denylist):
     )
     private_denylist.chmod(0o600)
     gate = load_gate({})
-    assert gate.deny_terms == ["name#tag", "#hashtagterm", "plain-term"]
-    assert rules(gate, "see name#tag and #hashtagterm and plain-term") == [
-        ("deny-term", "name#tag"),
-        ("deny-term", "#hashtagterm"),
-        ("deny-term", "plain-term"),
-    ]
-    assert rules(gate, "a name alone") == []
+    assert gate.deny_terms == ["name#tag", "name", "#hashtagterm", "plain-term"]
+    found = rules(gate, "see name#tag and #hashtagterm and plain-term")
+    for term in ("name#tag", "#hashtagterm", "plain-term"):
+        assert ("deny-term", term) in found
+    # A list written when '#' always began a comment meant "name#tag" to deny "name"; it still does.
+    assert rules(gate, "a name alone") == [("deny-term", "name")]
     # The hashtag-shaped comment is flagged by line number, without repeating it.
     assert [w for w in gate.warnings if "line 6" in w and "\\#tag" in w and "lonelytag" not in w]
 

@@ -453,7 +453,7 @@ Every draft passes a privacy gate on approve and again on publish. A hit refuses
 - timezone offsets attached to a timestamp, as in a pasted log or `git log` line (`+00:00` and `Z` are fine);
 - any term in your private deny-list, and any regex in `privacy.patterns`.
 
-The deny-list is a file outside the repository, one term per line (a line starting with `#` is a comment, as is whitespace then `#` after a term; write a hashtag term as `\#tag`): `~/.config/argus-herald/opsec-denylist.txt` by default, or the path in `ARGUS_HERALD_OPSEC_DENYLIST`. Keep it `chmod 600`. If [ai-code-auditor](https://github.com/smk762/ai-code-auditor)'s list exists, its terms are enforced too. **Without the deny-list nothing can be approved or published.**
+The deny-list is a file outside the repository, one term per line (a line starting with `#` is a comment, as is whitespace then `#` after a term; write a hashtag term as `\#tag`; `name#tag` denies both `name#tag` and `name`): `~/.config/argus-herald/opsec-denylist.txt` by default, or the path in `ARGUS_HERALD_OPSEC_DENYLIST`. Keep it `chmod 600`. If [ai-code-auditor](https://github.com/smk762/ai-code-auditor)'s list exists, its terms are enforced too. **Without the deny-list nothing can be approved or published.**
 
 ```yaml
 privacy:
