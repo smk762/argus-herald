@@ -158,7 +158,7 @@ def suggest(metrics_db: Path) -> str:
 
 
 def _suggest(conn: sqlite3.Connection) -> str:
-    has ={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    has = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     if "post_metrics" not in has:
         return (
             "No post engagement collected yet. Bluesky and Mastodon posts and the X analytics import "
