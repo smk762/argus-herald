@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -332,16 +332,19 @@ class Store:
                 raise ValueError("A draft needs a post_key, or a project and version")
             post_key = release_key(project, version)
         now = _now()
+        # Only the (post_key, platform) conflict means "already drafted"; any other constraint
+        # still raises. No commit here: outside a transaction the insert commits on its own, and
+        # inside one (compose) the caller commits every destination's draft together.
         cur = self.conn.execute(
             """
-            INSERT OR IGNORE INTO drafts (
+            INSERT INTO drafts (
                 kind, post_key, subject, project, version, platform, title, body, link, reply, drafted_by,
                 status, edited, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+            ON CONFLICT (post_key, platform) DO NOTHING
             """,
             (kind, post_key, subject, project, version, platform, title, body, link, reply, drafted_by, now, now),
         )
-        self.conn.commit()
         if cur.rowcount:
             return int(cur.lastrowid), True
         row = self.conn.execute(
@@ -438,6 +441,12 @@ class Store:
                 (digest_id, closes_at),
             )
         return digest_id
+
+    def drop_digest(self, digest_id: int) -> None:
+        """Undo create_digest: its releases are open again, so the window closes on the next poll."""
+        with self.transaction():
+            self.conn.execute("UPDATE releases SET digest_id = NULL WHERE digest_id = ?", (digest_id,))
+            self.conn.execute("DELETE FROM digests WHERE id = ?", (digest_id,))
 
     def digests(self) -> list[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM digests ORDER BY period_from DESC").fetchall()
@@ -707,8 +716,14 @@ class Store:
         draft_id: int,
         from_statuses: tuple[str, ...],
         to_status: str,
+        *,
+        expect: Mapping[str, object] | None = None,
         **fields: object,
     ) -> Draft | None:
+        """Move a draft from one of from_statuses to to_status, setting fields. None when it wasn't
+        in one of those statuses, or when a column named in expect no longer holds the value given
+        (None: still empty). The check and the write are one statement, so a caller can act on what
+        it read without another request changing the draft in between."""
         assignments = ["status = ?", "updated_at = ?"]
         params: list[object] = [to_status, _now()]
         if to_status == "pending" and "publish_at" not in fields:
@@ -720,10 +735,19 @@ class Store:
             params.append(value)
         marks = ", ".join("?" for _ in from_statuses)
         params.extend([draft_id, *from_statuses])
+        conditions = ""
+        for key, value in (expect or {}).items():
+            if key not in DRAFT_FIELDS and key != "updated_at":
+                raise ValueError(f"Unknown draft field {key}")
+            if value is None:
+                conditions += f" AND {key} IS NULL"
+            else:
+                conditions += f" AND {key} = ?"
+                params.append(value)
         cur = self.conn.execute(
             f"""
             UPDATE drafts SET {", ".join(assignments)}
-            WHERE id = ? AND status IN ({marks})
+            WHERE id = ? AND status IN ({marks}){conditions}
             """,
             params,
         )

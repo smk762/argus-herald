@@ -414,6 +414,8 @@ def close_digests(
         if window.start.isoformat() in done:
             continue
         digest_id = store.create_digest(window.start.isoformat(), window.period_to.isoformat(), window.closes_at)
+        # Without a gate the drafts are still made (approve and publish refuse them until the gate
+        # is back) but the site page isn't written; build_digest says so in its status.
         try:
             gate: Gate | None = load_gate(config.privacy)
         except GateUnavailable:
@@ -421,8 +423,15 @@ def close_digests(
         from argus_herald.drafting import configured_backend
         from argus_herald.http import HttpClient
 
-        backend, warning = configured_backend(config.drafting, os.environ, HttpClient())
-        ids, status = build_digest(store, settings, publishers, digest_id, gate, backend)
+        try:
+            backend, warning = configured_backend(config.drafting, os.environ, HttpClient())
+            ids, status = build_digest(store, settings, publishers, digest_id, gate, backend)
+        except Exception as exc:
+            # A digest that failed to build would otherwise count as done and never be retried.
+            log.warning("The digest for %s failed to build", window.start, exc_info=True)
+            store.drop_digest(digest_id)
+            events.append(PollEvent("error", f"digest {window.start}", str(window.period_to), detail=str(exc)))
+            continue
         if warning:
             status = f"{status}; {warning}"
         events.append(
@@ -451,21 +460,24 @@ def compose(store: Store, publishers: list[Publisher], post: Post, *, post_key: 
     if not publishers:
         raise ReviewError("No destinations are enabled")
     key = post_key or f"post:{uuid4().hex[:12]}"
+    # Every destination's text is made before any draft is stored, and the drafts are stored
+    # together: a destination that can't render the post leaves no half-made set behind.
+    shaped = [(publisher, *publisher.shape(publisher.render_post(post), post.link.strip())) for publisher in publishers]
     ids: list[int] = []
-    for publisher in publishers:
-        rendered, reply = publisher.shape(publisher.render_post(post), post.link.strip())
-        draft_id, created = store.add_draft(
-            kind=post.kind,
-            post_key=key,
-            subject=post.subject or post.title or post.text.strip().split("\n", 1)[0][:80],
-            platform=publisher.id,
-            title=rendered.title,
-            body=rendered.body,
-            link=post.link.strip(),
-            reply=reply,
-        )
-        if created:
-            ids.append(draft_id)
+    with store.transaction():
+        for publisher, rendered, reply in shaped:
+            draft_id, created = store.add_draft(
+                kind=post.kind,
+                post_key=key,
+                subject=post.subject or post.title or post.text.strip().split("\n", 1)[0][:80],
+                platform=publisher.id,
+                title=rendered.title,
+                body=rendered.body,
+                link=post.link.strip(),
+                reply=reply,
+            )
+            if created:
+                ids.append(draft_id)
     return ids
 
 
@@ -666,7 +678,8 @@ def rebaseline(config: Config, store: Store, http: Http, projects: list[str] | N
                 detail=f"{_version_count(len(versions))}, {fresh} newly marked seen",
             )
         )
-    if not any(event.kind == "error" for event in events):
+    # Baselining some of the projects isn't a baseline of all of them.
+    if set(targets) == set(tracked) and not any(event.kind == "error" for event in events):
         store.set_meta(BASELINE_KEY, started)
     return events
 
@@ -705,6 +718,23 @@ def approve(
 STALE_PUBLISH = timedelta(minutes=10)
 
 
+def _stale_claim(draft: Draft) -> bool:
+    """True when a publishing draft's claim is older than STALE_PUBLISH: the run that made it died."""
+    try:
+        claimed = datetime.fromisoformat(draft.updated_at)
+    except ValueError:
+        return False
+    if claimed.tzinfo is None:
+        claimed = claimed.replace(tzinfo=UTC)
+    return datetime.now(UTC) - claimed >= STALE_PUBLISH
+
+
+def _claim_check(draft: Draft) -> dict[str, object] | None:
+    """What a transition out of publishing must still find: the same stale claim that was read.
+    A run that claims the draft again in between refreshes updated_at, so the transition misses."""
+    return {"updated_at": draft.updated_at} if draft.status == PUBLISHING else None
+
+
 def reject(store: Store, draft_id: int, note: str | None) -> Draft:
     draft = _require_draft(store, draft_id)
     # handed_off waits on a person, so it can be dropped. publishing is a post in flight:
@@ -712,19 +742,13 @@ def reject(store: Store, draft_id: int, note: str | None) -> Draft:
     # behind by a run that died (older than STALE_PUBLISH) can be rejected.
     sources: tuple[str, ...] = (PENDING, APPROVED, FAILED, HANDED_OFF)
     if draft.status == PUBLISHING:
-        try:
-            claimed = datetime.fromisoformat(draft.updated_at)
-            if claimed.tzinfo is None:
-                claimed = claimed.replace(tzinfo=UTC)
-        except ValueError:
-            claimed = None
-        if claimed is None or datetime.now(UTC) - claimed < STALE_PUBLISH:
+        if not _stale_claim(draft):
             raise ReviewError(
                 f"Draft {draft_id} is being published and cannot be rejected. If the publish run died, "
                 f"it can be rejected {int(STALE_PUBLISH.total_seconds() // 60)} minutes after it started."
             )
-        sources = (*sources, PUBLISHING)
-    updated = store.transition(draft_id, sources, "rejected", note=note)
+        sources = (PUBLISHING,)
+    updated = store.transition(draft_id, sources, "rejected", expect=_claim_check(draft), note=note)
     if updated is None:
         raise ReviewError(f"Draft {draft_id} is {draft.status} and cannot be rejected")
     return updated
@@ -762,24 +786,43 @@ def publish_draft(
         raise ReviewError("; ".join(problems))
     if dry_run:
         return PublishResult(external_id=None, detail=draft.body, handed_off=publisher.manual)
-    locked = store.transition(draft.id, (APPROVED, FAILED, PUBLISHING), PUBLISHING, error=None)
+    # The claim is exclusive: a draft another run is publishing can't be claimed again, or both
+    # would post. Only a claim left by a run that died (see reject) can be taken over.
+    if draft.status == PUBLISHING and not _stale_claim(draft):
+        raise ReviewError(
+            f"Draft {draft.id} is already being published. If that run died, it can be published again "
+            f"{int(STALE_PUBLISH.total_seconds() // 60)} minutes after it started."
+        )
+    sources = (PUBLISHING,) if draft.status == PUBLISHING else (APPROVED, FAILED)
+    locked = store.transition(draft.id, sources, PUBLISHING, expect=_claim_check(draft), error=None)
     if locked is None:
         raise ReviewError(f"Draft {draft.id} changed before it could be published")
+    # Only the run holding the claim records the result.
+    claim = _claim_check(locked)
     try:
         result = publisher.publish(locked, env, http)
     except Exception as exc:
-        store.transition(draft.id, (PUBLISHING,), FAILED, error=str(exc)[:500])
+        store.transition(draft.id, (PUBLISHING,), FAILED, expect=claim, error=str(exc)[:500])
         raise
     status = HANDED_OFF if result.handed_off else PUBLISHED
-    store.transition(
+    done = store.transition(
         draft.id,
         (PUBLISHING,),
         status,
+        expect=claim,
         external_id=result.external_id,
         error=None,
         note=result.detail if result.handed_off else locked.note,
     )
-    if not result.handed_off:
+    if done is None:
+        # The post is out but the draft moved on meanwhile; keep its id in the log so it isn't lost.
+        log.error(
+            "Draft %s went out (%s) but changed while it was being published, so it wasn't marked %s",
+            draft.id,
+            result.external_id or "no post id",
+            status,
+        )
+    elif not result.handed_off:
         _queue_mint_report(store, draft.id)
     return result
 
@@ -789,8 +832,8 @@ def _queue_mint_report(store: Store, draft_id: int, at: str | None = None) -> No
     Never fails the publish or confirm it follows: the post is already out."""
     from argus_herald.mint import record_post
 
-    draft = store.get(draft_id)
     try:
+        draft = store.get(draft_id)
         if draft is not None:
             record_post(store, draft, at=at)
     except Exception:  # the report is bookkeeping; the post itself went out
@@ -803,11 +846,18 @@ def confirm(store: Store, draft_id: int, url: str | None = None) -> Draft:
     fields: dict[str, object] = {}
     if url and url.strip():
         fields["external_id"] = post_url(draft.platform, url)
-    # A published draft without a URL can still get one afterwards.
+    # A published draft without a URL can still get one afterwards. The transition must still find
+    # the draft as it was read (same status, same empty URL): two confirms racing on one draft
+    # then can't both write a URL, and `at` below is right for the row that was changed.
     allowed = (HANDED_OFF, PUBLISHED) if fields and not draft.external_id else (HANDED_OFF,)
-    updated = store.transition(draft_id, allowed, PUBLISHED, **fields)
+    if draft.status in allowed:
+        allowed = (draft.status,)
+    updated = store.transition(draft_id, allowed, PUBLISHED, expect={"external_id": draft.external_id}, **fields)
     if updated is None:
-        raise ReviewError(f"Draft {draft_id} is {draft.status}. Confirm is for a manual handoff (X, Patreon).")
+        current = store.get(draft_id) or draft
+        if current.status == PUBLISHED and current.external_id:
+            raise ReviewError(f"Draft {draft_id} is already published at {current.external_id}")
+        raise ReviewError(f"Draft {draft_id} is {current.status}. Confirm is for a manual handoff (X, Patreon).")
     if updated.external_id:
         # Mint is told once the post has its URL. A URL added afterwards belongs to the post made
         # when the draft was first marked published.
