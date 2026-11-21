@@ -406,7 +406,7 @@ query ($account: String!, $filter: AccountRumPageloadEventsAdaptiveGroupsFilter_
       paths: rumPageloadEventsAdaptiveGroups(limit: 5000, filter: $filter) {
         count
         sum { visits }
-        dimensions { date requestPath }
+        dimensions { date requestHost requestPath }
       }
       referrers: rumPageloadEventsAdaptiveGroups(limit: 5000, filter: $filter) {
         count
@@ -420,7 +420,7 @@ query ($account: String!, $filter: AccountRumPageloadEventsAdaptiveGroupsFilter_
 
 
 def collect_site(metrics, http: Http, env: Mapping[str, str], today: date | None = None, days: int = 7) -> str:
-    """The last `days` days of page views per path and per referrer. Re-fetching a day replaces it."""
+    """The last `days` days of page views per host and path, and per referrer. Re-fetching a day replaces it."""
     missing = site_configured(env)
     if missing:
         # A blank site tag can answer with no rows, and no rows would replace the stored days.
@@ -456,6 +456,7 @@ def collect_site(metrics, http: Http, env: Mapping[str, str], today: date | None
         paths.append(
             {
                 "date": str(dims["date"]),
+                "host": str(dims.get("requestHost") or "").lower(),
                 "path": str(dims.get("requestPath") or "/"),
                 "pageviews": int(item.get("count") or 0),
                 "visits": int((item.get("sum") or {}).get("visits") or 0),
@@ -472,17 +473,23 @@ def collect_site(metrics, http: Http, env: Mapping[str, str], today: date | None
             }
         )
     with metrics.transaction():
-        for table, rows, key in (("site_traffic", paths, "path"), ("site_referrers", refs, "referrer")):
+        for table, rows, keys in (
+            ("site_traffic", paths, ("host", "path")),
+            ("site_referrers", refs, ("referrer",)),
+        ):
             # Only the fetched window: a backfill of earlier days must not erase later ones.
             metrics.conn.execute(
                 f"DELETE FROM {table} WHERE date BETWEEN ? AND ?", (start.isoformat(), today.isoformat())
             )
+            columns = ("date", *keys, "pageviews", "visits")
             metrics.conn.executemany(
-                f"INSERT OR REPLACE INTO {table} (date, {key}, pageviews, visits) VALUES (?, ?, ?, ?)",
-                [(r["date"], r[key], r["pageviews"], r["visits"]) for r in rows],
+                f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                [tuple(r[c] for c in columns) for r in rows],
             )
     views = sum(p["pageviews"] for p in paths)
-    return f"{days} days, {len({p['path'] for p in paths})} paths, {views} page views, {len(refs)} referrer rows"
+    hosts = len({p["host"] for p in paths if p["host"]})
+    pages = len({(p["host"], p["path"]) for p in paths})
+    return f"{days} days, {hosts} hosts, {pages} paths, {views} page views, {len(refs)} referrer rows"
 
 
 def site_configured(env: Mapping[str, str]) -> list[str]:

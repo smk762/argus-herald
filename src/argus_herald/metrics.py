@@ -96,10 +96,12 @@ CREATE TABLE IF NOT EXISTS account_engagement (
     link_clicks INTEGER, profile_visits INTEGER, new_follows INTEGER, source TEXT NOT NULL DEFAULT 'manual',
     PRIMARY KEY (platform, account, start_date, end_date)
 );
--- Site page views (Cloudflare Web Analytics), per day.
+-- Site page views (Cloudflare Web Analytics), per day. `host` tells subdomains that share one
+-- site tag apart; it is '' on rows collected before hosts were recorded.
 CREATE TABLE IF NOT EXISTS site_traffic (
-    date TEXT NOT NULL, path TEXT NOT NULL, pageviews INTEGER NOT NULL, visits INTEGER NOT NULL,
-    PRIMARY KEY (date, path)
+    date TEXT NOT NULL, host TEXT NOT NULL DEFAULT '', path TEXT NOT NULL,
+    pageviews INTEGER NOT NULL, visits INTEGER NOT NULL,
+    PRIMARY KEY (date, host, path)
 );
 CREATE TABLE IF NOT EXISTS site_referrers (
     date TEXT NOT NULL, referrer TEXT NOT NULL, pageviews INTEGER NOT NULL, visits INTEGER NOT NULL,
@@ -122,7 +124,26 @@ class Metrics:
         self.conn = sqlite3.connect(path, isolation_level=None, timeout=30)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
+        self._add_site_host()
         self.conn.executescript(_SCHEMA)
+
+    def _add_site_host(self) -> None:
+        """site_traffic was keyed (date, path) before hosts were recorded. The key changes, so the
+        table is rebuilt; its rows are kept with a blank host."""
+        columns = [row["name"] for row in self.conn.execute("PRAGMA table_info(site_traffic)")]
+        if not columns or "host" in columns:
+            return
+        with self.transaction():
+            self.conn.execute("ALTER TABLE site_traffic RENAME TO site_traffic_old")
+            self.conn.execute(
+                "CREATE TABLE site_traffic (date TEXT NOT NULL, host TEXT NOT NULL DEFAULT '', path TEXT NOT NULL, "
+                "pageviews INTEGER NOT NULL, visits INTEGER NOT NULL, PRIMARY KEY (date, host, path))"
+            )
+            self.conn.execute(
+                "INSERT INTO site_traffic (date, path, pageviews, visits) "
+                "SELECT date, path, pageviews, visits FROM site_traffic_old"
+            )
+            self.conn.execute("DROP TABLE site_traffic_old")
 
     def close(self) -> None:
         self.conn.close()
