@@ -6,7 +6,7 @@ import pytest
 from argus_herald.config import ConfigError, Destination, Schedule, load_config
 from argus_herald.models import Post
 from argus_herald.platforms import DiscordPublisher, PatreonPublisher, TwitterPublisher
-from argus_herald.schedule import free_slots, iso, next_due_in, parse, publish_due, slot_times, suggest
+from argus_herald.schedule import choose, free_slots, iso, next_due_in, parse, publish_due, slot_times, suggest
 from argus_herald.store import Store
 from argus_herald.workflow import approve, compose, edit_draft
 
@@ -53,6 +53,15 @@ def test_slots_respect_gap_and_offset(tmp_path):
     assert free_slots(store, "twitter", TUE_FRI, NOW, ignore=draft_id)[0].isoformat() == "2026-11-24T08:00:00+00:00"
     shifted = Schedule(slots=TUE_FRI.slots, offset_minutes=30)
     assert free_slots(store, "patreon", shifted, NOW)[0].isoformat() == "2026-11-24T08:30:00+00:00"
+    store.close()
+
+
+def test_choosing_again_for_a_scheduled_draft_does_not_count_its_own_slot_as_taken(tmp_path):
+    store = Store(tmp_path / "s.sqlite")
+    draft_id, _ = store.add_draft(project="p", version="1", platform="twitter", title="", body="b", link="l")
+    store.transition(draft_id, ("pending",), "approved")
+    store.set_publish_at(draft_id, "2026-11-24T08:00:00+00:00")
+    assert choose(store, store.get(draft_id), TUE_FRI, NOW).isoformat() == "2026-11-24T08:00:00+00:00"
     store.close()
 
 

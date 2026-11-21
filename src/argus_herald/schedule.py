@@ -84,7 +84,8 @@ def choose(
         taken = [parse(d.publish_at) for d in store.scheduled(draft.platform) if d.id != draft.id and d.publish_at]
         if when > now + LEAD and _clear(when, taken, timedelta(hours=schedule.min_gap_hours)):
             return when
-    slots = free_slots(store, draft.platform, schedule, now, count=1, ignore=None)
+    # Like the sibling check above, the draft's own current time doesn't count as taken.
+    slots = free_slots(store, draft.platform, schedule, now, count=1, ignore=draft.id)
     return slots[0] if slots else None
 
 
