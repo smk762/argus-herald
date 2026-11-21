@@ -396,3 +396,68 @@ def test_site_traffic_table_gains_a_host_column(tmp_path):
     assert metrics.count("site_traffic") == 3
     metrics.close()
     assert Metrics(path).count("site_traffic") == 3  # opening again changes nothing
+
+
+def test_a_failed_getposts_batch_only_costs_its_own_posts(tmp_path):
+    class Flaky(Fake):
+        def request(self, method, url, body=None, headers=None):
+            if "getPosts" in url and "3kbad" in url:
+                self.calls.append(url)
+                return 502, b"bad gateway"
+            return super().request(method, url, body, headers)
+
+    metrics = _metrics(tmp_path)
+    _broadcast(metrics, "bluesky", BSKY_POST)
+    for n in range(25):  # fills the first batch, so the bad post lands in a batch of its own
+        _broadcast(metrics, "bluesky", f"https://bsky.app/profile/{DID}/post/3kz{n:02d}")
+    _broadcast(metrics, "bluesky", f"https://bsky.app/profile/{DID}/post/3kbad")
+    report = collect_posts(metrics, Flaky(), T0 + timedelta(hours=2))
+    assert report.errors == []
+    assert metrics.count("post_metrics", platform="bluesky", external_id=BSKY_POST) == 1
+    assert sum("can't fetch" in line and "3kbad" in line for line in report.skipped) == 1
+
+
+def test_a_getposts_answer_that_isnt_an_object_is_a_problem_not_a_crash(tmp_path):
+    class Listy(Fake):
+        def request(self, method, url, body=None, headers=None):
+            if "getPosts" in url:
+                return 200, b"[]"
+            return super().request(method, url, body, headers)
+
+    metrics = _metrics(tmp_path)
+    _broadcast(metrics, "bluesky", BSKY_POST)
+    report = collect_posts(metrics, Listy(), T0 + timedelta(hours=2))
+    assert report.errors == [] and "not found" in report.skipped[0]
+
+
+def test_a_handle_link_and_a_did_link_to_one_post_both_get_a_sample(tmp_path):
+    metrics = _metrics(tmp_path)
+    did_link = f"https://bsky.app/profile/{DID}/post/3kabc"
+    _broadcast(metrics, "bluesky", BSKY_POST)
+    _broadcast(metrics, "bluesky", did_link)
+    report = collect_posts(metrics, Fake(), T0 + timedelta(hours=2))
+    assert report.skipped == [] and report.errors == []
+    assert metrics.count("post_metrics", external_id=BSKY_POST) == 1
+    assert metrics.count("post_metrics", external_id=did_link) == 1
+
+
+def test_a_malformed_host_is_not_a_post_ref():
+    assert mastodon_ref("https://[::1/@a/1") is None
+    assert mastodon_ref("https://[foo]/@a/1") is None
+    assert bluesky_ref("https://[::1/profile/a/post/3k") is None
+
+
+def test_slash_dates_take_one_order_per_export(tmp_path):
+    metrics = _metrics(tmp_path)
+    header = "Date,Impressions,Likes,Engagements\n"
+    import_x_analytics(metrics, header + "03/04/2026,10,1,2\n03/05/2026,10,1,2\n", "dragonhound3")
+    days = {r["start_date"] for r in metrics.conn.execute("SELECT start_date FROM account_engagement")}
+    assert days == {"2026-03-04", "2026-03-05"}  # X writes month first
+
+    # A first number over 12 shows this export is day-first, so 03/04 is 3 April, not 4 March.
+    import_x_analytics(metrics, header + "03/04/2025,10,1,2\n25/04/2025,10,1,2\n", "dragonhound3")
+    days = {r["start_date"] for r in metrics.conn.execute("SELECT start_date FROM account_engagement")}
+    assert {"2025-04-03", "2025-04-25"} <= days and "2025-03-04" not in days
+
+    with pytest.raises(ValueError, match="mixes"):
+        import_x_analytics(metrics, header + "25/04/2025,10,1,2\n04/26/2025,10,1,2\n", "dragonhound3")
