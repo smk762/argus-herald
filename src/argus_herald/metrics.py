@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -38,6 +38,8 @@ from argus_herald.workflow import tracked_projects
 
 GITHUB_API = "https://api.github.com"
 PYPISTATS = "https://pypistats.org/api/packages"
+# GitHub refuses stargazer pages past 400 (HTTP 422, "pagination is limited for this resource").
+STAR_PAGES = 400
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS gh_traffic (
@@ -126,6 +128,7 @@ class Metrics:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self._add_site_host()
         self.conn.executescript(_SCHEMA)
+        self._schema: dict[str, dict[str, int]] = {}
 
     def _add_site_host(self) -> None:
         """site_traffic was keyed (date, path) before hosts were recorded. The key changes, so the
@@ -159,22 +162,46 @@ class Metrics:
             self.conn.rollback()
             raise
 
+    def _columns(self, table: str, names: Iterable[str]) -> dict[str, int]:
+        """The table's columns (name to primary-key position, 0 for none). Table and column names
+        go into SQL text, so each must be one the schema has."""
+        if table not in self._schema:
+            rows = self.conn.execute("SELECT name, pk FROM pragma_table_info(?)", (table,)).fetchall()
+            if not rows:
+                raise ValueError(f"metrics has no table {table!r}")
+            self._schema[table] = {str(r["name"]): int(r["pk"]) for r in rows}
+        known = self._schema[table]
+        unknown = [n for n in names if n not in known]
+        if unknown:
+            raise ValueError(f"metrics table {table} has no column {', '.join(map(repr, unknown))}")
+        return known
+
     def upsert(self, table: str, rows: list[dict]) -> int:
+        """Insert rows, or update the columns they carry where the primary key is already stored.
+        Columns a row leaves out keep their stored value (or the default, for a new row)."""
         if not rows:
             return 0
         columns = list(rows[0])
+        known = self._columns(table, columns)
+        if any(row.keys() != rows[0].keys() for row in rows):
+            raise ValueError(f"rows for {table} don't all have the same columns")
+        target = ", ".join(f'"{name}"' for _, name in sorted((pk, name) for name, pk in known.items() if pk))
+        updates = [c for c in columns if not known[c]]
+        action = "DO UPDATE SET " + ", ".join(f'"{c}" = excluded."{c}"' for c in updates) if updates else "DO NOTHING"
+        names = ", ".join(f'"{c}"' for c in columns)
         marks = ", ".join("?" for _ in columns)
         with self.transaction():
             self.conn.executemany(
-                f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) VALUES ({marks})",
+                f'INSERT INTO "{table}" ({names}) VALUES ({marks}) ON CONFLICT ({target}) {action}',
                 [tuple(row[c] for c in columns) for row in rows],
             )
         return len(rows)
 
     def count(self, table: str, **where: object) -> int:
-        clause = " AND ".join(f"{k} = ?" for k in where) or "1"
+        self._columns(table, where)
+        clause = " AND ".join(f'"{k}" = ?' for k in where) or "1"
         return int(
-            self.conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {clause}", tuple(where.values())).fetchone()[0]
+            self.conn.execute(f'SELECT COUNT(*) FROM "{table}" WHERE {clause}', tuple(where.values())).fetchone()[0]
         )
 
     def record_run(self, collector: str, detail: str) -> None:
@@ -406,12 +433,13 @@ def collect_stars(metrics: Metrics, http: Http, owner: str, repos: list[str], to
         metrics.upsert("gh_stars", rows)
         return len(batch), len(rows), metrics.count("gh_stars", repo=repo) - before
 
+    capped: list[str] = []
     for repo in repos:
         known = metrics.count("gh_stars", repo=repo)
         # Local rows are never deleted, but an unstar shortens GitHub's list, so new stars can sit
         # on an earlier page than the local count says. Start a page early, and walk back until a
         # page holds a star already known (or page 1).
-        page = min(max(1, known // 100), 50)
+        page = min(max(1, known // 100), STAR_PAGES)
         size, stars, new = fetch(repo, page)
         added += new
         back = page - 1
@@ -419,12 +447,20 @@ def collect_stars(metrics: Metrics, http: Http, owner: str, repos: list[str], to
             _, stars, new = fetch(repo, back)
             added += new
             back -= 1
-        while size >= 100 and page < 50:
+        while size >= 100 and page < STAR_PAGES:
             page += 1
             size, _, new = fetch(repo, page)
             added += new
+        if size >= 100:  # a full last page: GitHub has stars past the pages it lists
+            capped.append(repo)
     total = int(metrics.conn.execute("SELECT COUNT(*) FROM gh_stars").fetchone()[0])
-    return f"{len(repos)} repos, {total} stars ({added} new)"
+    detail = f"{len(repos)} repos, {total} stars ({added} new)"
+    if capped:
+        detail += (
+            f"; GitHub lists only the first {STAR_PAGES * 100} stargazers, so newer stars on "
+            f"{', '.join(capped)} aren't recorded (daily star counts are still kept)"
+        )
+    return detail
 
 
 def collect_downloads(metrics: Metrics, http: Http, packages: list[str], since: date | None) -> str:
