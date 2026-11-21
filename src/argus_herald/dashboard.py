@@ -74,6 +74,14 @@ def platform_key(name: str) -> str:
     return _PLATFORM_ALIASES.get(name.lower().replace(" ", "").replace("_", ""), "other")
 
 
+def row_platform(name: str) -> str:
+    """A platform's key for per-platform rows: the dashboard's key, or its own name when it has none.
+
+    Posts and follower counts both use it, so an unmapped platform's rows meet in one place."""
+    key = platform_key(name)
+    return name if key == "other" and name else key
+
+
 def platform_slot(name: str) -> int:
     key = platform_key(name)
     return next(slot for k, _label, slot in PLATFORMS if k == key)
@@ -94,7 +102,7 @@ def referrer_group(referrer: str, own_hosts: tuple[str, ...] = ()) -> str:
         return "bluesky"
     if any(h in host for h in _MASTODON_HINTS):
         return "mastodon"
-    if host.endswith("reddit.com") or host == "redd.it":
+    if host in ("reddit.com", "redd.it") or host.endswith(".reddit.com"):
         return "reddit"
     if host == "news.ycombinator.com":
         return "hn"
@@ -253,9 +261,7 @@ def followers(conn, f: Filters) -> dict[str, list[float | None]]:
         "SELECT platform, date, followers FROM account_metrics WHERE followers IS NOT NULL AND date <= ? ORDER BY date",
         (f.end.isoformat(),),
     ):
-        series[platform_key(row["platform"]) if platform_key(row["platform"]) != "other" else row["platform"]][
-            row["date"]
-        ] = row["followers"]
+        series[row_platform(row["platform"])][row["date"]] = row["followers"]
     out = {}
     for platform, by_day in series.items():
         values, last = [], None
@@ -531,7 +537,7 @@ def platform_summary(conn, items: list[Broadcast], f: Filters) -> list[dict]:
     """Per platform per week: posts, engagement, referrer uniques around its posts, follower change."""
     rows: dict[tuple[str, date], dict] = {}
     for b in items:
-        key = (platform_key(b.platform), week_of(b.at.date(), f.week_start))
+        key = (row_platform(b.platform), week_of(b.at.date(), f.week_start))
         row = rows.setdefault(
             key,
             {
@@ -561,7 +567,7 @@ def platform_summary(conn, items: list[Broadcast], f: Filters) -> list[dict]:
             now, before = by_day.get(end), by_day.get(week - timedelta(days=1))
             if now is None or before is None:
                 continue
-            key = (platform_key(platform) if platform_key(platform) != "other" else platform, week)
+            key = (platform, week)  # followers() already keyed it with row_platform
             row = rows.setdefault(
                 key,
                 {

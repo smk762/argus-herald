@@ -22,11 +22,12 @@ def compact(value: float) -> str:
     value = float(value)
     if not math.isfinite(value):
         return "–"  # a missing or overflowed point gets a placeholder, not a crash
-    if abs(value) >= 1_000_000:
+    # Each unit starts where the rounded label would reach it, so 999,999 reads 1M, not 1000K.
+    if abs(value) >= 999_500:
         return f"{value / 1_000_000:.1f}M".replace(".0M", "M")
-    if abs(value) >= 10_000:
+    if abs(value) >= 9_999.5:
         return f"{value / 1000:.0f}K"
-    if abs(value) >= 1000:
+    if abs(value) >= 999.95:
         return f"{value:,.0f}"
     return f"{value:.0f}" if value.is_integer() else f"{value:.1f}"
 
@@ -60,11 +61,11 @@ def _log_ticks(top: float) -> list[float]:
     if not math.isfinite(top) or top <= 0:
         return [0.0, 1.0]
     ticks, value = [0.0], 1.0
-    while value <= top * 1.0001:
+    while math.isfinite(value) and value <= top * 1.0001:
         ticks.append(value)
         value *= 10
     if ticks[-1] < top:
-        ticks.append(value)
+        ticks.append(value if math.isfinite(value) else top)  # near the float maximum the next power overflows
     return ticks
 
 
@@ -88,7 +89,9 @@ class Scale:
         else:
             self.ticks = _log_ticks(top) if log else nice_ticks(top)
         self.bottom = self.ticks[0]
-        self.top = self.ticks[-1] or 1
+        self.top = self.ticks[-1]
+        if self.top == self.bottom:  # only a zero span needs a fallback; a top tick of 0 is a real top
+            self.top = self.bottom + 1
 
     def x(self, i: float) -> float:
         span = W - LEFT - RIGHT
@@ -172,7 +175,7 @@ def _markers(scale: Scale, dates: list[date], releases: list[dict], broadcasts: 
             f'y1="{top}" y2="{bottom:.1f}"/><rect class="hit" x="{x - 6:.1f}" y="{top}" width="12" '
             f'height="{bottom - top:.1f}"/>'
         )
-        if b.link:
+        if b.link and b.link.startswith("https://"):  # never javascript: or any other scheme
             parts.append(
                 f'<a class="marker broadcast" href="{escape(b.link)}" target="_blank" '
                 f'rel="noopener noreferrer">{mark}</a>'
