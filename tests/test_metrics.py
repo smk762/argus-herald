@@ -191,3 +191,42 @@ def test_an_interrupted_transaction_is_rolled_back(tmp_path):
             raise interrupt
         assert not m.conn.in_transaction and m.count("gh_stars") == 0
     assert m.upsert("gh_stars", [row]) and m.count("gh_stars") == 1  # the connection still works
+
+
+def test_a_repo_the_token_cannot_read_does_not_cost_the_others_their_traffic(tmp_path):
+    cfg, store, metrics = _setup(tmp_path)
+
+    class Partial(Fake):
+        def request(self, method, url, body=None, headers=None):
+            if "/users/smk762/repos" in url:
+                names = ("argus-atlas", "argus-herald", "argus-lens")
+                return 200, json.dumps([{"name": n, "stargazers_count": 1} for n in names]).encode()
+            if "/repos/smk762/argus-herald/traffic/" in url:
+                self.calls.append((url, dict(headers or {})))
+                return 403, b'{"message": "Resource not accessible by personal access token"}'
+            return super().request(method, url, body, headers)
+
+    http = Partial()
+    report = collect(cfg, store, metrics, http, {"GITHUB_TOKEN": "t"})
+    repos = [r[0] for r in metrics.conn.execute("SELECT DISTINCT repo FROM gh_traffic ORDER BY repo")]
+    assert repos == ["argus-atlas", "argus-lens"]  # the repo after the refused one is still collected
+    assert any(line.startswith("gh_traffic: 2 repos") for line in report.lines)
+    assert [e for e in report.errors if e.startswith("gh_traffic")] == [
+        "gh_traffic: the token can't read traffic for argus-herald. Add them to the token's repositories; "
+        "GitHub keeps traffic for 14 days only"
+    ]
+    assert sum("/argus-herald/traffic/" in url for url, _ in http.calls) == 1  # asked once, then left alone
+
+
+def test_traffic_refused_for_every_repo_is_an_error(tmp_path):
+    cfg, store, metrics = _setup(tmp_path)
+
+    class Denied(Fake):
+        def request(self, method, url, body=None, headers=None):
+            if "/traffic/" in url:
+                return 403, b"{}"
+            return super().request(method, url, body, headers)
+
+    report = collect(cfg, store, metrics, Denied(), {"GITHUB_TOKEN": "t"})
+    assert any(e.startswith("gh_traffic: GET") and "403" in e for e in report.errors)
+    assert metrics.count("gh_traffic") == 0

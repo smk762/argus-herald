@@ -222,7 +222,13 @@ def collect(
 
     if repos:
         if token:
-            _run(report, metrics, "gh_traffic", lambda: collect_traffic(metrics, http, owner, repos, token))
+            denied: list[str] = []
+            _run(report, metrics, "gh_traffic", lambda: collect_traffic(metrics, http, owner, repos, token, denied))
+            if denied:
+                report.errors.append(
+                    f"gh_traffic: the token can't read traffic for {', '.join(denied)}. Add them to the token's "
+                    "repositories; GitHub keeps traffic for 14 days only"
+                )
             try:
                 _run(
                     report,
@@ -310,13 +316,27 @@ def _get_json(http: Http, url: str, headers: Mapping[str, str]):
     return json.loads(body.decode("utf-8"))
 
 
-def collect_traffic(metrics: Metrics, http: Http, owner: str, repos: list[str], token: str) -> str:
+def collect_traffic(
+    metrics: Metrics, http: Http, owner: str, repos: list[str], token: str, denied: list[str] | None = None
+) -> str:
+    """Traffic for every repo the token can read. A repo it can't (403 or 404: a fine-grained token
+    that doesn't list it) is added to `denied` and the rest are still collected, because GitHub keeps
+    only 14 days and one new repo must not cost the others theirs. Refused for all of them, it raises."""
     headers = _gh_headers(token)
     today = date.today().isoformat()
     days = refs = paths = 0
+    refused: list[str] = []
     for repo in repos:
         base = f"{GITHUB_API}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/traffic"
-        views = _get_json(http, f"{base}/views?per=day", headers)
+        try:
+            views = _get_json(http, f"{base}/views?per=day", headers)
+        except HttpError as exc:
+            if exc.status not in (403, 404):
+                raise
+            refused.append(repo)
+            if len(refused) == len(repos):
+                raise  # not one repo answered: the token itself is the problem
+            continue
         clones = _get_json(http, f"{base}/clones?per=day", headers)
         by_day: dict[str, dict] = {}
         for item in views.get("views") or []:
@@ -359,7 +379,9 @@ def collect_traffic(metrics: Metrics, http: Http, owner: str, repos: list[str], 
                 for p in _get_json(http, f"{base}/popular/paths", headers)
             ],
         )
-    return f"{len(repos)} repos, {days} repo-days, {refs} referrer rows, {paths} path rows"
+    if denied is not None:
+        denied.extend(refused)
+    return f"{len(repos) - len(refused)} repos, {days} repo-days, {refs} referrer rows, {paths} path rows"
 
 
 def collect_stars(metrics: Metrics, http: Http, owner: str, repos: list[str], token: str) -> str:
