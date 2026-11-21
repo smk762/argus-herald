@@ -78,8 +78,11 @@ class Gate:
 
     def __post_init__(self) -> None:
         self._allowed = {item.strip().lower() for item in self.allow_addresses if item.strip()}
+        # A blank term would match the empty space between any two characters.
         self._terms = [
-            (term, re.compile(rf"(?i)(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])")) for term in self.deny_terms
+            (term, re.compile(rf"(?i)(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])"))
+            for term in (t.strip() for t in self.deny_terms)
+            if term
         ]
         self._custom = []
         for name, pattern in self.patterns.items():
@@ -131,7 +134,8 @@ class Gate:
                 add("tz-offset", "timezone offset", m.start(), m.end())
         for _term, pattern in self._terms:
             for m in pattern.finditer(text):
-                add("deny-term", "deny-listed term", m.start(), m.end())
+                if m.end() > m.start():
+                    add("deny-term", "deny-listed term", m.start(), m.end())
         for name, pattern in self._custom:
             for m in pattern.finditer(text):
                 if m.end() > m.start():

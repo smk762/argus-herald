@@ -3,7 +3,7 @@ from conftest import DENY_TERM
 
 from argus_herald.models import APPROVED, PENDING
 from argus_herald.platforms import TwitterPublisher
-from argus_herald.privacy import GateUnavailable, load_gate, segments
+from argus_herald.privacy import Gate, GateUnavailable, load_gate, segments
 from argus_herald.store import Store
 from argus_herald.workflow import PrivacyRefused, ReviewError, accept_hit, approve, edit_draft, publish_draft
 
@@ -135,6 +135,13 @@ def test_fails_closed_when_the_named_auditor_list_is_missing(tmp_path, monkeypat
     monkeypatch.delenv("AI_AUDIT_OPSEC_DENYLIST")
     monkeypatch.setattr("argus_herald.privacy.AUDITOR_DENYLIST", tmp_path / "not-installed.txt")
     assert load_gate({}).deny_terms
+
+
+def test_blank_deny_terms_match_nothing_and_the_others_still_work():
+    gate = Gate(deny_terms=["", "  ", " spaced-term "])
+    assert rules(gate, "a plain, harmless line.") == []
+    assert gate.scrub("a plain, harmless line.") == "a plain, harmless line."
+    assert rules(gate, "the spaced-term here") == [("deny-term", "spaced-term")]
 
 
 def test_a_byte_order_mark_does_not_disable_the_first_deny_term(private_denylist):
