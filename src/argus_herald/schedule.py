@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections import defaultdict
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -84,7 +85,8 @@ def choose(
         taken = [parse(d.publish_at) for d in store.scheduled(draft.platform) if d.id != draft.id and d.publish_at]
         if when > now + LEAD and _clear(when, taken, timedelta(hours=schedule.min_gap_hours)):
             return when
-    slots = free_slots(store, draft.platform, schedule, now, count=1, ignore=None)
+    # Like the sibling check above, the draft's own current time doesn't count as taken.
+    slots = free_slots(store, draft.platform, schedule, now, count=1, ignore=draft.id)
     return slots[0] if slots else None
 
 
@@ -148,8 +150,14 @@ def suggest(metrics_db: Path) -> str:
     """Engagement by weekday and hour per platform, from post metrics (#12), and what to try."""
     if not metrics_db.exists():
         return "No metrics yet: run argus-herald collect."
-    conn = sqlite3.connect(f"file:{metrics_db}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
+    # Closed on every return: the watcher is a long-running process.
+    # as_uri percent-encodes the path, so a '?', '#' or '%' in it isn't read as URI syntax.
+    with closing(sqlite3.connect(f"{metrics_db.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        return _suggest(conn)
+
+
+def _suggest(conn: sqlite3.Connection) -> str:
     has = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     if "post_metrics" not in has:
         return (

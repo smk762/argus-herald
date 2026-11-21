@@ -63,7 +63,8 @@ def clean_fields(fields: dict[str, object]) -> dict[str, object]:
             if not value:
                 out[key] = None
                 continue
-            if not value.isdigit() or not 0 < int(value) <= 86_400:
+            # isascii too: isdigit accepts digits like '²' that int() can't read.
+            if not (value.isascii() and value.isdigit()) or not 0 < int(value) <= 86_400:
                 raise ReviewError(f"target_seconds is a whole number of seconds, not {value!r}")
             out[key] = int(value)
             continue
@@ -176,12 +177,19 @@ def import_csv(store: Store, text: str) -> tuple[int, int, list[str]]:
         raise ReviewError("Two columns in the CSV fill the same field (for example id and clip_id)")
     ignored = [name for name, target in mapped.items() if target not in COLUMNS and name]
     rows, problems, seen = [], [], set()
-    for line, raw in enumerate(reader, start=2):
+    for raw in reader:
+        # The file's own line (where the row ends), not a row count: blank lines and cells that
+        # span lines would put every later number out.
+        line = reader.line_num
         if None in raw:
             problems.append(f"line {line}: more cells than columns")
             continue
         cells = {mapped[(k or "").strip()]: v for k, v in raw.items() if mapped.get((k or "").strip()) in COLUMNS}
         if not any((v or "").strip() for v in cells.values()):
+            continue
+        # A missing cell is not an empty one: saved as empty, it would wipe the stored value.
+        if None in cells.values():
+            problems.append(f"line {line}: fewer cells than columns")
             continue
         try:
             clip_id = clean_id(cells.pop("id") or "")

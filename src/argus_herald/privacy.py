@@ -9,8 +9,9 @@ hostnames and a private deny-list of literal terms. Herald adds crypto addresses
 allow-list for known public contracts), timezone offsets attached to timestamps, and
 regexes from config.
 
-The deny-list is a private file, one term per line, ``#`` comments allowed. It lives outside
-any repository and is never committed. Without it the gate cannot be built, and approve and
+The deny-list is a private file, one term per line. A line starting with ``#`` is a comment, and
+so is whitespace then ``#`` after a term; a term that starts with ``#`` is written ``\\#tag``.
+It lives outside any repository and is never committed. Without it the gate cannot be built, and approve and
 publish are refused (fail closed).
 """
 
@@ -48,6 +49,9 @@ _ENS = re.compile(r"(?i)(?<![\w.-])[a-z0-9-]{3,}\.eth(?![\w.-])")
 # +00:00 and Z are fine.
 _TZ_AFTER_TIME = re.compile(r"\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s\d{4})?\s?([+-])(\d{2}):?(\d{2})(?!\d)")
 _TZ_NAMED = re.compile(r"\b(?:UTC|GMT)\s?[+-]\s?(\d{1,2})(?::?(\d{2}))?\b")
+# Deny-list comments: a whole line starting with '#', or whitespace then '#' after a term.
+_INLINE_COMMENT = re.compile(r"\s#")
+_HASHTAG_LINE = re.compile(r"#\w+")
 
 
 class GateUnavailable(Exception):
@@ -78,8 +82,11 @@ class Gate:
 
     def __post_init__(self) -> None:
         self._allowed = {item.strip().lower() for item in self.allow_addresses if item.strip()}
+        # A blank term would match the empty space between any two characters.
         self._terms = [
-            (term, re.compile(rf"(?i)(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])")) for term in self.deny_terms
+            (term, re.compile(rf"(?i)(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])"))
+            for term in (t.strip() for t in self.deny_terms)
+            if term
         ]
         self._custom = []
         for name, pattern in self.patterns.items():
@@ -131,7 +138,8 @@ class Gate:
                 add("tz-offset", "timezone offset", m.start(), m.end())
         for _term, pattern in self._terms:
             for m in pattern.finditer(text):
-                add("deny-term", "deny-listed term", m.start(), m.end())
+                if m.end() > m.start():
+                    add("deny-term", "deny-listed term", m.start(), m.end())
         for name, pattern in self._custom:
             for m in pattern.finditer(text):
                 if m.end() > m.start():
@@ -233,14 +241,29 @@ def _read_terms(path: Path, warnings: list[str]) -> list[str]:
         mode = path.stat().st_mode
         if mode & (stat.S_IRWXG | stat.S_IRWXO):
             warnings.append(f"{path} is readable by other users. Run: chmod 600 {path}")
-        lines = path.read_text(encoding="utf-8").splitlines()
+        # utf-8-sig: a byte-order mark (some editors save one) would otherwise stick to the first term.
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
     except OSError as exc:
         raise GateUnavailable(f"Can't read the deny-list {path}: {exc}") from exc
     except UnicodeDecodeError:
         # No "from exc": the decode error carries the file's bytes, and a deny-list is never printed.
         raise GateUnavailable(f"Can't read the deny-list {path}: it isn't UTF-8 text. Save it as UTF-8.") from None
-    terms = [line.split("#", 1)[0].strip() for line in lines]
-    return [term for term in terms if term]
+    # A '#' starts a comment only at the start of a line or after whitespace, so a term can hold
+    # one (name#tag). A term that starts with '#' (a hashtag) is written \#tag.
+    terms = []
+    for number, line in enumerate(lines, start=1):
+        text = line.strip()
+        if text.startswith("#"):
+            if _HASHTAG_LINE.fullmatch(text):
+                warnings.append(
+                    f"{path} line {number} looks like a hashtag but starts with '#', so it is a comment. "
+                    "To deny a hashtag, write it as \\#tag."
+                )
+            continue
+        term = _INLINE_COMMENT.split(text, maxsplit=1)[0].strip().replace("\\#", "#")
+        if term:
+            terms.append(term)
+    return terms
 
 
 _B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
