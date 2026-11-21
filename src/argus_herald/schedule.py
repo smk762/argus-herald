@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections import defaultdict
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -149,9 +150,14 @@ def suggest(metrics_db: Path) -> str:
     """Engagement by weekday and hour per platform, from post metrics (#12), and what to try."""
     if not metrics_db.exists():
         return "No metrics yet: run argus-herald collect."
-    conn = sqlite3.connect(f"file:{metrics_db}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    has = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    # Closed on every return: the watcher is a long-running process.
+    with closing(sqlite3.connect(f"file:{metrics_db}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        return _suggest(conn)
+
+
+def _suggest(conn: sqlite3.Connection) -> str:
+    has ={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     if "post_metrics" not in has:
         return (
             "No post engagement collected yet. Bluesky and Mastodon posts and the X analytics import "

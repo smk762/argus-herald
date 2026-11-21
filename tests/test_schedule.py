@@ -145,3 +145,20 @@ def test_suggest(tmp_path):
     conn.commit()
     report = suggest(db)
     assert report.startswith("bluesky: 7 posts") and "Try a slot around Fri 08:00 UTC (based on 4 posts" in report
+
+
+def test_suggest_closes_its_connection_on_every_return(tmp_path, monkeypatch):
+    db = tmp_path / "metrics.sqlite"
+    sqlite3.connect(db).close()  # no post_metrics table: an early return
+    opened = []
+    real_connect = sqlite3.connect
+
+    def connect(*args, **kwargs):
+        opened.append(real_connect(*args, **kwargs))
+        return opened[-1]
+
+    monkeypatch.setattr("argus_herald.schedule.sqlite3.connect", connect)
+    assert "No post engagement" in suggest(db)
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0].execute("SELECT 1")
