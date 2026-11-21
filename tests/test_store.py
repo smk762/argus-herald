@@ -43,3 +43,18 @@ def test_a_merge_that_meets_an_existing_pypi_row_loses_nothing(tmp_path):
     kept = {row["source"]: row["notes"] for row in store.conn.execute("SELECT * FROM releases")}
     assert kept == {"github": "GitHub notes", "pypi": ""}
     store.close()
+
+
+def test_add_draft_raises_when_a_row_is_refused_for_anything_but_an_existing_draft(tmp_path):
+    import sqlite3
+
+    import pytest
+
+    store = Store(tmp_path / "s.sqlite")
+    with pytest.raises(sqlite3.IntegrityError):
+        store.add_draft(project="argus-atlas", version="0.1.0", platform="twitter", title=None, body="b", link="l")
+    assert store.add_draft(project="argus-atlas", version="0.1.0", platform="twitter", title="", body="b", link="l")[1]
+    assert not store.add_draft(
+        project="argus-atlas", version="0.1.0", platform="twitter", title="", body="b", link="l"
+    )[1]
+    store.close()

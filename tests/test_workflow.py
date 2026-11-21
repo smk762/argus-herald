@@ -452,3 +452,159 @@ def test_an_http_error_on_one_release_does_not_end_the_poll(tmp_path, monkeypatc
     assert [(e.kind, e.version) for e in events] == [("error", "2"), ("draft", "3")]
     assert "HTTP 503" in events[0].detail and not store.seen("argus-atlas", "2")
     store.close()
+
+
+def test_a_draft_another_run_is_publishing_is_not_published_again(tmp_path):
+    from argus_herald.models import PUBLISHING
+    from argus_herald.workflow import STALE_PUBLISH
+
+    store, http, draft = _approved_twitter(tmp_path)
+    read_before = store.get(draft.id)  # a second run read it while it was still approved
+    assert store.transition(draft.id, (APPROVED,), PUBLISHING) is not None  # the first run's claim
+    with pytest.raises(ReviewError, match="changed before it could be published"):
+        publish_draft(store, TwitterPublisher(), read_before, {}, http, gate=load_gate({}))
+    with pytest.raises(ReviewError, match="already being published"):
+        publish_draft(store, TwitterPublisher(), store.get(draft.id), {}, http, gate=load_gate({}))
+    assert store.get(draft.id).status == PUBLISHING
+    # A claim left by a run that died can still be published.
+    died = (datetime.now(UTC) - STALE_PUBLISH - timedelta(minutes=1)).isoformat()
+    store.conn.execute("UPDATE drafts SET updated_at = ? WHERE id = ?", (died, draft.id))
+    publish_draft(store, TwitterPublisher(), store.get(draft.id), {}, http, gate=load_gate({}))
+    assert store.get(draft.id).status == HANDED_OFF
+    store.close()
+
+
+def test_a_stale_claim_taken_over_after_it_was_read_cannot_be_rejected(tmp_path, monkeypatch):
+    from argus_herald import workflow
+    from argus_herald.models import PUBLISHING
+    from argus_herald.workflow import STALE_PUBLISH
+
+    store, _http, draft = _approved_twitter(tmp_path)
+    store.transition(draft.id, (APPROVED,), PUBLISHING)
+    died = (datetime.now(UTC) - STALE_PUBLISH - timedelta(minutes=1)).isoformat()
+    store.conn.execute("UPDATE drafts SET updated_at = ? WHERE id = ?", (died, draft.id))
+    stale = store.get(draft.id)
+    assert store.transition(draft.id, (PUBLISHING,), PUBLISHING) is not None  # a new run claims it
+    monkeypatch.setattr(workflow, "_require_draft", lambda _store, _id: stale)
+    with pytest.raises(ReviewError):
+        reject(store, draft.id, "the run died")
+    assert store.get(draft.id).status == PUBLISHING
+    store.close()
+
+
+def test_two_confirms_racing_on_a_published_draft_keep_the_first_url(tmp_path, monkeypatch):
+    from argus_herald import workflow
+
+    store, http, draft = _approved_twitter(tmp_path)
+    publish_draft(store, TwitterPublisher(), store.get(draft.id), {}, http, gate=load_gate({}))
+    confirm(store, draft.id)  # posted, URL not known yet
+    read_before = store.get(draft.id)
+    confirm(store, draft.id, "https://x.com/dragonhound3/status/1")
+    monkeypatch.setattr(workflow, "_require_draft", lambda _store, _id: read_before)
+    with pytest.raises(ReviewError, match="already published"):
+        confirm(store, draft.id, "https://x.com/dragonhound3/status/2")
+    assert store.get(draft.id).external_id == "https://x.com/dragonhound3/status/1"
+    store.close()
+
+
+def test_a_publish_result_that_cannot_be_recorded_queues_no_mint_report(tmp_path, monkeypatch):
+    from argus_herald import workflow
+    from argus_herald.models import FAILED, PUBLISHING, PublishResult
+
+    store, http, draft = _approved_twitter(tmp_path)
+
+    class Racing(TwitterPublisher):
+        def publish(self, locked, env, http):
+            store.transition(locked.id, (PUBLISHING,), FAILED, error="another run")
+            return PublishResult(external_id="https://x.com/dragonhound3/status/9", detail="posted")
+
+    queued = []
+    monkeypatch.setattr(workflow, "_queue_mint_report", lambda _store, draft_id, at=None: queued.append(draft_id))
+    publish_draft(store, Racing("api"), store.get(draft.id), {}, http, gate=load_gate({}))
+    assert queued == []
+    assert store.get(draft.id).status == FAILED
+    store.close()
+
+
+def test_the_mint_report_bookkeeping_never_fails_the_publish_it_follows(tmp_path, monkeypatch):
+    import sqlite3
+
+    from argus_herald.workflow import _queue_mint_report
+
+    store = Store(tmp_path / "state.sqlite")
+
+    def busy(_draft_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "get", busy)
+    _queue_mint_report(store, 1)  # logged, not raised
+    store.close()
+
+
+def test_a_destination_that_cannot_render_the_post_leaves_no_drafts(tmp_path):
+    from argus_herald.models import Post
+    from argus_herald.workflow import compose
+
+    class Broken(PatreonPublisher):
+        def render_post(self, post):
+            raise ValueError("too long for this destination")
+
+    store = Store(tmp_path / "state.sqlite")
+    post = Post(kind="note", subject="A note", text="Some text", link="https://example.com/a")
+    with pytest.raises(ValueError, match="too long"):
+        compose(store, [TwitterPublisher(), Broken()], post)
+    assert store.list_drafts() == []
+    store.close()
+
+
+def test_rebaseline_of_some_projects_does_not_record_a_full_baseline(tmp_path):
+    cfg = config(tmp_path)
+    cfg.projects = ["argus-atlas", "argus-lens"]
+    store = Store(cfg.store_path)
+    events = rebaseline(cfg, store, FakeHttp(routes("0.1.0")), ["argus-atlas"])
+    assert [event.kind for event in events] == ["baseline"]
+    assert store.get_meta(BASELINE_KEY) is None
+    assert not store.is_baselined("argus-lens")
+    store.close()
+
+
+def test_a_digest_that_fails_to_build_is_retried_on_the_next_poll(tmp_path, monkeypatch):
+    from argus_herald import digest
+    from argus_herald.workflow import close_digests
+
+    site = tmp_path / "site"
+    site.mkdir()
+    path = tmp_path / "c.yaml"
+    path.write_text(
+        "pypi: {projects: [argus-atlas]}\n"
+        "destinations:\n  twitter: {enabled: true}\n"
+        f"digest:\n  anchor: 2026-11-16\n  window_days: 14\n  site_url: https://example.org/updates\n  site_dir: {site}\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    store = Store(tmp_path / "s.sqlite")
+    store.add_release(
+        project="argus-atlas",
+        version="0.2.0",
+        released_at="2026-11-18T10:00:00+00:00",
+        summary="Bake tiles",
+        notes="",
+        url="https://pypi.org/project/argus-atlas/0.2.0/",
+    )
+    now = datetime(2026, 11, 30, 1, tzinfo=UTC)
+    real = digest.build_digest
+
+    def down(*args, **kwargs):
+        raise OSError("drafting backend unreachable")
+
+    monkeypatch.setattr(digest, "build_digest", down)
+    events = close_digests(cfg, store, [TwitterPublisher()], now=now)
+    assert [(e.kind, e.detail) for e in events] == [("error", "drafting backend unreachable")]
+    assert store.digests() == []
+    assert len(store.releases(open_only=True)) == 1
+
+    monkeypatch.setattr(digest, "build_digest", real)
+    events = close_digests(cfg, store, [TwitterPublisher()], now=now)
+    assert [e.kind for e in events] == ["digest"]
+    assert [d.kind for d in store.list_drafts()] == ["digest"]
+    store.close()
