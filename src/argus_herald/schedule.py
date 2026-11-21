@@ -151,7 +151,8 @@ def suggest(metrics_db: Path) -> str:
     if not metrics_db.exists():
         return "No metrics yet: run argus-herald collect."
     # Closed on every return: the watcher is a long-running process.
-    with closing(sqlite3.connect(f"file:{metrics_db}?mode=ro", uri=True)) as conn:
+    # as_uri percent-encodes the path, so a '?', '#' or '%' in it isn't read as URI syntax.
+    with closing(sqlite3.connect(f"{metrics_db.resolve().as_uri()}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         return _suggest(conn)
 

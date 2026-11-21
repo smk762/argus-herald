@@ -147,6 +147,18 @@ def test_suggest(tmp_path):
     assert report.startswith("bluesky: 7 posts") and "Try a slot around Fri 08:00 UTC (based on 4 posts" in report
 
 
+def test_suggest_reads_a_metrics_file_whose_path_has_uri_characters(tmp_path):
+    folder = tmp_path / "metrics" / "odd?name#100%"
+    folder.mkdir(parents=True)
+    db = folder / "metrics.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE events (kind, source, project, version, at, url, detail)")
+    conn.execute("CREATE TABLE post_metrics (platform, external_id, likes, reposts, replies, quotes)")
+    conn.close()
+    assert suggest(db) == "No published posts have engagement data yet."
+    assert [p.name for p in folder.parent.iterdir()] == [folder.name]  # nothing opened by mistake
+
+
 def test_suggest_closes_its_connection_on_every_return(tmp_path, monkeypatch):
     db = tmp_path / "metrics.sqlite"
     sqlite3.connect(db).close()  # no post_metrics table: an early return
