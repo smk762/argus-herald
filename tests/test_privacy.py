@@ -137,6 +137,24 @@ def test_fails_closed_when_the_named_auditor_list_is_missing(tmp_path, monkeypat
     assert load_gate({}).deny_terms
 
 
+def test_deny_terms_can_hold_a_hash_and_comments_still_work(private_denylist):
+    private_denylist.write_text(
+        "# a comment line\n  # an indented one\nname#tag\n\\#hashtagterm\nplain-term # a trailing comment\n#lonelytag\n",
+        encoding="utf-8",
+    )
+    private_denylist.chmod(0o600)
+    gate = load_gate({})
+    assert gate.deny_terms == ["name#tag", "#hashtagterm", "plain-term"]
+    assert rules(gate, "see name#tag and #hashtagterm and plain-term") == [
+        ("deny-term", "name#tag"),
+        ("deny-term", "#hashtagterm"),
+        ("deny-term", "plain-term"),
+    ]
+    assert rules(gate, "a name alone") == []
+    # The hashtag-shaped comment is flagged by line number, without repeating it.
+    assert [w for w in gate.warnings if "line 6" in w and "\\#tag" in w and "lonelytag" not in w]
+
+
 def test_blank_deny_terms_match_nothing_and_the_others_still_work():
     gate = Gate(deny_terms=["", "  ", " spaced-term "])
     assert rules(gate, "a plain, harmless line.") == []
