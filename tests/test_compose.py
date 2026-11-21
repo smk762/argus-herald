@@ -51,6 +51,32 @@ def test_parse_atom_reads_site_and_youtube_and_refuses_dtds():
         parse_atom(b'<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "b">]><feed xmlns="http://www.w3.org/2005/Atom"/>')
 
 
+def test_a_dtd_in_utf16_is_refused_too():
+    doc = '<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE x [<!ENTITY a "b">]><feed xmlns="http://www.w3.org/2005/Atom"/>'
+    with pytest.raises(ValueError, match="DTD"):
+        parse_atom(doc.encode("utf-16"))
+
+
+def test_a_dtd_after_a_long_prolog_is_refused():
+    padding = "<!--" + "x" * 5000 + "-->"
+    doc = f'<?xml version="1.0"?>{padding}<!DOCTYPE feed SYSTEM "feed.dtd"><feed xmlns="http://www.w3.org/2005/Atom"/>'
+    with pytest.raises(ValueError, match="DTD"):
+        parse_atom(doc.encode())
+
+
+def test_entries_are_ordered_by_instant_not_by_the_timestamp_text():
+    def entry(n, stamp):
+        return f"<entry><id>e{n}</id><title>{n}</title><link href='https://example.com/{n}'/>{stamp}</entry>"
+
+    body = (
+        '<feed xmlns="http://www.w3.org/2005/Atom">'
+        + entry("later", "<published>2024-01-01T06:00:00Z</published>")
+        + entry("earlier", "<published>2024-01-01T10:00:00+05:00</published>")
+        + "</feed>"
+    ).encode()
+    assert [i.title for i in parse_atom(body)] == ["earlier", "later"]
+
+
 def test_sources_config_is_validated(tmp_path):
     cfg = _config(
         tmp_path, f"sources:\n  site: {{feed: {SITE}}}\n  youtube: {{channel_id: {CHANNEL}, platforms: [twitter]}}\n"
