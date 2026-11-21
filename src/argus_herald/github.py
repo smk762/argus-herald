@@ -7,12 +7,11 @@ is recognised from its version.
 
 from __future__ import annotations
 
-import html
 import json
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from argus_herald.feeds import parse_atom
 from argus_herald.http import Http, HttpError
@@ -90,8 +89,9 @@ def list_releases(http: Http, owner: str, repo: str, token: str = "") -> list[Gi
         if status != 200:
             raise HttpError("GET", url, status)
         for item in parse_atom(body):
-            tag = item.link.rstrip("/").rsplit("/tag/", 1)[-1] if "/tag/" in item.link else ""
-            version = version_from_tag(html.unescape(tag))
+            # The link's path percent-encodes the tag; decode it so it matches the API's tag_name.
+            tag = unquote(item.link.rstrip("/").rsplit("/tag/", 1)[-1]) if "/tag/" in item.link else ""
+            version = version_from_tag(tag)
             if not version:
                 continue
             out.append(
