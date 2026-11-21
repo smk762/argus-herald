@@ -64,12 +64,29 @@ class Fake:
                                         {
                                             "count": 40,
                                             "sum": {"visits": 30},
-                                            "dimensions": {"date": "2026-11-20", "requestPath": "/updates/"},
+                                            "dimensions": {
+                                                "date": "2026-11-20",
+                                                "requestHost": "Example.org",
+                                                "requestPath": "/updates/",
+                                            },
                                         },
                                         {
-                                            "count": 5,
-                                            "sum": {"visits": 5},
-                                            "dimensions": {"date": "2026-11-21", "requestPath": "/"},
+                                            "count": 3,
+                                            "sum": {"visits": 3},
+                                            "dimensions": {
+                                                "date": "2026-11-21",
+                                                "requestHost": "example.org",
+                                                "requestPath": "/",
+                                            },
+                                        },
+                                        {
+                                            "count": 2,
+                                            "sum": {"visits": 2},
+                                            "dimensions": {
+                                                "date": "2026-11-21",
+                                                "requestHost": "docs.example.org",
+                                                "requestPath": "/",
+                                            },
                                         },
                                     ],
                                     "referrers": [
@@ -233,8 +250,16 @@ def test_site_traffic_replaces_the_window(tmp_path):
     env = {"CF_API_TOKEN": "t", "CF_ACCOUNT_ID": "a", "CF_SITE_TAG": "s"}
     detail = collect_site(metrics, http, env, today=date(2026, 11, 22))
     assert "45 page views" in detail
-    paths = {(r["date"], r["path"]): r["pageviews"] for r in metrics.conn.execute("SELECT * FROM site_traffic")}
-    assert paths == {("2026-11-20", "/updates/"): 40, ("2026-11-21", "/"): 5, ("2026-11-01", "/"): 7}
+    assert "2 hosts, 3 paths" in detail
+    paths = {
+        (r["date"], r["host"], r["path"]): r["pageviews"] for r in metrics.conn.execute("SELECT * FROM site_traffic")
+    }
+    assert paths == {
+        ("2026-11-20", "example.org", "/updates/"): 40,
+        ("2026-11-21", "example.org", "/"): 3,  # the same path on two hosts stays two rows
+        ("2026-11-21", "docs.example.org", "/"): 2,
+        ("2026-11-01", "", "/"): 7,
+    }
     refs = {r["referrer"] for r in metrics.conn.execute("SELECT * FROM site_referrers")}
     assert refs == {"bsky.app", "(direct)"}
     flt = http.posted[0]["variables"]["filter"]["AND"]
@@ -348,3 +373,26 @@ def test_a_number_cell_that_overflows_is_not_a_number():
             _number(bad)
     assert _number("9007199254740993") == 9007199254740993  # exact past 2**53
     assert _number("1,234") == 1234 and _number("12.0") == 12 and _number("1e3") == 1000 and _number("-") is None
+
+
+def test_site_traffic_table_gains_a_host_column(tmp_path):
+    """A metrics file from before hosts were recorded keeps its rows, and can then hold two hosts."""
+    import sqlite3
+
+    path = tmp_path / "metrics.sqlite"
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE site_traffic (date TEXT NOT NULL, path TEXT NOT NULL, pageviews INTEGER NOT NULL, "
+        "visits INTEGER NOT NULL, PRIMARY KEY (date, path))"
+    )
+    old.execute("INSERT INTO site_traffic VALUES ('2026-11-01', '/', 7, 6)")
+    old.commit()
+    old.close()
+    metrics = Metrics(path)
+    rows = [tuple(r) for r in metrics.conn.execute("SELECT date, host, path, pageviews, visits FROM site_traffic")]
+    assert rows == [("2026-11-01", "", "/", 7, 6)]
+    day = {"date": "2026-11-02", "path": "/", "pageviews": 1, "visits": 1}
+    metrics.upsert("site_traffic", [{**day, "host": "example.org"}, {**day, "host": "docs.example.org"}])
+    assert metrics.count("site_traffic") == 3
+    metrics.close()
+    assert Metrics(path).count("site_traffic") == 3  # opening again changes nothing

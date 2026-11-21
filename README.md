@@ -199,7 +199,7 @@ Importing the same post again adds a new sample, so a weekly import draws the cu
 
 ### Site traffic
 
-With Cloudflare Web Analytics on the site, `collect` keeps daily page views and visits per path (`site_traffic`) and per referring host (`site_referrers`) for the last 7 days on each run. Set `CF_API_TOKEN` (a token with Account Analytics: read), `CF_ACCOUNT_ID` and `CF_SITE_TAG` (from the Web Analytics site's snippet) in `.env`. `argus-herald platforms` lists which metrics sources are set up.
+With Cloudflare Web Analytics on the site, `collect` keeps daily page views and visits per host and path (`site_traffic`) and per referring host (`site_referrers`) for the last 7 days on each run. Subdomains that report under one site tag are kept apart by host. Set `CF_API_TOKEN` (a token with Account Analytics: read), `CF_ACCOUNT_ID` and `CF_SITE_TAG` (from the Web Analytics site's snippet) in `.env`. `argus-herald platforms` lists which metrics sources are set up.
 
 ### Posts made outside herald
 
