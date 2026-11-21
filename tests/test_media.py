@@ -289,3 +289,24 @@ def test_a_clip_keeps_only_its_picture_and_sound(tmp_path):
     kinds = sorted(stream["codec_type"] for stream in json.loads(probe.stdout)["streams"])
     assert kinds == ["audio", "video"]
     assert b"12.3456" not in cleaned.path.read_bytes()
+
+
+def test_ffmpeg_is_asked_for_the_picture_and_sound_only(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"a clip")
+    commands = []
+
+    def run(args, **kwargs):
+        if "ffprobe" in args[0]:
+            return _done(args, 0, '{"format": {"tags": {}}, "streams": [{}]}')
+        commands.append(args)
+        Path(args[-1]).write_bytes(b"a clip")
+        return _done(args)
+
+    _fake_tools(monkeypatch, run)
+    clean(source, tmp_path / "clean")
+    (command,) = commands
+    maps = [command[i + 1] for i, arg in enumerate(command) if arg == "-map"]
+    assert maps == ["0:V", "0:a?"] and "-dn" in command and "-sn" in command
