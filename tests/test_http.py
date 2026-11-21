@@ -81,6 +81,34 @@ def test_an_error_body_that_cannot_be_read_is_an_http_error():
     assert client.request("GET", "https://example.org/x") == (404, b"gone")
 
 
+def test_an_error_body_is_read_only_up_to_a_cap_and_then_closed():
+    from argus_herald.http import ERROR_BODY_LIMIT
+
+    class Endless:
+        def __init__(self):
+            self.asked, self.closed = [], False
+
+        def read(self, amount=-1):
+            self.asked.append(amount)
+            if amount is None or amount < 0:
+                raise MemoryError("read an endless body to the end")
+            return b"x" * amount
+
+        def close(self):
+            self.closed = True
+
+    client = HttpClient()
+    body = Endless()
+    client._opener = _Opener(HTTPError("https://example.org/x", 500, "Server Error", {}, body))
+    status, payload = client.request("GET", "https://example.org/x")
+    assert status == 500 and len(payload) == ERROR_BODY_LIMIT
+    assert body.closed
+
+    body = Endless()
+    client._opener = _Opener(HTTPError("https://example.org/x", 500, "Server Error", {}, body))
+    assert client.request("GET", "https://example.org/x", limit=100) == (500, b"x" * 100)  # the caller's cap too
+
+
 class _Sized:
     """A 200 whose body is `size` bytes; records how much each read asked for."""
 
