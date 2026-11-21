@@ -338,7 +338,11 @@ def ago(iso: str, now: datetime | None = None) -> str:
         then = datetime.fromisoformat(iso)
     except ValueError:
         return "a while"
-    seconds = max(0, int(((now or datetime.now(UTC)) - then).total_seconds()))
+    now = now or datetime.now(UTC)
+    # A stamp without an offset is taken as UTC, so naive and aware values can be subtracted.
+    then = then if then.tzinfo else then.replace(tzinfo=UTC)
+    now = now if now.tzinfo else now.replace(tzinfo=UTC)
+    seconds = max(0, int((now - then).total_seconds()))
     for size, unit in ((86_400, "d"), (3600, "h"), (60, "m")):
         if seconds >= size:
             return f"{seconds // size}{unit}"
