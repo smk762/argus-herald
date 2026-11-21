@@ -1,11 +1,12 @@
 import math
 import subprocess
 import sys
-from datetime import date
+from datetime import UTC, date, datetime
+from types import SimpleNamespace
 
 import pytest
 
-from argus_herald.charts import _log_ticks, compact, nice_ticks, range_ticks, series_panel
+from argus_herald.charts import TOP, Scale, _log_ticks, compact, nice_ticks, range_ticks, series_panel
 
 # Run apart, with a one-second alarm: without the guard this loop never ends and eats memory.
 _PROBE = """
@@ -64,3 +65,52 @@ def test_series_panel_escapes_its_key():
     svg = str(series_panel('k"><script>x</script>', "Title", days, [1.0, 2.0], None, [], []))
     assert "<script>" not in svg
     assert 'aria-labelledby="k&#34;&gt;&lt;script&gt;x&lt;/script&gt;-title"' in svg
+
+
+_NEAR_MAX_PROBE = """
+import math, signal, sys
+signal.setitimer(signal.ITIMER_REAL, 1)
+from argus_herald.charts import _log_ticks
+ticks = _log_ticks(sys.float_info.max)
+assert all(math.isfinite(t) for t in ticks) and ticks[-1] == sys.float_info.max, ticks[-3:]
+"""
+
+
+def test_log_ticks_end_for_a_top_near_the_float_maximum():
+    done = subprocess.run([sys.executable, "-c", _NEAR_MAX_PROBE], capture_output=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr.decode()[-300:]
+
+
+@pytest.mark.parametrize(
+    ("value", "label"),
+    [(999_999, "1M"), (-999_700, "-1M"), (999_499, "999K"), (9_999.7, "10K"), (999.96, "1,000"), (999.9, "999.9")],
+)
+def test_compact_picks_the_unit_after_rounding(value, label):
+    assert compact(value) == label
+
+
+def test_a_scale_whose_top_tick_is_zero_keeps_zero_at_the_top():
+    scale = Scale(3, 0, 130, False, lo=-10)
+    assert scale.ticks[-1] == 0 and scale.top == 0
+    assert scale.y(0) == TOP
+
+
+def test_a_broadcast_marker_links_only_an_https_url():
+    days = [date(2026, 1, 1), date(2026, 1, 2)]
+
+    def post(link):
+        return SimpleNamespace(
+            platform="bluesky",
+            at=datetime(2026, 1, 1, 12, tzinfo=UTC),
+            subject="s",
+            format="f",
+            logged=True,
+            text="t",
+            link=link,
+        )
+
+    unsafe = str(series_panel("k", "T", days, [1.0, 2.0], None, [], [post("javascript:alert(1)")]))
+    assert "javascript:" not in unsafe and "<a " not in unsafe
+    assert '<g class="marker broadcast">' in unsafe
+    safe = str(series_panel("k", "T", days, [1.0, 2.0], None, [], [post("https://bsky.app/p/1")]))
+    assert 'href="https://bsky.app/p/1"' in safe

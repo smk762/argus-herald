@@ -87,6 +87,16 @@ def test_feed_without_token_and_api_with_token():
     assert not any(u.endswith(".atom") for u in http.calls)
 
 
+def test_a_percent_encoded_tag_in_the_feed_is_decoded_like_the_api_tag_name():
+    feed = (
+        b'<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>r1</id><title>rc</title>'
+        b'<link rel="alternate" href="https://github.com/smk762/argus-cull/releases/tag/v0.5.0-rc%2E1"/>'
+        b"<updated>2026-11-20T00:00:00Z</updated></entry></feed>"
+    )
+    [release] = list_releases(GH(feed=feed), "smk762", "argus-cull")
+    assert (release.tag, release.version) == ("v0.5.0-rc.1", "0.5.0-rc.1")
+
+
 def _config(tmp_path, digest=True, extra=""):
     site = tmp_path / "site"
     site.mkdir(exist_ok=True)

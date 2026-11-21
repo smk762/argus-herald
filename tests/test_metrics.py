@@ -178,6 +178,55 @@ def test_new_stars_are_found_after_unstars(tmp_path):
     assert steady.pages == [2, 3]
 
 
+def test_stars_past_the_fiftieth_page_are_recorded(tmp_path):
+    from argus_herald.metrics import collect_stars
+
+    m = Metrics(tmp_path / "m.sqlite")
+    http = Stargazers(f"u{i}" for i in range(5150))
+    collect_stars(m, http, "smk762", ["argus-atlas"], "t")
+    assert m.count("gh_stars", repo="argus-atlas") == 5150
+    http.logins.append("new-a")
+    assert "(1 new)" in collect_stars(m, http, "smk762", ["argus-atlas"], "t")
+
+
+def test_a_repo_with_more_stars_than_github_lists_says_so(tmp_path, monkeypatch):
+    import argus_herald.metrics as metrics_module
+
+    monkeypatch.setattr(metrics_module, "STAR_PAGES", 2)
+    m = Metrics(tmp_path / "m.sqlite")
+    detail = metrics_module.collect_stars(m, Stargazers(f"u{i}" for i in range(250)), "smk762", ["argus-atlas"], "t")
+    assert m.count("gh_stars") == 200
+    assert "first 200 stargazers" in detail and "argus-atlas" in detail
+    m2 = Metrics(tmp_path / "m2.sqlite")
+    assert "stargazers" not in metrics_module.collect_stars(m2, Stargazers(["u1"]), "smk762", ["argus-atlas"], "t")
+
+
+def test_an_upsert_keeps_the_columns_it_does_not_carry(tmp_path):
+    m = Metrics(tmp_path / "m.sqlite")
+    key = {"platform": "bluesky", "external_id": "at://x/1", "fetched_at": "2026-11-10T00:00:00+00:00"}
+    m.upsert("post_metrics", [{**key, "likes": 3, "impressions": 90}])
+    m.upsert("post_metrics", [{**key, "likes": 5}])
+    row = m.conn.execute("SELECT likes, impressions FROM post_metrics").fetchone()
+    assert (row["likes"], row["impressions"]) == (5, 90)
+    assert m.count("post_metrics") == 1
+
+
+def test_upsert_and_count_only_take_names_the_schema_has(tmp_path):
+    import pytest
+
+    m = Metrics(tmp_path / "m.sqlite")
+    row = {"repo": "argus-atlas", "user_hash": "h", "starred_at": "2026-11-10T00:00:00Z"}
+    with pytest.raises(ValueError, match="no table"):
+        m.upsert("gh_stars; DROP TABLE events", [row])
+    with pytest.raises(ValueError, match="no column"):
+        m.upsert("gh_stars", [{**row, "starred_at) VALUES (1); --": 1}])
+    with pytest.raises(ValueError, match="no column"):
+        m.count("gh_stars", **{"1 OR 1": 1})
+    with pytest.raises(ValueError, match="same columns"):
+        m.upsert("gh_stars", [row, {"repo": "argus-atlas", "user_hash": "h2"}])
+    assert m.count("gh_stars") == 0 and m.count("events") == 0
+
+
 def test_an_interrupted_transaction_is_rolled_back(tmp_path):
     import pytest
 

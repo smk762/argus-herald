@@ -92,8 +92,10 @@ def test_remote_backend_gets_scrubbed_facts_and_needs_a_gate(gate):
     draft(backend, x(), Request("headline", facts), "", gate)
     assert DENY_TERM not in backend.seen and "/home/alice" not in backend.seen and "bob@corp.test" not in backend.seen
     assert "[name]" in backend.seen and "[email]" in backend.seen and "[address]" in backend.seen
+    backend.seen = None
     with pytest.raises(DraftingError, match="privacy gate unavailable"):
         draft(backend, x(), Request("headline", facts), "", None)
+    assert backend.seen is None  # nothing reached the remote backend
 
 
 def test_backend_config_and_urls(tmp_path):
@@ -188,6 +190,26 @@ def test_digest_uses_the_model_and_falls_back_with_a_note(tmp_path, gate):
     store.close()
 
 
+def test_regenerate_keeps_an_edit_made_while_the_model_was_drafting(tmp_path, gate):
+    settings, store, digest_id = _digest(tmp_path)
+    ids, _ = build_digest(store, settings, [TwitterPublisher()], digest_id, gate)
+
+    class EditMeanwhile(Chat):
+        def request(self, method, url, body=None, headers=None):
+            store.update_text(ids[0], "", f"Written during call {len(self.prompts) + 1}", ("pending",))
+            return super().request(method, url, body, headers)
+
+    backend = OpenAICompatible(EditMeanwhile(GOOD), "http://localhost/v1", "nemo")
+    with pytest.raises(ValueError, match="changed while it was being regenerated"):
+        regenerate(store, settings, TwitterPublisher(), ids[0], backend, gate)
+    assert store.get(ids[0]).body == "Written during call 1"
+    backend.http.replies = [GOOD]  # with force, an edit made before regenerating is replaced; one made during it isn't
+    with pytest.raises(ValueError, match="changed while"):
+        regenerate(store, settings, TwitterPublisher(), ids[0], backend, gate, force=True)
+    assert store.get(ids[0]).body == "Written during call 2"
+    store.close()
+
+
 def test_dropping_an_item_keeps_the_closing_line():
     from argus_herald.drafting import repair
 
@@ -211,6 +233,11 @@ def test_dropping_an_item_keeps_the_closing_line():
     text, _ = repair(long_items, x(), "https://e.org", req)
     assert 1 <= text.count("•") < 3 and text.endswith(outro)
     assert problems(text, x(), "https://e.org", req) == [] or text.count("•") == 1
+    # An LLM often puts the closing line straight after the list, with no blank line.
+    tight = OPENING + "\n\n" + "\n".join(f"• pkg{i} 0.{i}.0: a short change" for i in range(5)) + "\n" + outro
+    text, done = repair(tight, x(), "https://e.org", req)
+    assert text.count("•") == 3 and text.endswith("pkg2 0.2.0: a short change\n" + outro)
+    assert done == ["dropped 2 items to fit"]
 
 
 def test_clean_only_unwraps_a_wrapping_pair_of_quotes():
@@ -218,6 +245,7 @@ def test_clean_only_unwraps_a_wrapping_pair_of_quotes():
     assert clean('"Fast" is the word for 0.3') == '"Fast" is the word for 0.3'
     assert clean(' "Hello there" ') == "Hello there"
     assert clean('"') == '"'
+    assert clean('"Foo" ships today, read "Bar"') == '"Foo" ships today, read "Bar"'
 
 
 @pytest.mark.parametrize(

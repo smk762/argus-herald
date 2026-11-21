@@ -873,14 +873,19 @@ def cmd_watch(config: Config, store: Store, http: HttpClient, publishers: list[P
             time.sleep(_sleep_for(config, store, last_poll))
             continue
         last_poll = now
-        try:
-            cmd_poll(config, store, http, publishers)
-            _discover_daily(config, store, http)
-            _collect_daily(config, store, http)
-            _engagement_hourly(config, store, http)
-        except (ConfigError, ReviewError, HttpError, OSError, ValueError) as exc:
-            log.error("%s", exc)
-            _heartbeat(config)
+        # Each stage gets its own try, so one that keeps failing doesn't starve the others.
+        stages = (
+            lambda: cmd_poll(config, store, http, publishers),
+            lambda: _discover_daily(config, store, http),
+            lambda: _collect_daily(config, store, http),
+            lambda: _engagement_hourly(config, store, http),
+        )
+        for stage in stages:
+            try:
+                stage()
+            except (ConfigError, ReviewError, HttpError, OSError, ValueError) as exc:
+                log.error("%s", exc)
+        _heartbeat(config)
         time.sleep(_sleep_for(config, store, last_poll))
 
 

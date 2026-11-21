@@ -19,6 +19,12 @@ def private_denylist(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture(autouse=True)
+def no_github_token(monkeypatch):
+    # A token in the shell switches GitHub polling from the feed to the API; tests that want it pass one.
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+
 @pytest.fixture
 def gate(private_denylist):
     from argus_herald.privacy import load_gate

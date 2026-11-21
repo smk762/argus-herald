@@ -6,7 +6,7 @@ import pytest
 from argus_herald.config import ConfigError, Destination, Schedule, load_config
 from argus_herald.models import Post
 from argus_herald.platforms import DiscordPublisher, PatreonPublisher, TwitterPublisher
-from argus_herald.schedule import free_slots, iso, next_due_in, parse, publish_due, slot_times, suggest
+from argus_herald.schedule import choose, free_slots, iso, next_due_in, parse, publish_due, slot_times, suggest
 from argus_herald.store import Store
 from argus_herald.workflow import approve, compose, edit_draft
 
@@ -53,6 +53,15 @@ def test_slots_respect_gap_and_offset(tmp_path):
     assert free_slots(store, "twitter", TUE_FRI, NOW, ignore=draft_id)[0].isoformat() == "2026-11-24T08:00:00+00:00"
     shifted = Schedule(slots=TUE_FRI.slots, offset_minutes=30)
     assert free_slots(store, "patreon", shifted, NOW)[0].isoformat() == "2026-11-24T08:30:00+00:00"
+    store.close()
+
+
+def test_choosing_again_for_a_scheduled_draft_does_not_count_its_own_slot_as_taken(tmp_path):
+    store = Store(tmp_path / "s.sqlite")
+    draft_id, _ = store.add_draft(project="p", version="1", platform="twitter", title="", body="b", link="l")
+    store.transition(draft_id, ("pending",), "approved")
+    store.set_publish_at(draft_id, "2026-11-24T08:00:00+00:00")
+    assert choose(store, store.get(draft_id), TUE_FRI, NOW).isoformat() == "2026-11-24T08:00:00+00:00"
     store.close()
 
 
@@ -136,3 +145,32 @@ def test_suggest(tmp_path):
     conn.commit()
     report = suggest(db)
     assert report.startswith("bluesky: 7 posts") and "Try a slot around Fri 08:00 UTC (based on 4 posts" in report
+
+
+def test_suggest_reads_a_metrics_file_whose_path_has_uri_characters(tmp_path):
+    folder = tmp_path / "metrics" / "odd?name#100%"
+    folder.mkdir(parents=True)
+    db = folder / "metrics.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE events (kind, source, project, version, at, url, detail)")
+    conn.execute("CREATE TABLE post_metrics (platform, external_id, likes, reposts, replies, quotes)")
+    conn.close()
+    assert suggest(db) == "No published posts have engagement data yet."
+    assert [p.name for p in folder.parent.iterdir()] == [folder.name]  # nothing opened by mistake
+
+
+def test_suggest_closes_its_connection_on_every_return(tmp_path, monkeypatch):
+    db = tmp_path / "metrics.sqlite"
+    sqlite3.connect(db).close()  # no post_metrics table: an early return
+    opened = []
+    real_connect = sqlite3.connect
+
+    def connect(*args, **kwargs):
+        opened.append(real_connect(*args, **kwargs))
+        return opened[-1]
+
+    monkeypatch.setattr("argus_herald.schedule.sqlite3.connect", connect)
+    assert "No post engagement" in suggest(db)
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0].execute("SELECT 1")

@@ -523,3 +523,9 @@ def test_removing_a_clip_drops_its_check(tmp_path):
     assert store.clip_freshness() == {}
     assert freshness.ago((datetime.now(UTC) - timedelta(minutes=5)).isoformat()) == "5m"
     store.close()
+
+
+def test_a_timestamp_without_an_offset_is_read_as_utc():
+    now = datetime(2026, 11, 21, 12, 0, tzinfo=UTC)
+    assert freshness.ago("2026-11-21T10:00:00", now) == "2h"
+    assert freshness.ago("2026-11-21T10:00:00+00:00", now.replace(tzinfo=None)) == "2h"

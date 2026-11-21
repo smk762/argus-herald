@@ -47,6 +47,8 @@ def test_add_set_validate_remove(tmp_path):
         {"status": "done"},
         {"format": "tour"},
         {"target_seconds": "soon"},
+        {"target_seconds": "²"},
+        {"target_seconds": "①"},
         {"recorded_at": "yesterday"},
         {"demo_commit": "not-a-hash"},
         {"title": "x" * 501},
@@ -105,6 +107,24 @@ def test_import_checks_every_row_before_saving_any(tmp_path):
         with pytest.raises(ReviewError):
             clips.import_csv(store, text)
     assert store.clips() == []
+    store.close()
+
+
+def test_a_row_with_too_few_cells_is_refused_rather_than_wiping_the_stored_fields(tmp_path):
+    store = Store(tmp_path / "s.sqlite")
+    clips.add(store, "T1", demo="quarry", title="Licence check", status="recorded", recorded_at="2026-11-18")
+    with pytest.raises(ReviewError, match="line 2: fewer cells than columns"):
+        clips.import_csv(store, "id,status,title,demo\nT1,posted\n")
+    clip = store.clip("T1")
+    assert (clip["status"], clip["title"], clip["demo"]) == ("recorded", "Licence check", "quarry")
+    store.close()
+
+
+def test_import_problems_name_the_file_line_past_blank_lines_and_multi_line_cells(tmp_path):
+    store = Store(tmp_path / "s.sqlite")
+    text = 'id,title,status\n\nok,"two\nlines",todo\nbad,x,done\n'
+    with pytest.raises(ReviewError, match="line 5: status is one of"):
+        clips.import_csv(store, text)
     store.close()
 
 

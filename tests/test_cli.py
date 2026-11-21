@@ -257,3 +257,43 @@ def test_compose_checks_every_media_file_before_it_drafts(tmp_path, capsys):
     assert set(_statuses(path)) == {"1", "2"}  # no image-less draft to approve by mistake, or to duplicate
     assert main([*base, "compose", "A build note", "--media", str(good), "--alt", "a square"]) == 0
     assert len(_statuses(path)) == 3
+
+
+def test_a_failing_poll_does_not_stop_the_later_watch_stages(tmp_path, monkeypatch):
+    from argus_herald import cli
+    from argus_herald.config import load_config
+    from argus_herald.http import HttpError
+    from argus_herald.store import Store
+
+    path = tmp_path / "config.json"
+    path.write_text('{"pypi":{"projects":["demo"]},"destinations":{"patreon":{"enabled":true}}}', encoding="utf-8")
+    config = load_config(path)
+    store = Store(tmp_path / "s.sqlite")
+    ran: list[str] = []
+
+    def failing_poll(*args):
+        ran.append("poll")
+        raise HttpError("GET", "https://pypi.org/x", 503)
+
+    class Stop(Exception):
+        pass
+
+    def stop(seconds):
+        raise Stop
+
+    monkeypatch.setattr(cli, "cmd_poll", failing_poll)
+    monkeypatch.setattr(cli, "_discover_daily", lambda *a: ran.append("discover"))
+    monkeypatch.setattr(cli, "_collect_daily", lambda *a: ran.append("collect"))
+    monkeypatch.setattr(cli, "_engagement_hourly", lambda *a: ran.append("engagement"))
+    monkeypatch.setattr(cli, "_sleep_for", lambda *a: 0)
+    monkeypatch.setattr(cli.time, "sleep", stop)
+    heartbeat = tmp_path / "heartbeat"
+    monkeypatch.setenv("ARGUS_HERALD_HEARTBEAT", str(heartbeat))
+    try:
+        cli.cmd_watch(config, store, None, [])
+    except Stop:
+        pass
+    finally:
+        store.close()
+    assert ran == ["poll", "discover", "collect", "engagement"]
+    assert heartbeat.is_file()

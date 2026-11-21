@@ -598,3 +598,71 @@ def test_public_url_drops_a_url_that_does_not_parse():
     assert _public_url("http://[::1") is None
     assert _public_url("https://[zz]/x") is None
     assert _public_url("https://example.org/a?b=1") == "https://example.org/a?b=1"
+
+
+def test_an_unknown_action_is_refused_rather_than_approved(tmp_path):
+    from argus_herald.ui.app import _perform
+    from argus_herald.workflow import ReviewError
+
+    config = _config(tmp_path)
+    _seed(config)
+    store = Store(config.store_path)
+    try:
+        publishers = {p.id: p for p in load_publishers()}
+        draft = store.get(2)
+        with pytest.raises(ReviewError, match="Unknown action"):
+            _perform(store, publishers["patreon"], draft, {}, "aprove", {"env": _env()}, config)
+        assert store.get(2).status == "pending"
+    finally:
+        store.close()
+
+
+def test_changing_the_reviewer_token_signs_out_existing_sessions(tmp_path):
+    config = _config(tmp_path)
+    _seed(config)
+    client = TestClient(create_app(config, _env("old-token")), follow_redirects=False)
+    login = client.get("/login")
+    client.post("/login", data={"csrf": _csrf(login.text), "token": "old-token"})
+    assert client.get("/").status_code == 200
+    cookies = dict(client.cookies)
+    rotated = TestClient(create_app(config, _env("new-token")), follow_redirects=False, cookies=cookies)
+    assert rotated.get("/").headers["location"] == "/login"
+    same = TestClient(create_app(config, _env("old-token")), follow_redirects=False, cookies=cookies)
+    assert same.get("/").status_code == 200
+
+
+def test_a_generated_session_secret_survives_a_restart(tmp_path):
+    config = _config(tmp_path)
+    _seed(config)
+    env = {k: v for k, v in _env("s3cret").items() if k != "ARGUS_HERALD_UI_SECRET"}
+    client = TestClient(create_app(config, env), follow_redirects=False)
+    login = client.get("/login")
+    client.post("/login", data={"csrf": _csrf(login.text), "token": "s3cret"})
+    restarted = TestClient(create_app(config, env), follow_redirects=False, cookies=dict(client.cookies))
+    assert restarted.get("/").status_code == 200
+    kept = config.store_path.parent / "ui-secret"
+    assert kept.stat().st_mode & 0o777 == 0o600
+
+
+def test_paste_handoff_without_a_url_does_not_point_at_patreon(tmp_path):
+    from argus_herald.platforms import PatreonPublisher
+    from argus_herald.ui.app import _draft_context
+
+    class Forum(PatreonPublisher):
+        id = "forum"
+        label = "Forum"
+        home_url = None
+
+    config = _config(tmp_path)
+    store = Store(config.store_path)
+    try:
+        draft_id, _ = store.add_draft(
+            project="argus-atlas", version="0.2.0", platform="forum", title="t", body="b", link="l"
+        )
+        store.conn.execute("UPDATE drafts SET status = 'handed_off' WHERE id = ?", (draft_id,))
+        store.conn.commit()
+        draft = store.get(draft_id)
+    finally:
+        store.close()
+    assert _draft_context(config, draft, Forum())["handoff"]["url"] is None
+    assert _draft_context(config, draft, PatreonPublisher())["handoff"]["url"] == "https://www.patreon.com"

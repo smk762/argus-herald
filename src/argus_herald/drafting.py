@@ -241,7 +241,8 @@ def clean(raw: str) -> str:
     # Social posts are plain text: backticks and bold markers would show literally.
     text = text.replace("`", "").replace("**", "")
     text = text.strip()
-    if len(text) >= 2 and text[0] == text[-1] == '"':  # only a wrapping pair: a post may end on a quoted title
+    # Only a wrapping pair: a post may start or end on a quoted title.
+    if len(text) >= 2 and text[0] == text[-1] == '"' and '"' not in text[1:-1]:
         text = text[1:-1]
     return text.strip()
 
@@ -268,10 +269,11 @@ def repair(text: str, publisher: Publisher, link: str, request: Request) -> tupl
         item_rows = [i for i, line in enumerate(lines) if _ITEM.match(line)]
         if len(item_rows) <= 1 or (len(item_rows) <= MAX_ITEMS and not too_long(joined)):
             break
-        # The item runs to the next blank line. What follows it (a closing line) is kept, and
-        # still has to fit.
-        start = end = item_rows[-1]
-        while end < len(lines) and lines[end].strip():
+        # The item runs over its indented continuation lines. What follows it (a closing line,
+        # with or without a blank line before it) is kept, and still has to fit.
+        start = item_rows[-1]
+        end = start + 1
+        while end < len(lines) and lines[end].strip() and lines[end][0].isspace() and not _ITEM.match(lines[end]):
             end += 1
         del lines[start:end]
         while start < len(lines) and not lines[start].strip() and (start == 0 or not lines[start - 1].strip()):

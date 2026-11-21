@@ -7,8 +7,9 @@ Every attached file gets a cleaned copy, and only the cleaned copy is ever poste
   profile is kept. A PNG that already holds nothing but its image data is copied byte for byte,
   so its hash still matches the file it came from;
 - GIFs: every frame is kept with its timing, and comments and extensions are dropped;
-- video (MP4, MOV, WebM): ffmpeg copies the streams with all metadata dropped. Without ffmpeg
-  the clip is kept but marked unstripped, and approve refuses it (fail closed).
+- video (MP4, MOV, WebM): ffmpeg copies the video and audio streams with all metadata dropped.
+  Every other track (subtitles, GPS and sensor telemetry, timed metadata, cover art) is left
+  out. Without ffmpeg the clip is kept but marked unstripped, and approve refuses it (fail closed).
 
 What was removed is recorded so the reviewer sees it.
 """
@@ -191,7 +192,7 @@ def _clean_image(source: Path, target: Path) -> str:
             pixels.save(target, fmt, **options)
     except MediaError:
         raise
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, Image.DecompressionBombError) as exc:
         raise MediaError(f"{source.name} isn't a readable image: {exc}") from exc
     return ", ".join(found) or "nothing found"
 
@@ -216,16 +217,18 @@ def _clean_gif(source: Path, target: Path) -> str:
             options = {
                 "save_all": len(frames) > 1,
                 "duration": durations if len(frames) > 1 else durations[0],
-                "loop": image.info.get("loop", 0),
                 "disposal": 2,
                 "optimize": False,
             }
+            # A GIF without a loop count plays once; writing loop=0 would make it repeat forever.
+            if "loop" in image.info:
+                options["loop"] = image.info["loop"]
             if len(frames) > 1:
                 options["append_images"] = frames[1:]
             frames[0].save(target, "GIF", **options)
     except MediaError:
         raise
-    except (OSError, ValueError, IndexError) as exc:
+    except (OSError, ValueError, IndexError, Image.DecompressionBombError) as exc:
         raise MediaError(f"{source.name} isn't a readable GIF: {exc}") from exc
     return ", ".join(found) or "nothing found"
 
@@ -246,8 +249,15 @@ def _clean_video(source: Path, target: Path) -> str:
         "-y",
         "-i",
         str(source),
+        # Only the picture and the sound: a capture device's GPS or sensor track, subtitles and
+        # cover art are streams of their own, which -map_metadata doesn't touch. 0:V leaves out
+        # attached pictures.
         "-map",
-        "0",
+        "0:V",
+        "-map",
+        "0:a?",
+        "-dn",
+        "-sn",
         "-map_metadata",
         "-1",
         "-map_chapters",

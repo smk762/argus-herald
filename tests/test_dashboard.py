@@ -171,6 +171,37 @@ def test_platform_summary_weeks_and_follower_change(tmp_path):
     assert {r["week"].weekday() for r in sunday_weeks} == {6}
 
 
+def test_an_unmapped_platform_keeps_its_posts_and_followers_in_one_row(tmp_path):
+    m = _metrics(tmp_path)
+    monday = date(2026, 12, 14)
+    _broadcast(m, "youtube", _at(monday + timedelta(days=2)), "https://youtube.com/watch?v=1", "a")
+    m.upsert(
+        "account_metrics",
+        [
+            {
+                "platform": "youtube",
+                "account": "a",
+                "date": (monday + timedelta(days=i)).isoformat(),
+                "followers": 100 + i,
+                "following": None,
+                "posts": None,
+                "source": "manual",
+            }
+            for i in range(-3, 7)
+        ],
+    )
+    conn = d.connect(m.path)
+    f = d.Filters(days=14, end=END)
+    week = [r for r in d.platform_summary(conn, d.broadcast_report(conn, f), f) if r["week"] == monday]
+    assert [(r["platform"], r["posts"], r["followers"]) for r in week] == [("youtube", 1, 7)]
+
+
+def test_reddit_needs_a_domain_boundary():
+    assert d.referrer_group("reddit.com") == "reddit" and d.referrer_group("redd.it") == "reddit"
+    assert d.referrer_group("notreddit.com") == "other"
+    assert d.referrer_group("myreddit.com", ("myreddit.com",)) == "site"
+
+
 def test_charts_escape_text_and_never_draw_nan(tmp_path):
     days = [END - timedelta(days=i) for i in range(4, -1, -1)]
     post = d.Broadcast(
@@ -281,12 +312,14 @@ def test_checkpoints_compare_times_not_strings(tmp_path):
     url = "https://bsky.app/profile/a.b/post/1"
     _broadcast(m, "bluesky", t0, url, "a")
     samples = [
-        # (stored stamp, likes): a space separator, a Z suffix, another offset, no offset
+        # (stored stamp, likes): a space separator, a Z suffix, other offsets, no offset
         ((t0 + timedelta(hours=23)).strftime("%Y-%m-%dT%H:%M:%SZ"), 1),  # before the 24h window
         ((t0 + timedelta(hours=30)).strftime("%Y-%m-%d %H:%M:%S"), 4),  # inside it
-        ((t0 + timedelta(days=7, hours=1)).astimezone(timezone(timedelta(hours=10))).isoformat(), 9),
-        ((t0 + timedelta(days=6)).strftime("%Y-%m-%dT%H:%M:%S"), 6),  # day 6: not the 7d sample
+        # The latest sample's text sorts before day 6's, so string order would pick day 6.
+        ((t0 + timedelta(days=7, hours=1)).astimezone(timezone(timedelta(hours=-12))).isoformat(), 9),
+        ((t0 + timedelta(days=6)).astimezone(timezone(timedelta(hours=14))).isoformat(), 6),  # not the 7d sample
     ]
+    assert max(stamp for stamp, _likes in samples) == samples[3][0]
     m.upsert(
         "post_metrics",
         [

@@ -88,8 +88,12 @@ def bluesky_ref(url: str) -> tuple[str, str] | None:
     match = _AT_URI.match(url)
     if match:
         return match.group(1), match.group(2)
-    parsed = urlparse(url)
-    if parsed.scheme == "https" and parsed.hostname in ("bsky.app", "www.bsky.app"):
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+    except ValueError:  # a malformed host, such as an unclosed IPv6 bracket
+        return None
+    if parsed.scheme == "https" and host in ("bsky.app", "www.bsky.app"):
         match = _BSKY_WEB.match(parsed.path)
         if match:
             return match.group(1), match.group(2)
@@ -99,7 +103,7 @@ def bluesky_ref(url: str) -> tuple[str, str] | None:
 def bluesky_samples(http: Http, posts: list[Post], now: datetime) -> tuple[list[dict], list[str]]:
     rows, problems = [], []
     dids: dict[str, str] = {}
-    wanted: dict[str, Post] = {}
+    wanted: dict[str, list[Post]] = {}  # a list: a handle link and a DID link can name the same post
     for post in posts:
         ref = bluesky_ref(post.url)
         if ref is None:
@@ -119,29 +123,35 @@ def bluesky_samples(http: Http, posts: list[Post], now: datetime) -> tuple[list[
                 problems.append(f"bluesky: can't resolve handle {actor} for {post.url}")
                 continue
             actor = dids[actor]
-        wanted[f"at://{actor}/app.bsky.feed.post/{rkey}"] = post
+        wanted.setdefault(f"at://{actor}/app.bsky.feed.post/{rkey}", []).append(post)
     uris = list(wanted)
     for start in range(0, len(uris), 25):
         batch = uris[start : start + 25]
         query = "&".join(f"uris={quote(u, safe='')}" for u in batch)
-        data = _get(http, f"{BSKY}/app.bsky.feed.getPosts?{query}")
-        found = {str(p.get("uri")): p for p in data.get("posts") or []}
+        # A failed batch costs its own posts only; the rows already gathered are kept.
+        try:
+            data = _get(http, f"{BSKY}/app.bsky.feed.getPosts?{query}")
+            listed = data.get("posts") if isinstance(data, dict) else None
+            found = {str(p.get("uri")): p for p in listed or [] if isinstance(p, dict)}
+        except (HttpError, OSError, ValueError) as exc:
+            problems.extend(f"bluesky: can't fetch {post.url}: {exc}" for uri in batch for post in wanted[uri])
+            continue
         for uri in batch:
-            post = wanted[uri]
             item = found.get(uri)
-            if item is None:
-                problems.append(f"bluesky: {post.url} not found (deleted?)")
-                continue
-            rows.append(
-                _row(
-                    post,
-                    now,
-                    likes=item.get("likeCount"),
-                    reposts=item.get("repostCount"),
-                    replies=item.get("replyCount"),
-                    quotes=item.get("quoteCount"),
+            for post in wanted[uri]:
+                if item is None:
+                    problems.append(f"bluesky: {post.url} not found (deleted?)")
+                    continue
+                rows.append(
+                    _row(
+                        post,
+                        now,
+                        likes=item.get("likeCount"),
+                        reposts=item.get("repostCount"),
+                        replies=item.get("replyCount"),
+                        quotes=item.get("quoteCount"),
+                    )
                 )
-            )
     return rows, problems
 
 
@@ -152,8 +162,8 @@ _MASTODON_ID = re.compile(r"^/(?:@[^/]+|users/[^/]+/statuses)/(\d+)/?$")
 
 def mastodon_ref(url: str) -> tuple[str, str] | None:
     """(https://instance, status id) from a status link."""
-    parsed = urlparse(url)
     try:
+        parsed = urlparse(url)  # raises ValueError for a malformed host, such as an unclosed IPv6 bracket
         if parsed.scheme != "https" or not parsed.hostname:
             return None
         parsed.port  # noqa: B018 - raises ValueError for a port that isn't a number
@@ -271,7 +281,9 @@ _COUNTS = (
     "new_follows",
 )
 _X_STATUS = re.compile(r"/status(?:es)?/(\d{1,25})")
-_DATE_FORMATS = ("%a, %b %d, %Y", "%b %d, %Y", "%Y-%m-%d %H:%M %z", "%Y-%m-%d %H:%M:%S %z", "%m/%d/%Y", "%d/%m/%Y")
+_DATE_FORMATS = ("%a, %b %d, %Y", "%b %d, %Y", "%Y-%m-%d %H:%M %z", "%Y-%m-%d %H:%M:%S %z")
+_SLASH_DATE = re.compile(r"^(\d{1,2})/(\d{1,2})/\d{4}$")
+MONTH_FIRST, DAY_FIRST = "%m/%d/%Y", "%d/%m/%Y"
 
 
 def _key(header: str) -> str:
@@ -302,13 +314,31 @@ def _number(value: str | None) -> int | None:
         raise ValueError(f"not a number: {value!r}") from exc
 
 
-def _date(value: str) -> str:
+def _slash_order(values: Iterable[str]) -> str:
+    """Month-first or day-first for a whole export's dd/dd/yyyy dates, which no single date can tell apart.
+
+    X writes month first, so that holds unless a first number over 12 shows the file is day-first
+    (say, re-saved by a spreadsheet in such a locale). A file showing both orders is refused.
+    """
+    firsts, seconds = [], []
+    for value in values:
+        match = _SLASH_DATE.match(value.strip())
+        if match:
+            firsts.append(int(match.group(1)))
+            seconds.append(int(match.group(2)))
+    day_first, month_first = any(n > 12 for n in firsts), any(n > 12 for n in seconds)
+    if day_first and month_first:
+        raise ValueError("the export mixes month-first and day-first dates")
+    return DAY_FIRST if day_first else MONTH_FIRST
+
+
+def _date(value: str, slash: str = MONTH_FIRST) -> str:
     text = value.strip()
     try:
         return date.fromisoformat(text[:10]).isoformat()
     except ValueError:
         pass
-    for fmt in _DATE_FORMATS:
+    for fmt in (*_DATE_FORMATS, slash):
         try:
             return datetime.strptime(text, fmt).date().isoformat()
         except ValueError:
@@ -345,7 +375,9 @@ def import_x_analytics(metrics, text: str, account: str, now: datetime | None = 
             known[match.group(1)] = (row["source"], row["url"])
     result = XImport()
     post_rows, day_rows = [], []
-    for line, raw in enumerate(reader, start=2):
+    raws = list(reader)
+    slash = MONTH_FIRST if per_post else _slash_order(r.get(cols["date"]) or "" for r in raws)
+    for line, raw in enumerate(raws, start=2):
         get = lambda name, raw=raw: raw.get(cols[name]) if name in cols else None  # noqa: E731
         try:
             counts = {name: _number(get(name)) for name in _COUNTS}
@@ -371,7 +403,7 @@ def import_x_analytics(metrics, text: str, account: str, now: datetime | None = 
                 )
                 result.posts += 1
             else:
-                day = _date(get("date") or "")
+                day = _date(get("date") or "", slash)
                 day_rows.append(
                     {
                         "platform": "twitter",

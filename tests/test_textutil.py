@@ -1,6 +1,6 @@
 import pytest
 
-from argus_herald.textutil import clip_lines, extract_changelog, fit_weighted, weighted_length
+from argus_herald.textutil import clip_lines, extract_changelog, fit_body, fit_weighted, weighted_length
 
 
 @pytest.mark.parametrize("limit", [5, 6, 10, 40])
@@ -76,3 +76,16 @@ def test_fit_weighted_cuts_between_whole_characters(unit):
         assert weighted_length(fitted) <= 280 and head.startswith(lead + unit)
         rest = head.removeprefix(lead)
         assert rest == unit * (len(rest) // len(unit))  # no bare accent, digit, joiner or half a flag
+
+
+def test_fit_weighted_keeps_a_whole_final_word_when_the_cut_lands_between_words():
+    link = "https://example.org/a"
+    fitted = fit_weighted("abcd " * 60, link)  # the 255 weight left for the head ends on a space
+    assert fitted == ("abcd " * 51).rstrip() + "\n\n" + link
+
+
+def test_fit_body_never_slices_through_the_link():
+    link = "https://example.org/" + "q" * 300
+    assert fit_body("A headline", "notes", link, 280) == link
+    fitted = fit_body("word " * 100, "", "https://example.org/a", 60)
+    assert fitted.endswith("\n\nhttps://example.org/a") and len(fitted) <= 60

@@ -35,6 +35,7 @@ the baseline, as it is outside every window, and stays in the clip's own median.
 
 from __future__ import annotations
 
+import math
 import sqlite3
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
@@ -293,9 +294,9 @@ def _sum(values: Iterable[int | None]) -> int | None:
 
 
 def _number(value: float | None) -> str:
-    if value is None:
+    if value is None or not math.isfinite(value):
         return "-"
-    return f"{value:,.0f}" if value == int(value) or abs(value) >= 100 else f"{value:,.1f}"
+    return f"{value:,.0f}" if float(value).is_integer() or abs(value) >= 100 else f"{value:,.1f}"
 
 
 def _detail(p: PlatformPerformance) -> str:

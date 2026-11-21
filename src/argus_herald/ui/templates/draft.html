@@ -87,7 +87,11 @@
   {% elif handoff %}
   <section class="handoff">
     <h2>Paste into {{ label }}</h2>
+    {% if handoff.url %}
     <p>Open <a href="{{ handoff.url }}">{{ handoff.url }}</a>, create the post, then confirm below.</p>
+    {% else %}
+    <p>No destination URL is configured for {{ label }}. Create the post there, then confirm below.</p>
+    {% endif %}
     <label for="handoff-title">Title</label>
     <textarea id="handoff-title" readonly rows="2">{{ handoff.title }}</textarea>
     <label for="handoff-html">HTML</label>

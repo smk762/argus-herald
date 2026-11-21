@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 
@@ -220,3 +221,92 @@ def test_an_animated_webp_is_refused_not_cut_to_one_frame(tmp_path):
         clean(tmp_path / "moving.webp", tmp_path / "clean")
     frames[0].save(tmp_path / "still.webp")
     assert clean(tmp_path / "still.webp", tmp_path / "clean").kind == "image"
+
+
+def test_a_gif_that_plays_once_still_plays_once(tmp_path):
+    frames = [Image.new("RGB", (10, 10), (i * 80, 0, 0)) for i in range(3)]
+    frames[0].save(tmp_path / "once.gif", save_all=True, append_images=frames[1:], duration=100)
+    with Image.open(tmp_path / "once.gif") as source:
+        assert "loop" not in source.info
+    with Image.open(clean(tmp_path / "once.gif", tmp_path / "clean").path) as out:
+        assert "loop" not in out.info and out.n_frames == 3
+    frames[0].save(tmp_path / "twice.gif", save_all=True, append_images=frames[1:], duration=100, loop=2)
+    with Image.open(clean(tmp_path / "twice.gif", tmp_path / "clean").path) as out:
+        assert out.info["loop"] == 2
+
+
+def test_an_image_too_large_to_decode_is_refused_not_crashed_on(tmp_path, monkeypatch):
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 10)
+    Image.new("RGB", (8, 8)).save(tmp_path / "huge.png")
+    Image.new("RGB", (8, 8)).save(tmp_path / "huge.jpg")
+    Image.new("RGB", (8, 8)).save(tmp_path / "huge.gif")
+    for name in ("huge.png", "huge.jpg", "huge.gif"):
+        with pytest.raises(MediaError, match="isn't a readable"):
+            clean(tmp_path / name, tmp_path / "clean")
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="needs ffmpeg")
+def test_a_clip_keeps_only_its_picture_and_sound(tmp_path):
+    subs = tmp_path / "track.srt"
+    subs.write_text("1\n00:00:00,000 --> 00:00:01,000\nGPS 12.3456 45.6789\n", encoding="utf-8")
+    source = tmp_path / "clip.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=64x64:rate=5:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=duration=1",
+            "-i",
+            str(subs),
+            "-map",
+            "0",
+            "-map",
+            "1",
+            "-map",
+            "2",
+            "-c:s",
+            "mov_text",
+            "-pix_fmt",
+            "yuv420p",
+            str(source),
+        ],
+        check=True,
+    )
+    cleaned = clean(source, tmp_path / "clean")
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", str(cleaned.path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    kinds = sorted(stream["codec_type"] for stream in json.loads(probe.stdout)["streams"])
+    assert kinds == ["audio", "video"]
+    assert b"12.3456" not in cleaned.path.read_bytes()
+
+
+def test_ffmpeg_is_asked_for_the_picture_and_sound_only(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"a clip")
+    commands = []
+
+    def run(args, **kwargs):
+        if "ffprobe" in args[0]:
+            return _done(args, 0, '{"format": {"tags": {}}, "streams": [{}]}')
+        commands.append(args)
+        Path(args[-1]).write_bytes(b"a clip")
+        return _done(args)
+
+    _fake_tools(monkeypatch, run)
+    clean(source, tmp_path / "clean")
+    (command,) = commands
+    maps = [command[i + 1] for i, arg in enumerate(command) if arg == "-map"]
+    assert maps == ["0:V", "0:a?"] and "-dn" in command and "-sn" in command

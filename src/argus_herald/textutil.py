@@ -105,9 +105,12 @@ def fit_body(head: str, notes: str, link: str, limit: int) -> str:
     link = link.strip()
     base = "\n\n".join(part for part in (head, link) if part)
     if len(base) > limit:
-        room = limit - (len(link) + 2 if link else 0)
-        head = clip(head, max(room, 0))
-        return "\n\n".join(part for part in (head, link) if part)[:limit]
+        if not link:
+            return clip(head, limit)
+        # Never slice through the link: a cut URL doesn't work. A link too long on its own is
+        # returned whole, for the caller's own limit check to refuse.
+        head = clip(head, max(limit - len(link) - 2, 0))
+        return "\n\n".join(part for part in (head, link) if part)
     if not notes:
         return base
     room = limit - len(base) - 2
@@ -133,13 +136,14 @@ def fit_weighted(head: str, link: str, limit: int = 280) -> str:
     body = head + sep + link
     if fits(body):
         return body
+    full = head
     parts = _clusters(head)  # cut between whole characters: half an emoji or a bare accent reads as broken
     while head and not fits(head + sep + link):
         parts.pop()
         head = "".join(parts).rstrip()
     if head:
         space = head.rfind(" ")
-        if space > 20:
+        if space > 20 and not full[len(head)].isspace():  # back up only when the cut split a word
             shorter = head[:space].rstrip()
             if shorter and fits(shorter + sep + link):
                 head = shorter
