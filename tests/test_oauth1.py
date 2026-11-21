@@ -47,3 +47,14 @@ def test_base_string_normalises_host_and_default_port():
     assert signature_base("GET", "http://Example.com:80/x", {}) == signature_base("GET", "http://example.com/x", {})
     assert "example.com%3A8443" in signature_base("GET", "https://example.com:8443/x", {})
     assert "%5B%3A%3A1%5D%3A8080" in signature_base("GET", "http://[::1]:8080/x", {})
+
+
+def test_a_url_with_no_path_is_signed_as_the_root_path():
+    from argus_herald.oauth1 import signature_base
+
+    root = signature_base("GET", "https://api.example.com/", {"a": "1"})
+    assert signature_base("GET", "https://api.example.com", {"a": "1"}) == root
+    assert root.startswith("GET&https%3A%2F%2Fapi.example.com%2F&")
+    assert signature_base("GET", "https://api.example.com?x=1", {}) == signature_base(
+        "GET", "https://api.example.com/?x=1", {}
+    )

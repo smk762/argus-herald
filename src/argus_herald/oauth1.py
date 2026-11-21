@@ -27,7 +27,7 @@ def signature_base(method: str, url: str, params: Mapping[str, str]) -> str:
     port = parsed.port
     if port is not None and port != {"http": 80, "https": 443}.get(scheme):
         host = f"{host}:{port}"
-    base_url = f"{scheme}://{host}{parsed.path}"
+    base_url = f"{scheme}://{host}{parsed.path or '/'}"  # no path is sent as "GET / HTTP/1.1"
     items = [(percent(key), percent(value)) for key, value in params.items()]
     for key, value in parse_qsl(parsed.query, keep_blank_values=True):
         items.append((percent(key), percent(value)))
