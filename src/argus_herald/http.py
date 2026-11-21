@@ -13,6 +13,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from argus_herald import __version__
 
 USER_AGENT = f"argus-herald/{__version__} (release announcements; +https://pypi.org)"
+ERROR_BODY_LIMIT = 64_000  # bytes of a 3xx/4xx/5xx body kept; the rest is not read
 
 
 class HttpError(Exception):
@@ -159,10 +160,14 @@ class HttpClient:
         except BodyTooLarge:
             raise
         except HTTPError as exc:
+            # An error body is only ever a message: it is cut at the limit rather than refused, and
+            # the connection is released here rather than whenever the error is collected.
             try:
-                payload = exc.read()
+                payload = exc.read(min(limit, ERROR_BODY_LIMIT) if limit is not None else ERROR_BODY_LIMIT)
             except (OSError, HTTPException) as read_exc:
                 raise HttpError(method, url, 0) from read_exc
+            finally:
+                exc.close()
             return exc.code, payload
         except (OSError, HTTPException) as exc:
             # URLError, and what urllib lets through unwrapped: a timeout waiting for headers,
