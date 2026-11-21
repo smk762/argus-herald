@@ -92,8 +92,10 @@ def test_remote_backend_gets_scrubbed_facts_and_needs_a_gate(gate):
     draft(backend, x(), Request("headline", facts), "", gate)
     assert DENY_TERM not in backend.seen and "/home/alice" not in backend.seen and "bob@corp.test" not in backend.seen
     assert "[name]" in backend.seen and "[email]" in backend.seen and "[address]" in backend.seen
+    backend.seen = None
     with pytest.raises(DraftingError, match="privacy gate unavailable"):
         draft(backend, x(), Request("headline", facts), "", None)
+    assert backend.seen is None  # nothing reached the remote backend
 
 
 def test_backend_config_and_urls(tmp_path):
@@ -211,6 +213,11 @@ def test_dropping_an_item_keeps_the_closing_line():
     text, _ = repair(long_items, x(), "https://e.org", req)
     assert 1 <= text.count("•") < 3 and text.endswith(outro)
     assert problems(text, x(), "https://e.org", req) == [] or text.count("•") == 1
+    # An LLM often puts the closing line straight after the list, with no blank line.
+    tight = OPENING + "\n\n" + "\n".join(f"• pkg{i} 0.{i}.0: a short change" for i in range(5)) + "\n" + outro
+    text, done = repair(tight, x(), "https://e.org", req)
+    assert text.count("•") == 3 and text.endswith("pkg2 0.2.0: a short change\n" + outro)
+    assert done == ["dropped 2 items to fit"]
 
 
 def test_clean_only_unwraps_a_wrapping_pair_of_quotes():
@@ -218,6 +225,7 @@ def test_clean_only_unwraps_a_wrapping_pair_of_quotes():
     assert clean('"Fast" is the word for 0.3') == '"Fast" is the word for 0.3'
     assert clean(' "Hello there" ') == "Hello there"
     assert clean('"') == '"'
+    assert clean('"Foo" ships today, read "Bar"') == '"Foo" ships today, read "Bar"'
 
 
 @pytest.mark.parametrize(
