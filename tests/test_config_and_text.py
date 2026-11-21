@@ -46,6 +46,12 @@ def test_json_config_and_interval_floor(tmp_path, monkeypatch):
     assert config.destinations["twitter"].enabled is True
 
 
+def test_a_pypi_user_named_twice_is_listed_once(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"pypi": {"user": "ada", "users": ["bob", "ada", "bob"]}}), encoding="utf-8")
+    assert load_config(path).users == ["ada", "bob"]
+
+
 def test_env_file_does_not_override(tmp_path):
     path = tmp_path / ".env"
     path.write_text('export X_API_KEY="from-file"\n# comment\nEMPTY\n', encoding="utf-8")

@@ -166,7 +166,8 @@ class ClipSettings:
     branch: str = "dev"  # the deploy branch the live demo is built from
     ui_paths: tuple[str, ...] = DEFAULT_UI_PATHS
     ignore_paths: tuple[str, ...] = DEFAULT_IGNORE_PATHS  # never UI, even when a UI path matches
-    # (demo, branch, ui_paths, ignore_paths) overrides; each one set replaces the global one
+    # (demo, branch, ui_paths, ignore_paths) overrides; each one set replaces the global one.
+    # Fields a demo leaves unset are filled from the globals when the config is read (_clips).
     demos: tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...] = ()
     performance: PerformanceSettings = PerformanceSettings()
 
@@ -249,6 +250,7 @@ def load_config(path: Path) -> Config:
     single = pypi.get("user")
     if isinstance(single, str) and single.strip():
         users.insert(0, single.strip())
+    users = list(dict.fromkeys(users))  # the same account named twice is polled once
     projects = _dedupe(_strings(pypi.get("projects") or []))
     ignore = _strings(pypi.get("ignore") or [])
     discover = pypi.get("discover") or {}
