@@ -137,6 +137,11 @@ def test_fails_closed_when_the_named_auditor_list_is_missing(tmp_path, monkeypat
     assert load_gate({}).deny_terms
 
 
+def test_a_byte_order_mark_does_not_disable_the_first_deny_term(private_denylist):
+    private_denylist.write_bytes(b"\xef\xbb\xbfbom-first-term\n")
+    assert rules(load_gate({}), "a bom-first-term here") == [("deny-term", "bom-first-term")]
+
+
 def test_a_deny_list_that_is_not_utf8_fails_closed_without_showing_it(private_denylist):
     private_denylist.write_bytes("caf\u00e9-secret\n".encode("latin-1"))
     with pytest.raises(GateUnavailable, match="isn't UTF-8") as caught:

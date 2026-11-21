@@ -233,7 +233,8 @@ def _read_terms(path: Path, warnings: list[str]) -> list[str]:
         mode = path.stat().st_mode
         if mode & (stat.S_IRWXG | stat.S_IRWXO):
             warnings.append(f"{path} is readable by other users. Run: chmod 600 {path}")
-        lines = path.read_text(encoding="utf-8").splitlines()
+        # utf-8-sig: a byte-order mark (some editors save one) would otherwise stick to the first term.
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
     except OSError as exc:
         raise GateUnavailable(f"Can't read the deny-list {path}: {exc}") from exc
     except UnicodeDecodeError:
