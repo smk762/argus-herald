@@ -63,7 +63,8 @@ def clean_fields(fields: dict[str, object]) -> dict[str, object]:
             if not value:
                 out[key] = None
                 continue
-            if not value.isdigit() or not 0 < int(value) <= 86_400:
+            # isascii too: isdigit accepts digits like '²' that int() can't read.
+            if not (value.isascii() and value.isdigit()) or not 0 < int(value) <= 86_400:
                 raise ReviewError(f"target_seconds is a whole number of seconds, not {value!r}")
             out[key] = int(value)
             continue

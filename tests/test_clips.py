@@ -47,6 +47,8 @@ def test_add_set_validate_remove(tmp_path):
         {"status": "done"},
         {"format": "tour"},
         {"target_seconds": "soon"},
+        {"target_seconds": "²"},
+        {"target_seconds": "①"},
         {"recorded_at": "yesterday"},
         {"demo_commit": "not-a-hash"},
         {"title": "x" * 501},
