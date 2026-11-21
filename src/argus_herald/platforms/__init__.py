@@ -28,6 +28,8 @@ class Publisher(ABC):
     label: str
     # True when publish hands the text to a person instead of posting it.
     manual: bool = False
+    # Where a person pastes a manual post when the destination has no url of its own.
+    home_url: str | None = None
     # What a post can carry. None: this publisher can't attach media.
     media_limits: MediaLimits | None = None
     # Hashtags appended from the audience profile, at most this many.
@@ -307,6 +309,7 @@ class PatreonPublisher(Publisher):
     label = "Patreon"
     limit = 10000
     manual = True
+    home_url = "https://www.patreon.com"
     media_limits = PATREON_LIMITS
 
     def render(self, release: Release) -> Rendered:

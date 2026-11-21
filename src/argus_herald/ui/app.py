@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
+import os
 import re
 import secrets
 from collections.abc import Mapping
@@ -157,12 +159,13 @@ def create_app(
     http: Http | None = None,
 ) -> Starlette:
     settings = dict(env or {})
-    secret = (settings.get("ARGUS_HERALD_UI_SECRET") or "").strip() or secrets.token_hex(32)
+    token = (settings.get("ARGUS_HERALD_UI_TOKEN") or "").strip()
+    secret = _session_key(_session_secret(config, settings), token)
     templates = Jinja2Templates(directory=str(_ROOT / "templates"))
     state = {
         "config": config,
         "env": settings,
-        "token": (settings.get("ARGUS_HERALD_UI_TOKEN") or "").strip(),
+        "token": token,
         "http": http,
         "publishers": configured_publishers(config),
         "templates": templates,
@@ -533,6 +536,35 @@ def create_app(
     return app
 
 
+def _session_secret(config: Config, settings: Mapping[str, str]) -> str:
+    """ARGUS_HERALD_UI_SECRET, else one generated once and kept beside the store (mode 0600),
+    so a restart doesn't sign everyone out. Falls back to a per-process secret if it can't be kept."""
+    given = (settings.get("ARGUS_HERALD_UI_SECRET") or "").strip()
+    if given:
+        return given
+    path = config.store_path.parent / "ui-secret"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            kept = path.read_text(encoding="utf-8").strip()
+            if kept:
+                return kept
+            raise
+        fresh = secrets.token_hex(32)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(fresh + "\n")
+        return fresh
+    except OSError:
+        return secrets.token_hex(32)
+
+
+def _session_key(secret: str, token: str) -> str:
+    """The cookie signing key depends on the reviewer token too, so changing the token signs everyone out."""
+    return hmac.new(secret.encode("utf-8"), token.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 async def _act(request: Request, state: dict, action: str) -> Response:
     denied = _guard(request, state["token"])
     if denied is not None:
@@ -622,6 +654,8 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
         draft = edit_draft(store, publisher, draft.id, title, body, reply)
     if action == "save":
         return "Saved. This draft is pending approval."
+    if action != "approve":
+        raise ReviewError(f"Unknown action {action!r}")
     approved = approve(store, publisher, draft.id, note, gate=_gate(state), schedules=_schedules(config))
     if approved.publish_at:
         return f"Approved {draft.platform} for {draft.label}; scheduled for {_when(approved.publish_at)}."
@@ -637,7 +671,7 @@ def _draft_context(config: Config, draft: Draft, publisher: Publisher | None) ->
         if link:
             handoff = {"kind": "intent", "url": link, "text": draft.body}
         else:
-            where = destination.url if destination and destination.url else "https://www.patreon.com"
+            where = destination.url if destination and destination.url else publisher.home_url
             handoff = {"kind": "paste", "url": where, "title": draft.title, "html": plain_to_html(draft.body)}
     return {
         "draft": draft,
