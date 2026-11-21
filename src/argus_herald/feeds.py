@@ -6,8 +6,8 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from xml.parsers import expat
 from urllib.parse import quote
+from xml.parsers import expat
 
 from argus_herald.http import Http, HttpError, check_url
 
