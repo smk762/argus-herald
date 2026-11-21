@@ -190,6 +190,26 @@ def test_digest_uses_the_model_and_falls_back_with_a_note(tmp_path, gate):
     store.close()
 
 
+def test_regenerate_keeps_an_edit_made_while_the_model_was_drafting(tmp_path, gate):
+    settings, store, digest_id = _digest(tmp_path)
+    ids, _ = build_digest(store, settings, [TwitterPublisher()], digest_id, gate)
+
+    class EditMeanwhile(Chat):
+        def request(self, method, url, body=None, headers=None):
+            store.update_text(ids[0], "", f"Written during call {len(self.prompts) + 1}", ("pending",))
+            return super().request(method, url, body, headers)
+
+    backend = OpenAICompatible(EditMeanwhile(GOOD), "http://localhost/v1", "nemo")
+    with pytest.raises(ValueError, match="changed while it was being regenerated"):
+        regenerate(store, settings, TwitterPublisher(), ids[0], backend, gate)
+    assert store.get(ids[0]).body == "Written during call 1"
+    backend.http.replies = [GOOD]  # with force, an edit made before regenerating is replaced; one made during it isn't
+    with pytest.raises(ValueError, match="changed while"):
+        regenerate(store, settings, TwitterPublisher(), ids[0], backend, gate, force=True)
+    assert store.get(ids[0]).body == "Written during call 2"
+    store.close()
+
+
 def test_dropping_an_item_keeps_the_closing_line():
     from argus_herald.drafting import repair
 
