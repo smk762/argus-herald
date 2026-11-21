@@ -193,6 +193,37 @@ def test_exclude_and_rebuild_keep_edits(tmp_path, gate):
     store.close()
 
 
+def test_a_destination_left_without_releases_has_its_pending_draft_withdrawn(tmp_path, gate):
+    from dataclasses import replace
+
+    from argus_herald.digest import WITHDRAWN
+
+    cfg = _config(tmp_path)
+    store = Store(cfg.store_path)
+    digest_id = _digest_with(store, [("0.13.0", "2026-11-18T00:00:00+00:00", ADDED)])
+    ids, _status = build_digest(store, cfg.digest, PUBS, digest_id, gate)
+    page_path = tmp_path / "site" / "2026-11-30-digest.md"
+    release_id = store.release("argus-lens", "0.13.0")["id"]
+
+    store.set_excluded(release_id, True)  # every release in the window is now excluded
+    assert build_digest(store, cfg.digest, PUBS, digest_id, gate)[0] == []
+    assert [(store.get(i).status, store.get(i).note) for i in ids] == [("rejected", WITHDRAWN)] * 2
+    assert '"0.13.0"' not in page_path.read_text(encoding="utf-8")
+
+    store.set_excluded(release_id, False)  # back in: the withdrawn drafts come back for review
+    build_digest(store, cfg.digest, PUBS, digest_id, gate)
+    assert [store.get(i).status for i in ids] == ["pending", "pending"]
+    assert "lens 0.13.0" in store.get(ids[0]).body
+
+    store.update_text(ids[0], "", "My words", ("pending",))
+    build_digest(store, replace(cfg.digest, platforms=("patreon",)), PUBS, digest_id, gate)
+    assert store.get(ids[0]).status == "pending" and store.get(ids[0]).body == "My words"  # an edit is kept
+    store.update_text(ids[1], "t", "Patreon words", ("pending",))
+    build_digest(store, replace(cfg.digest, platforms=("twitter",)), PUBS, digest_id, gate, force=True)
+    assert store.get(ids[1]).status == "rejected"  # dropped from platforms, and force replaces edits
+    store.close()
+
+
 def test_privacy_gate_blocks_the_page_but_not_the_drafts(tmp_path, gate):
     cfg = _config(tmp_path)
     store = Store(cfg.store_path)
@@ -217,6 +248,22 @@ def test_promote_makes_a_headline_group_and_optional_release_page(tmp_path, gate
     assert status.startswith("wrote ") and "kind: release" in Path(status.split(" ", 1)[1]).read_text()
     assert promote(store, cfg.digest, PUBS, row)[0] == []  # idempotent
     store.close()
+
+
+def test_a_new_page_gets_the_umask_without_the_process_umask_being_changed(tmp_path, monkeypatch):
+    import os
+
+    from argus_herald.digest import _write_atomic
+
+    mask = os.umask(0o022)
+    os.umask(mask)
+
+    def swap(_value):
+        raise AssertionError("setting the umask leaves other threads' files unprotected")
+
+    monkeypatch.setattr(os, "umask", swap)
+    _write_atomic(tmp_path / "page.md", "text")
+    assert (tmp_path / "page.md").stat().st_mode & 0o777 == 0o666 & ~mask
 
 
 def test_digest_config_is_validated(tmp_path):
@@ -329,7 +376,7 @@ def test_release_page_stays_inside_the_site_dir(tmp_path, gate, slug):
     status = _write_release_page(cfg.digest, slug, "page text", gate)
     written = [p for p in tmp_path.rglob("*.md")]
     assert all(p.parent == site and not p.name.startswith(".") for p in written), status
-    assert not (tmp_path / "escaped.md").exists() and not Path("/abs/escaped.md").exists()
+    assert not (site / "../../escaped.md").resolve().exists() and not Path("/abs/escaped.md").exists()
     assert status.startswith("wrote ") == bool(written)
 
 

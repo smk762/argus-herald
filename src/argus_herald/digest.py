@@ -257,7 +257,7 @@ def render_page(
     ]
     if kind == "digest":
         lines.append(f"period: {{ from: {window.start.isoformat()}, to: {window.period_to.isoformat()} }}")
-    lines.append("releases:")
+    lines.append("releases:" if groups else "releases: []")
     for (source, package), rows in groups.items():
         name = package if _PLAIN.match(package) else _yaml(package)
         versions = json.dumps([row["version"] for row in rows])
@@ -328,10 +328,34 @@ def _write_atomic(path: Path, text: str) -> None:
         raise
 
 
-def _umask() -> int:
+def _proc_umask() -> int | None:
+    # Setting the umask to read it is process-wide: another thread creating a file in between
+    # would get no umask at all. Read it from /proc where there is one.
+    try:
+        with open("/proc/self/status", encoding="ascii") as status:
+            for line in status:
+                if line.startswith("Umask:"):
+                    return int(line.split()[1], 8)
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _swap_umask() -> int:
     mask = os.umask(0)
     os.umask(mask)
     return mask
+
+
+# Without /proc, the umask is read once, at import, before the server starts its threads.
+_START_UMASK = _proc_umask()
+if _START_UMASK is None:
+    _START_UMASK = _swap_umask()
+
+
+def _umask() -> int:
+    mask = _proc_umask()
+    return _START_UMASK if mask is None else mask
 
 
 def write_page(store: Store, settings: DigestSettings, digest_id: int, slug: str, text: str, gate: Gate | None) -> str:
@@ -428,20 +452,29 @@ def build_digest(
         raise ValueError(f"No digest {digest_id}")
     window = window_of(row)
     included = [r for r in store.releases(digest_id=digest_id) if not r["excluded"]]
+    post_key = f"digest:{window.start.isoformat()}"
+    existing = {d.platform: d for d in store.list_drafts(post_key=post_key)}
     if not included:
+        _withdraw(store, existing.values(), force)
+        if row["site_hash"]:  # herald wrote a page that still lists the excluded releases
+            write_page(store, settings, digest_id, window.slug, render_page(store, settings, window, []), gate)
         return [], "no releases in this window; nothing drafted"
     link = page_url(settings, window.slug)
     subject = f"Digest {period_label(window)}"
     targets = [p for p in publishers if not settings.platforms or p.id in settings.platforms]
-    post_key = f"digest:{window.start.isoformat()}"
-    existing = {d.platform: d for d in store.list_drafts(post_key=post_key)}
     created: list[int] = []
+    covered: set[str] = set()
     for publisher in targets:
         # Each destination's post covers only the packages its audience wants.
         mine = [r for r in included if publisher.wants([r["project"]])]
         if not mine:
             continue
+        covered.add(publisher.id)
         current = existing.get(publisher.id)
+        if current is not None and current.status == "rejected" and current.note == WITHDRAWN:
+            if current.edited and not force:
+                continue
+            current = store.transition(current.id, ("rejected",), "pending", note=None)  # its releases are back
         if current is not None and (current.status != "pending" or (current.edited and not force)):
             continue  # don't spend a model call on a draft that won't be replaced
         rendered, reply, drafted_by, note = _digest_draft(store, window, mine, publisher, link, subject, backend, gate)
@@ -463,9 +496,22 @@ def build_digest(
             created.append(draft_id)
             if note:
                 store.set_note(draft_id, note)
+    # A destination left with no releases (excluded, no longer wanted, or dropped from platforms)
+    # must not keep a pending draft that still lists them.
+    _withdraw(store, [d for platform, d in existing.items() if platform not in covered], force)
     page = render_page(store, settings, window, included)
     status = write_page(store, settings, digest_id, window.slug, page, gate)
     return created, status
+
+
+WITHDRAWN = "Withdrawn by herald: none of this digest's releases are for this destination any more."
+
+
+def _withdraw(store: Store, drafts, force: bool) -> None:
+    """Reject the pending drafts a rebuild no longer covers. Edited ones are kept unless force."""
+    for current in drafts:
+        if current.status == "pending" and (force or not current.edited):
+            store.transition(current.id, ("pending",), "rejected", note=WITHDRAWN)
 
 
 def _headline_draft(row, publisher, backend, gate):
@@ -577,8 +623,18 @@ def regenerate(
         rendered, reply, drafted_by, note = _headline_draft(row, publisher, backend, gate)
     else:
         raise ValueError("Only digest and headline drafts can be regenerated")
-    store.refresh_text(draft_id, rendered.title, rendered.body, reply, drafted_by, note, force=True)
+    # The model call can be slow: if a person edited, approved or posted the draft meanwhile, keep their version.
+    changed = ValueError(f"Draft {draft_id} changed while it was being regenerated; it was left as it is now.")
+    now = store.get(draft_id)
+    if now is None or _text_of(now) != _text_of(draft):
+        raise changed
+    if not store.refresh_text(draft_id, rendered.title, rendered.body, reply, drafted_by, note, force=force):
+        raise changed
     return note or f"Regenerated by {drafted_by}."
+
+
+def _text_of(draft) -> tuple:
+    return draft.title, draft.body, draft.reply, draft.edited
 
 
 def _write_release_page(settings: DigestSettings, slug: str, text: str, gate: Gate | None) -> str:
