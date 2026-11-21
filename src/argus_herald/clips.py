@@ -176,7 +176,10 @@ def import_csv(store: Store, text: str) -> tuple[int, int, list[str]]:
         raise ReviewError("Two columns in the CSV fill the same field (for example id and clip_id)")
     ignored = [name for name, target in mapped.items() if target not in COLUMNS and name]
     rows, problems, seen = [], [], set()
-    for line, raw in enumerate(reader, start=2):
+    for raw in reader:
+        # The file's own line (where the row ends), not a row count: blank lines and cells that
+        # span lines would put every later number out.
+        line = reader.line_num
         if None in raw:
             problems.append(f"line {line}: more cells than columns")
             continue

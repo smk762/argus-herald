@@ -118,6 +118,14 @@ def test_a_row_with_too_few_cells_is_refused_rather_than_wiping_the_stored_field
     store.close()
 
 
+def test_import_problems_name_the_file_line_past_blank_lines_and_multi_line_cells(tmp_path):
+    store = Store(tmp_path / "s.sqlite")
+    text = 'id,title,status\n\nok,"two\nlines",todo\nbad,x,done\n'
+    with pytest.raises(ReviewError, match="line 5: status is one of"):
+        clips.import_csv(store, text)
+    store.close()
+
+
 def test_coverage_names_demos_without_a_current_clip(tmp_path):
     store = Store(tmp_path / "s.sqlite")
     clips.import_csv(store, HAND_KEPT)
