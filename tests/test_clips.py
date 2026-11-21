@@ -108,6 +108,16 @@ def test_import_checks_every_row_before_saving_any(tmp_path):
     store.close()
 
 
+def test_a_row_with_too_few_cells_is_refused_rather_than_wiping_the_stored_fields(tmp_path):
+    store = Store(tmp_path / "s.sqlite")
+    clips.add(store, "T1", demo="quarry", title="Licence check", status="recorded", recorded_at="2026-11-18")
+    with pytest.raises(ReviewError, match="line 2: fewer cells than columns"):
+        clips.import_csv(store, "id,status,title,demo\nT1,posted\n")
+    clip = store.clip("T1")
+    assert (clip["status"], clip["title"], clip["demo"]) == ("recorded", "Licence check", "quarry")
+    store.close()
+
+
 def test_coverage_names_demos_without_a_current_clip(tmp_path):
     store = Store(tmp_path / "s.sqlite")
     clips.import_csv(store, HAND_KEPT)

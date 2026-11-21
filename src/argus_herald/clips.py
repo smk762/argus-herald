@@ -183,6 +183,10 @@ def import_csv(store: Store, text: str) -> tuple[int, int, list[str]]:
         cells = {mapped[(k or "").strip()]: v for k, v in raw.items() if mapped.get((k or "").strip()) in COLUMNS}
         if not any((v or "").strip() for v in cells.values()):
             continue
+        # A missing cell is not an empty one: saved as empty, it would wipe the stored value.
+        if None in cells.values():
+            problems.append(f"line {line}: fewer cells than columns")
+            continue
         try:
             clip_id = clean_id(cells.pop("id") or "")
             if clip_id in seen:
