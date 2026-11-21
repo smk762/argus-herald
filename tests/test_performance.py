@@ -382,3 +382,9 @@ def test_cli_shows_ratings_and_the_numbers_behind_them(tmp_path, capsys):
     assert "\n  x: strong 4.00x;" in out
     assert main([*base, "clips", "show", "b-todo"]) == 0
     assert "Performance: no data (no post that used it has gone out)" in capsys.readouterr().out
+
+
+def test_a_number_that_is_not_finite_reads_as_a_dash():
+    assert performance._number(float("nan")) == "-"
+    assert performance._number(float("inf")) == "-" and performance._number(float("-inf")) == "-"
+    assert performance._number(12) == "12" and performance._number(2.5) == "2.5"
