@@ -46,9 +46,11 @@ MAX_TEASERS = 5000
 TIMEOUT = 10  # seconds; mint is often out of reach, and a confirm in the UI waits on this
 _AWAY = "mint is unreachable; the report is sent on a later poll"  # expected, so never an error
 
-_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_WHERE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
+# Matched with fullmatch: `$` alone would also accept a trailing newline. A draft id names a
+# file under the media folder and goes into mint's URLs, so it is held to exactly this.
+_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+_WHERE = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}")
 
 
 class MintError(Exception):
@@ -110,12 +112,15 @@ def _teaser(raw: object) -> Teaser | None:
     if not isinstance(raw, dict):
         return None
     teaser_id, sha, image = raw.get("id"), raw.get("image_sha256"), raw.get("image_url")
-    if not isinstance(teaser_id, str) or not _ID.match(teaser_id):
+    if not isinstance(teaser_id, str) or not _ID.fullmatch(teaser_id):
         return None
-    if not isinstance(sha, str) or not _SHA256.match(sha):
+    if not isinstance(sha, str) or not _SHA256.fullmatch(sha):
         return None
-    # A path on mint itself: never another host, whatever the feed says.
+    # A path on mint itself: never another host, whatever the feed says. URL parsers drop tabs
+    # and newlines, so "/\t/elsewhere" would read as "//elsewhere"; no control or space is let in.
     if not isinstance(image, str) or not image.startswith("/") or image.startswith("//") or "\\" in image:
+        return None
+    if any(ord(c) <= 0x20 or ord(c) == 0x7F for c in image):
         return None
     return Teaser(
         id=teaser_id,
@@ -372,8 +377,10 @@ def report_note(store: Store, draft: Draft, env: Mapping[str, str], http: Http) 
 
 
 def _send(http: Http, base: str, token: str, row: dict) -> tuple[str, str]:
-    if not _WHERE.match(row["platform"]) or not _ID.match(row["mint_id"]):
+    if not _WHERE.fullmatch(row["platform"]):
         return "refused", f"{row['platform']!r} isn't a name mint accepts for where a post went"
+    if not _ID.fullmatch(row["mint_id"]):
+        return "refused", f"{row['mint_id']!r} isn't a draft id mint accepts"
     url = f"{base}/drafts/{row['mint_id']}/posted"
     payload = {"where": row["platform"], "url": row["url"], "at": row["at"], "sha256": row["sha256"]}
     status, body = send_json(http, url, payload, headers={"Authorization": f"Bearer {token}"})

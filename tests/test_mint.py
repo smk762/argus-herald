@@ -112,8 +112,13 @@ def test_config_reads_the_mint_source_and_keeps_its_address_out(tmp_path):
     assert (cfg.mint.project, cfg.mint.platforms) == ("example-teasers", ("twitter",))
     assert _config(tmp_path, "").mint is None
     assert _config(tmp_path, "sources:\n  mint: {enabled: false}\n").mint is None
-    for bad in ("{url: 'http://mint.lan'}", "{project: 'Not An Id'}", "{platforms: [nowhere]}"):
-        with pytest.raises(ConfigError):
+    # Each bad case is otherwise valid, so it fails for the one reason it is there for.
+    for bad, why in (
+        ("{project: example-teasers, url: 'http://mint.lan'}", "Unknown sources.mint keys: url"),
+        ("{project: 'Not An Id'}", "mint project id"),
+        ("{project: example-teasers, platforms: [nowhere]}", "nowhere"),
+    ):
+        with pytest.raises(ConfigError, match=why):
             _config(tmp_path, f"sources:\n  mint: {bad}\n")
 
 
@@ -332,7 +337,40 @@ def test_a_draft_left_without_its_image_gets_it_on_the_next_poll(tmp_path, monke
 
     monkeypatch.setattr(mint, "attach_media", busy)
     (event,) = poll(cfg, store, http, PUBS, env=ENV)
-    assert event.kind == "error" and all(not store.media(d.id) for d in store.list_drafts())
+    assert event.kind == "error"
+    left = store.list_drafts()
+    assert [d.platform for d in left] == ["twitter", "patreon"]  # the drafts exist, without their image
+    assert all(not store.media(d.id) for d in left)
     monkeypatch.setattr(mint, "attach_media", real)
-    assert [e.kind for e in poll(cfg, store, http, PUBS, env=ENV)] == ["draft"]
-    assert all(len(store.media(d.id)) == 1 for d in store.list_drafts())
+    (event,) = poll(cfg, store, http, PUBS, env=ENV)
+    assert event.kind == "draft" and event.draft_ids == []  # no new drafts: the same ones are finished
+    assert [d.id for d in store.list_drafts()] == [d.id for d in left]
+    assert all(len(store.media(d.id)) == 1 for d in left)
+
+
+def test_a_teaser_id_with_a_trailing_newline_is_skipped(tmp_path):
+    cfg, store, http, image = _ready(tmp_path)
+    # "$" alone lets the newline through, into a file name under the media folder and mint's URLs.
+    http.items[0] = _item("abc123\n", image, image_url="/drafts/abc123/image")
+    assert poll(cfg, store, http, PUBS, env=ENV) == []
+    assert store.list_drafts() == [] and not (cfg.media_root / "mint").exists()
+
+
+def test_an_image_path_with_a_tab_is_skipped_not_fetched(tmp_path):
+    cfg, store, http, image = _ready(tmp_path)
+    # URL parsers drop tabs and newlines, so this would read as "//elsewhere.example/x.png".
+    http.items[0] = _item("abc123", image, image_url="/\t/elsewhere.example/x.png")
+    http.images["/\t/elsewhere.example/x.png"] = image
+    assert poll(cfg, store, http, PUBS, env=ENV) == []
+    assert store.list_drafts() == [] and all("elsewhere" not in url for _, url in http.requests)
+
+
+def test_a_report_with_a_bad_draft_id_is_refused_for_that_reason(tmp_path):
+    from argus_herald.models import Post
+    from argus_herald.workflow import compose
+
+    store = Store(tmp_path / "state.sqlite")
+    (draft_id,) = compose(store, [TwitterPublisher()], Post(kind="teaser", subject="s", text="t", link=""))
+    store.add_mint_report(draft_id, mint_id="../abc", platform="twitter", url=None, at="2026-11-18", sha256="0" * 64)
+    (reported,) = mint.send_reports(store, ENV, MintHttp())
+    assert reported.outcome == "refused" and reported.detail == "'../abc' isn't a draft id mint accepts"
