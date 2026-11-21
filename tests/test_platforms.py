@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from argus_herald.config import Audience, Destination
 from argus_herald.models import Draft, Release
 from argus_herald.platforms import DiscordPublisher, PatreonPublisher, TelegramPublisher, TwitterPublisher
@@ -84,3 +86,66 @@ def test_telegram_counts_a_200_as_posted_whatever_the_body():
         result = TelegramPublisher().publish(_draft(platform="telegram", body="0.2.0 is out."), env, Http())
         assert result.detail == "Posted to Telegram"
     assert result.external_id == "9"
+
+
+def test_x_counts_a_201_as_posted_whatever_the_body():
+    env = {"X_API_KEY": "k", "X_API_SECRET": "s", "X_ACCESS_TOKEN": "t", "X_ACCESS_TOKEN_SECRET": "ts"}
+    for body in (b"\xff\xfe", b"[]", b'{"data": 5}', b'"ok"', b"not json", b'{"data": {"id": "9"}}'):
+
+        class Http:
+            def request(self, method, url, data=None, headers=None, body=body):
+                return 201, body
+
+        result = TwitterPublisher("api").publish(_draft(body="0.2.0 is out."), env, Http())
+        assert result.detail == "Posted to Twitter / X"
+    assert result.external_id == "9"
+
+
+def test_a_missing_secret_or_a_refused_post_is_not_a_length_error():
+    from argus_herald.platforms import LengthError, PublishConfigError, PublishRejected
+
+    class Http:
+        def request(self, method, url, data=None, headers=None):
+            return 429, b"slow down"
+
+    draft = _draft(platform="discord", body="0.2.0 is out.")
+    with pytest.raises(PublishConfigError) as missing:
+        DiscordPublisher().publish(draft, {}, Http())
+    assert not isinstance(missing.value, LengthError)
+    env = {"DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/1/token"}
+    with pytest.raises(PublishRejected) as refused:
+        DiscordPublisher().publish(draft, env, Http())
+    assert refused.value.status == 429 and not isinstance(refused.value, LengthError)
+    with pytest.raises(LengthError):
+        DiscordPublisher().publish(_draft(platform="discord", body="x" * 2001), env, Http())
+
+
+def test_a_plugin_without_a_usable_id_is_skipped(monkeypatch):
+    from argus_herald import platforms
+
+    class Entry:
+        def __init__(self, name, obj):
+            self.name = name
+            self.obj = obj
+
+        def load(self):
+            return self.obj
+
+    class NoId:
+        pass
+
+    class Forum(PatreonPublisher):
+        id = "forum"
+
+    def no_id_factory():
+        return NoId()
+
+    extras = [
+        Entry("module-like", json),
+        Entry("factory", no_id_factory),
+        Entry("numeric", type("Numeric", (), {"id": 5})),
+        Entry("good", Forum),
+    ]
+    monkeypatch.setattr(platforms, "entry_points", lambda group: extras)
+    ids = [publisher.id for publisher in platforms.load_publishers()]
+    assert ids == ["twitter", "discord", "telegram", "patreon", "forum"]

@@ -101,7 +101,19 @@ class Publisher(ABC):
 
 
 class LengthError(ValueError):
-    pass
+    """The draft is too long for the platform: edit it."""
+
+
+class PublishConfigError(ValueError):
+    """A secret the publisher needs is missing or unusable: fix the environment, not the draft."""
+
+
+class PublishRejected(ValueError):
+    """The platform refused the request. `status` is the HTTP status; 429 and 5xx are worth retrying."""
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def _require(env: Mapping[str, str], names: tuple[str, ...]) -> list[str]:
@@ -191,7 +203,7 @@ class TwitterPublisher(Publisher):
             )
         missing = self.missing_secrets(env)
         if missing:
-            raise LengthError(f"Missing {', '.join(missing)}")
+            raise PublishConfigError(f"Missing {', '.join(missing)}")
         url = "https://api.x.com/2/tweets"
         header = authorization_header(
             "POST",
@@ -203,11 +215,12 @@ class TwitterPublisher(Publisher):
         )
         status, body = send_json(http, url, {"text": draft.body}, headers={"Authorization": header})
         if status not in (200, 201):
-            raise LengthError(f"Twitter rejected the post with HTTP {status}")
+            raise PublishRejected(f"Twitter rejected the post with HTTP {status}", status)
         try:
             payload = json.loads(body.decode("utf-8"))
             external = str((payload.get("data") or {}).get("id") or "") or None
-        except json.JSONDecodeError:
+        except (ValueError, AttributeError, TypeError):
+            # The tweet is live. An odd body must not fail the publish: a retry would post it twice.
             external = None
         return PublishResult(external_id=external, detail="Posted to Twitter / X")
 
@@ -232,18 +245,18 @@ class DiscordPublisher(Publisher):
     def publish(self, draft: Draft, env: Mapping[str, str], http: Http) -> PublishResult:
         missing = self.missing_secrets(env)
         if missing:
-            raise LengthError("Missing DISCORD_WEBHOOK_URL")
+            raise PublishConfigError("Missing DISCORD_WEBHOOK_URL")
         self.validate(draft.title, draft.body)
         url = _discord_url(env["DISCORD_WEBHOOK_URL"])
         # Release notes are other people's text: nothing in them may ping @everyone, a role or a user.
         status, body = send_json(http, url, {"content": draft.body, "allowed_mentions": {"parse": []}})
         if status not in (200, 204):
-            raise LengthError(f"Discord rejected the post with HTTP {status}")
+            raise PublishRejected(f"Discord rejected the post with HTTP {status}", status)
         external = None
         if body:
             try:
                 external = str(json.loads(body.decode("utf-8")).get("id") or "") or None
-            except json.JSONDecodeError:
+            except (ValueError, AttributeError, TypeError):
                 external = None
         return PublishResult(external_id=external, detail="Posted to Discord")
 
@@ -275,11 +288,11 @@ class TelegramPublisher(Publisher):
     def publish(self, draft: Draft, env: Mapping[str, str], http: Http) -> PublishResult:
         missing = self.missing_secrets(env)
         if missing:
-            raise LengthError(f"Missing {', '.join(missing)}")
+            raise PublishConfigError(f"Missing {', '.join(missing)}")
         self.validate(draft.title, draft.body)
         token = env["TELEGRAM_BOT_TOKEN"].strip()
         if "/" in token or not token:
-            raise LengthError("TELEGRAM_BOT_TOKEN is not usable")
+            raise PublishConfigError("TELEGRAM_BOT_TOKEN is not usable")
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         status, body = send_json(
             http,
@@ -291,7 +304,7 @@ class TelegramPublisher(Publisher):
             },
         )
         if status != 200:
-            raise LengthError(f"Telegram rejected the post with HTTP {status}")
+            raise PublishRejected(f"Telegram rejected the post with HTTP {status}", status)
         try:
             payload = json.loads(body.decode("utf-8"))
             result = payload.get("result") or {}
@@ -362,10 +375,13 @@ def load_publishers() -> list[Publisher]:
         try:
             obj = item.load()
             publisher = obj() if isinstance(obj, type) else obj
+            pid = getattr(publisher, "id", None)
+            if not isinstance(pid, str) or not pid:
+                raise TypeError(f"{item.name} has no string id")
         except Exception:
             log.warning("Skipping platform entry point %s", item.name, exc_info=True)
             continue
-        found[publisher.id] = publisher
+        found[pid] = publisher
     return sorted(
         found.values(),
         key=lambda publisher: (
@@ -378,9 +394,9 @@ def load_publishers() -> list[Publisher]:
 def _discord_url(raw: str) -> str:
     parsed = urlparse(raw.strip())
     if parsed.scheme != "https" or parsed.hostname not in {"discord.com", "discordapp.com"}:
-        raise LengthError("DISCORD_WEBHOOK_URL must be a Discord webhook")
+        raise PublishConfigError("DISCORD_WEBHOOK_URL must be a Discord webhook")
     if not parsed.path.startswith("/api/webhooks/"):
-        raise LengthError("DISCORD_WEBHOOK_URL must be a Discord webhook")
+        raise PublishConfigError("DISCORD_WEBHOOK_URL must be a Discord webhook")
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
     query["wait"] = "true"
     return urlunparse(parsed._replace(query=urlencode(query)))
