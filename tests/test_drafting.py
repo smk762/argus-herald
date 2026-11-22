@@ -88,7 +88,7 @@ def test_remote_backend_gets_scrubbed_facts_and_needs_a_gate(gate):
             return "A plain sentence about the release."
 
     backend = Remote("m")
-    facts = f"Built on {DENY_TERM} at /home/alice/x, ping bob@corp.test from 192.168.1.20"
+    facts = f"Built on {DENY_TERM} at /home/alice/x, ping bob@corp.test from 192.168.200.20"
     draft(backend, x(), Request("headline", facts), "", gate)
     assert DENY_TERM not in backend.seen and "/home/alice" not in backend.seen and "bob@corp.test" not in backend.seen
     assert "[name]" in backend.seen and "[email]" in backend.seen and "[address]" in backend.seen

@@ -123,7 +123,7 @@ def test_config_reads_the_mint_source_and_keeps_its_address_out(tmp_path):
 
 
 def test_lan_urls():
-    for ok in ("https://mint.example.org", "http://localhost:8000", "http://mint.lan", "http://192.168.1.5:8000"):
+    for ok in ("https://mint.example.org", "http://localhost:8000", "http://mint.lan", "http://192.168.200.5:8000"):
         check_lan_url(ok)
     for bad in ("http://example.org", "http://8.8.8.8", "ftp://mint.lan", "https://user:pw@mint.example.org"):
         with pytest.raises(ValueError):
