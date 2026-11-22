@@ -644,6 +644,20 @@ def test_a_generated_session_secret_survives_a_restart(tmp_path):
     assert kept.stat().st_mode & 0o777 == 0o600
 
 
+def test_an_empty_session_secret_file_is_replaced_not_given_up_on(tmp_path):
+    from argus_herald.ui.app import _session_secret
+
+    config = _config(tmp_path)
+    kept = config.store_path.parent / "ui-secret"
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_text("", encoding="utf-8")  # a crash between creating the file and writing it
+    first = _session_secret(config, {})
+    assert first and _session_secret(config, {}) == first  # kept from now on, not one per process
+    assert kept.read_text(encoding="utf-8").strip() == first
+    assert kept.stat().st_mode & 0o777 == 0o600
+    assert [p.name for p in kept.parent.iterdir() if p.name.startswith(".ui-secret-")] == []
+
+
 def test_paste_handoff_without_a_url_does_not_point_at_patreon(tmp_path):
     from argus_herald.platforms import PatreonPublisher
     from argus_herald.ui.app import _draft_context

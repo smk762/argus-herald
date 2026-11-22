@@ -7,6 +7,7 @@ import hmac
 import os
 import re
 import secrets
+import tempfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -545,19 +546,37 @@ def _session_secret(config: Config, settings: Mapping[str, str]) -> str:
     path = config.store_path.parent / "ui-secret"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            kept = path.read_text(encoding="utf-8").strip()
-            if kept:
-                return kept
-            raise
+        kept = _read_secret(path)
+        if kept:
+            return kept
+        # Written in full beside it, then linked into place: the file is never seen empty, and a
+        # secret another process kept first is never replaced.
         fresh = secrets.token_hex(32)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(fresh + "\n")
-        return fresh
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".ui-secret-")  # mode 0600
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(fresh + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                kept = _read_secret(path)
+                if kept:
+                    return kept
+                os.replace(tmp, path)  # an empty file, left by a crash mid-write before this was atomic
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+        return _read_secret(path) or fresh
     except OSError:
         return secrets.token_hex(32)
+
+
+def _read_secret(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return ""
 
 
 def _session_key(secret: str, token: str) -> str:
