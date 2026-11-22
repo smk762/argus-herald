@@ -133,10 +133,12 @@ class Metrics:
     def _add_site_host(self) -> None:
         """site_traffic was keyed (date, path) before hosts were recorded. The key changes, so the
         table is rebuilt; its rows are kept with a blank host."""
-        columns = [row["name"] for row in self.conn.execute("PRAGMA table_info(site_traffic)")]
-        if not columns or "host" in columns:
+        if not self._needs_site_host():
             return
-        with self.transaction():
+        # Another process opening the same file may be migrating too: take the write lock, then look again.
+        with self.transaction(immediate=True):
+            if not self._needs_site_host():
+                return
             self.conn.execute("ALTER TABLE site_traffic RENAME TO site_traffic_old")
             self.conn.execute(
                 "CREATE TABLE site_traffic (date TEXT NOT NULL, host TEXT NOT NULL DEFAULT '', path TEXT NOT NULL, "
@@ -148,12 +150,16 @@ class Metrics:
             )
             self.conn.execute("DROP TABLE site_traffic_old")
 
+    def _needs_site_host(self) -> bool:
+        columns = [row["name"] for row in self.conn.execute("PRAGMA table_info(site_traffic)")]
+        return bool(columns) and "host" not in columns
+
     def close(self) -> None:
         self.conn.close()
 
     @contextmanager
-    def transaction(self) -> Iterator[None]:
-        self.conn.execute("BEGIN")
+    def transaction(self, *, immediate: bool = False) -> Iterator[None]:
+        self.conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
         try:
             yield
             self.conn.commit()
