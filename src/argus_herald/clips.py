@@ -77,7 +77,10 @@ def clean_fields(fields: dict[str, object]) -> dict[str, object]:
             raise ReviewError(f"demo_commit is a commit hash (7 to 40 hex digits), not {value!r}")
         elif key == "path" and value:
             # Absolute: the file is attached later, from whatever directory that command runs in.
-            value = str(Path(value).expanduser().absolute())
+            try:
+                value = str(Path(value).expanduser().absolute())
+            except RuntimeError as exc:  # "~nosuchuser/...", or "~" with no home directory
+                raise ReviewError(f"path cannot be resolved: {value!r}") from exc
         if len(value) > _MAX_TEXT:
             raise ReviewError(f"{key} is longer than {_MAX_TEXT} characters")
         out[key] = value

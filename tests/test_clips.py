@@ -231,3 +231,8 @@ def test_cli(tmp_path, capsys):
     assert "Imported 1 clips (0 new, 1 updated)." in capsys.readouterr().out
     assert main([*base, "clips", "import", str(tmp_path / "missing.csv")]) == 2
     assert main([*base, "clips", "remove", "atlas-loop"]) == 2
+
+
+def test_a_clip_path_whose_home_cannot_be_found_is_a_review_error():
+    with pytest.raises(ReviewError, match="path cannot be resolved"):
+        clips.clean_fields({"path": "~no-such-user-argus-herald/clip.mp4"})
