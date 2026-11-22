@@ -399,22 +399,34 @@ def test_site_traffic_table_gains_a_host_column(tmp_path):
 
 
 def test_a_failed_getposts_batch_only_costs_its_own_posts(tmp_path):
+    from urllib.parse import parse_qs, urlsplit
+
     class Flaky(Fake):
         def request(self, method, url, body=None, headers=None):
-            if "getPosts" in url and "3kbad" in url:
+            if "getPosts" in url:
                 self.calls.append(url)
-                return 502, b"bad gateway"
+                if "3kzzbad" in url:
+                    return 502, b"bad gateway"
+                uris = parse_qs(urlsplit(url).query)["uris"]
+                posts = [{"uri": u, "likeCount": 1, "repostCount": 0, "replyCount": 0, "quoteCount": 0} for u in uris]
+                return 200, json.dumps({"posts": posts}).encode()
             return super().request(method, url, body, headers)
 
     metrics = _metrics(tmp_path)
-    _broadcast(metrics, "bluesky", BSKY_POST)
-    for n in range(25):  # fills the first batch, so the bad post lands in a batch of its own
-        _broadcast(metrics, "bluesky", f"https://bsky.app/profile/{DID}/post/3kz{n:02d}")
-    _broadcast(metrics, "bluesky", f"https://bsky.app/profile/{DID}/post/3kbad")
-    report = collect_posts(metrics, Flaky(), T0 + timedelta(hours=2))
+    good = [f"https://bsky.app/profile/{DID}/post/3kz{n:02d}" for n in range(25)]  # one full batch
+    for url in good:
+        _broadcast(metrics, "bluesky", url)
+    # Posts are batched in URL order, so this one sorts last and is alone in the second batch.
+    _broadcast(metrics, "bluesky", f"https://bsky.app/profile/{DID}/post/3kzzbad")
+    http = Flaky()
+    report = collect_posts(metrics, http, T0 + timedelta(hours=2))
+    assert sum("getPosts" in url for url in http.calls) == 2
     assert report.errors == []
-    assert metrics.count("post_metrics", platform="bluesky", external_id=BSKY_POST) == 1
-    assert sum("can't fetch" in line and "3kbad" in line for line in report.skipped) == 1
+    assert [url for url in good if metrics.count("post_metrics", platform="bluesky", external_id=url) != 1] == []
+    assert [line for line in report.skipped if "bluesky" in line] == [
+        line for line in report.skipped if "can't fetch" in line and "3kzzbad" in line
+    ]
+    assert len(report.skipped) == 1
 
 
 def test_a_getposts_answer_that_isnt_an_object_is_a_problem_not_a_crash(tmp_path):
