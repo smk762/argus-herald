@@ -297,3 +297,43 @@ def test_a_failing_poll_does_not_stop_the_later_watch_stages(tmp_path, monkeypat
         store.close()
     assert ran == ["poll", "discover", "collect", "engagement"]
     assert heartbeat.is_file()
+
+
+def test_a_wall_clock_step_back_does_not_hold_off_the_next_poll(tmp_path, monkeypatch):
+    from argus_herald import cli
+    from argus_herald.config import load_config
+    from argus_herald.store import Store
+
+    path = tmp_path / "config.json"
+    path.write_text('{"pypi":{"projects":["demo"]},"destinations":{"patreon":{"enabled":true}}}', encoding="utf-8")
+    config = load_config(path)
+    store = Store(tmp_path / "s.sqlite")
+    polls: list[int] = []
+    sleeps: list[float] = []
+    wall = [2_000_000_000.0]
+    steady = [500.0]
+
+    class Stop(Exception):
+        pass
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            raise Stop
+        wall[0] -= 6 * 3600  # NTP steps the wall clock back six hours...
+        steady[0] += config.interval_seconds  # ...while a whole interval really passes
+
+    monkeypatch.setattr(cli, "cmd_poll", lambda *a: polls.append(1))
+    for stage in ("_discover_daily", "_collect_daily", "_engagement_hourly", "_heartbeat", "_publish_due"):
+        monkeypatch.setattr(cli, stage, lambda *a: None)
+    monkeypatch.setattr(cli, "_sleep_for", lambda *a: 0)
+    monkeypatch.setattr(cli.time, "sleep", sleep)
+    monkeypatch.setattr(cli.time, "time", lambda: wall[0])
+    monkeypatch.setattr(cli.time, "monotonic", lambda: steady[0])
+    try:
+        cli.cmd_watch(config, store, None, [])
+    except Stop:
+        pass
+    finally:
+        store.close()
+    assert len(polls) == 2
