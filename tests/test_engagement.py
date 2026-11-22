@@ -473,3 +473,30 @@ def test_slash_dates_take_one_order_per_export(tmp_path):
 
     with pytest.raises(ValueError, match="mixes"):
         import_x_analytics(metrics, header + "25/04/2025,10,1,2\n04/26/2025,10,1,2\n", "dragonhound3")
+
+
+def test_site_rows_that_normalise_to_one_key_are_added_up(tmp_path):
+    def row(count, visits, **dims):
+        return {"count": count, "sum": {"visits": visits}, "dimensions": {"date": "2026-11-21", **dims}}
+
+    class Colliding(Fake):
+        def request(self, method, url, body=None, headers=None):
+            if "graphql" not in url:
+                return super().request(method, url, body, headers)
+            paths = [
+                row(4, 3, requestHost="Example.org", requestPath="/"),
+                row(2, 2, requestHost="example.org", requestPath="/"),
+                row(1, 1, requestHost="example.org", requestPath=""),
+            ]
+            refs = [row(5, 4, refererHost=""), row(3, 3, refererHost=None)]
+            data = {"data": {"viewer": {"accounts": [{"paths": paths, "referrers": refs}]}}}
+            return 200, json.dumps(data).encode()
+
+    metrics = _metrics(tmp_path)
+    env = {"CF_API_TOKEN": "t", "CF_ACCOUNT_ID": "a", "CF_SITE_TAG": "s"}
+    detail = collect_site(metrics, Colliding(), env, today=date(2026, 11, 22))
+    traffic = [tuple(r) for r in metrics.conn.execute("SELECT host, path, pageviews, visits FROM site_traffic")]
+    assert traffic == [("example.org", "/", 7, 6)]
+    refs = [tuple(r) for r in metrics.conn.execute("SELECT referrer, pageviews, visits FROM site_referrers")]
+    assert refs == [("(direct)", 8, 7)]
+    assert "1 paths, 7 page views, 1 referrer rows" in detail
