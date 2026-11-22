@@ -23,8 +23,6 @@ def rules(gate, text):
         ("served from 192.168.0.10.", [("private-ip", "192.168.0.10")]),
         ("10.1.2.3 and 172.16.5.4", [("private-ip", "10.1.2.3"), ("private-ip", "172.16.5.4")]),
         ("link-local 169.254.1.1", [("private-ip", "169.254.1.1")]),
-        ("tailscale 100.101.102.103", [("private-ip", "100.101.102.103")]),
-        ("public 100.63.255.255 and 100.128.0.1", []),  # either side of 100.64.0.0/10
         ("ula fd12:3456::1", [("private-ip", "fd12:3456::1")]),
         ("public 8.8.8.8, loopback 127.0.0.1, version 1.2.3.4", []),
         ("see /home/alice/project", [("home-path", "/home/alice")]),
@@ -48,6 +46,12 @@ def rules(gate, text):
 )
 def test_builtin_checks(gate, text, expected):
     assert rules(gate, text) == expected
+
+
+def test_tailscale_and_cgnat_addresses_are_internal():
+    gate = Gate()
+    assert rules(gate, "tailscale 100.101.102.103") == [("private-ip", "100.101.102.103")]
+    assert rules(gate, "public 100.63.255.255 and 100.128.0.1") == []  # either side of 100.64.0.0/10
 
 
 def test_allow_list_and_custom_patterns(private_denylist):
