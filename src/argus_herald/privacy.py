@@ -35,6 +35,7 @@ AUDITOR_DENYLIST = Path.home() / ".config" / "ai-code-auditor" / "opsec-denylist
 # An address may end a sentence ("... at 192.168.1.9."), so only a dot followed by a digit
 # means "part of a longer dotted number".
 _IPV4 = re.compile(r"(?<!\d)(?<!\d\.)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)(?!\.\d)")
+_SHARED = ipaddress.IPv4Network("100.64.0.0/10")  # RFC 6598: neither private nor global to ipaddress
 _IPV6_LOCAL = re.compile(r"(?i)\b(fe80|fc[0-9a-f]{2}|fd[0-9a-f]{2}):[0-9a-f:]+")
 _PATHS = re.compile(r"(?<![\w.])(/home/[\w.-]+|/Users/[\w.-]+|/root/|/mnt/[\w.-]+|/media/[\w.-]+|[A-Za-z]:\\Users\\)")
 _EMAIL = re.compile(r"\b[\w.+-]+@([\w-]+\.)+[A-Za-z]{2,}\b")
@@ -107,7 +108,8 @@ class Gate:
                 ip = ipaddress.IPv4Address(m.group(1))
             except ValueError:
                 continue
-            if (ip.is_private or ip.is_link_local) and not ip.is_loopback and not ip.is_unspecified:
+            internal = ip.is_private or ip.is_link_local or ip in _SHARED  # shared: Tailscale and CGNAT
+            if internal and not ip.is_loopback and not ip.is_unspecified:
                 add("private-ip", "private or link-local IP", m.start(1), m.end(1))
         for m in _IPV6_LOCAL.finditer(text):
             add("private-ip", "private or link-local IP", m.start(), m.end())
