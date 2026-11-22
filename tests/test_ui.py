@@ -710,3 +710,24 @@ def test_paste_handoff_without_a_url_does_not_point_at_patreon(tmp_path):
         store.close()
     assert _draft_context(config, draft, Forum())["handoff"]["url"] is None
     assert _draft_context(config, draft, PatreonPublisher())["handoff"]["url"] == "https://www.patreon.com"
+
+
+def test_an_unknown_action_is_refused_before_any_edit_is_stored(tmp_path):
+    import pytest
+
+    from argus_herald.platforms import TwitterPublisher
+    from argus_herald.ui.app import _perform
+    from argus_herald.workflow import ReviewError
+
+    config = _config(tmp_path)
+    _seed(config)
+    store = Store(config.store_path)
+    try:
+        draft = store.get(1)
+        form = {"title": draft.title, "body": "Changed by a stale form", "reply": draft.reply}
+        with pytest.raises(ReviewError, match="Unknown action"):
+            _perform(store, TwitterPublisher(), draft, form, "aprove", {}, config)
+        after = store.get(1)
+        assert (after.body, after.edited) == (draft.body, draft.edited)
+    finally:
+        store.close()

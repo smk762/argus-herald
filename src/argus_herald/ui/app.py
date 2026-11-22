@@ -672,6 +672,8 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
         if result.handed_off:
             return f"{draft.label} is ready to post on {publisher.label}."
         return result.detail
+    if action not in ("save", "approve"):  # before the edit below is stored, not after
+        raise ReviewError(f"Unknown action {action!r}")
     title = str(form.get("title") if form.get("title") is not None else draft.title)
     body = str(form.get("body") if form.get("body") is not None else draft.body)
     reply = str(form.get("reply")).strip() if form.get("reply") is not None else draft.reply
@@ -679,8 +681,6 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
         draft = edit_draft(store, publisher, draft.id, title, body, reply)
     if action == "save":
         return "Saved. This draft is pending approval."
-    if action != "approve":
-        raise ReviewError(f"Unknown action {action!r}")
     approved = approve(store, publisher, draft.id, note, gate=_gate(state), schedules=_schedules(config))
     if approved.publish_at:
         return f"Approved {draft.platform} for {draft.label}; scheduled for {_when(approved.publish_at)}."
