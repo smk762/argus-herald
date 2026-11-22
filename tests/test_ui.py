@@ -378,6 +378,26 @@ def test_bulk_approve_skips_refused_drafts(tmp_path):
     store.close()
 
 
+def test_bulk_approve_reports_what_it_approved_when_one_draft_fails(tmp_path):
+    app, config = _app(tmp_path)
+    store = Store(config.store_path)
+    store.add_draft(
+        project="argus-atlas", version="0.2.0", platform="forum", title="", body="b", link="https://example.org/"
+    )
+    store.close()
+    client = TestClient(app)
+    page = client.get("/")
+    result = client.post(
+        "/releases/approve",
+        data={"csrf": _csrf(page.text), "project": "argus-atlas", "version": "0.2.0"},
+        follow_redirects=True,
+    )
+    assert "Approved 2 drafts" in result.text and "Not approved: forum (No publisher named forum)" in result.text
+    store = Store(config.store_path)
+    assert [store.get(i).status for i in (1, 2, 3)] == ["approved", "approved", "pending"]
+    store.close()
+
+
 def test_compose_form_creates_a_post_group_in_the_queue(tmp_path):
     app, config = _app(tmp_path)
     client = TestClient(app)

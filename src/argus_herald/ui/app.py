@@ -462,6 +462,7 @@ def create_app(
             # A queue page rendered before post keys existed.
             post_key = release_key(str(form.get("project")), str(form.get("version")))
         refused: list[str] = []
+        failed: list[str] = []
         count = 0
         try:
             gate = _gate(state)
@@ -471,12 +472,16 @@ def create_app(
                     for draft in (store.list_drafts(post_key=post_key) if post_key else [])
                     if draft.status == PENDING
                 ]
+                # One draft that can't be approved doesn't stop the rest, and the message says which.
                 for draft in pending:
-                    publisher = _publisher(state["publishers"], draft.platform)
                     try:
+                        publisher = _publisher(state["publishers"], draft.platform)
                         approve(store, publisher, draft.id, None, gate=gate)
                     except PrivacyRefused:
                         refused.append(draft.platform)
+                        continue
+                    except (ReviewError, ValueError, GateUnavailable) as exc:
+                        failed.append(f"{draft.platform} ({exc})")
                         continue
                     count += 1
         except (ReviewError, ValueError, GateUnavailable) as exc:
@@ -484,13 +489,13 @@ def create_app(
             return RedirectResponse("/?status=open", status_code=303)
         noun = "draft" if count == 1 else "drafts"
         label = pending[0].label if pending else post_key
-        if refused:
-            _flash(
-                request,
-                "bad",
-                f"Approved {count} {noun} for {label}. The privacy gate refused "
-                f"{', '.join(refused)}: open each draft to see why.",
-            )
+        if refused or failed:
+            message = f"Approved {count} {noun} for {label}."
+            if refused:
+                message += f" The privacy gate refused {', '.join(refused)}: open each draft to see why."
+            if failed:
+                message += f" Not approved: {'; '.join(failed)}."
+            _flash(request, "bad", message)
             return RedirectResponse("/?status=pending", status_code=303)
         _flash(request, "ok", f"Approved {count} {noun} for {label}.")
         return RedirectResponse("/?status=approved", status_code=303)
