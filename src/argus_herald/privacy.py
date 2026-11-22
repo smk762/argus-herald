@@ -32,7 +32,7 @@ DEFAULT_DENYLIST = Path.home() / ".config" / "argus-herald" / "opsec-denylist.tx
 AUDITOR_DENYLIST_ENV = "AI_AUDIT_OPSEC_DENYLIST"
 AUDITOR_DENYLIST = Path.home() / ".config" / "ai-code-auditor" / "opsec-denylist.txt"
 
-# An address may end a sentence ("... at 192.168.1.9."), so only a dot followed by a digit
+# An address may end a sentence ("... at 192.168.200.9."), so only a dot followed by a digit
 # means "part of a longer dotted number".
 _IPV4 = re.compile(r"(?<!\d)(?<!\d\.)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)(?!\.\d)")
 _SHARED = ipaddress.IPv4Network("100.64.0.0/10")  # RFC 6598: neither private nor global to ipaddress
