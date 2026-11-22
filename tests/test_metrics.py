@@ -279,3 +279,21 @@ def test_traffic_refused_for_every_repo_is_an_error(tmp_path):
     report = collect(cfg, store, metrics, Denied(), {"GITHUB_TOKEN": "t"})
     assert any(e.startswith("gh_traffic: GET") and "403" in e for e in report.errors)
     assert metrics.count("gh_traffic") == 0
+
+
+def test_a_rate_limited_403_is_not_reported_as_a_repo_the_token_cannot_read(tmp_path):
+    cfg, store, metrics = _setup(tmp_path)
+
+    class Limited(Fake):
+        def request(self, method, url, body=None, headers=None):
+            if "/users/smk762/repos" in url:
+                names = ("argus-atlas", "argus-herald", "argus-lens")
+                return 200, json.dumps([{"name": n, "stargazers_count": 1} for n in names]).encode()
+            if "/repos/smk762/argus-herald/traffic/" in url:
+                return 403, b'{"message": "API rate limit exceeded for user ID 1."}'
+            return super().request(method, url, body, headers)
+
+    report = collect(cfg, store, metrics, Limited(), {"GITHUB_TOKEN": "t"})
+    traffic = [e for e in report.errors if e.startswith("gh_traffic")]
+    assert len(traffic) == 1 and "rate limited" in traffic[0]
+    assert not any("can't read traffic" in e for e in report.errors)
