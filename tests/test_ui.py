@@ -174,6 +174,16 @@ def test_approve_without_the_csrf_token_is_refused(tmp_path, csrf):
     assert _status(config, 2) == "approved"
 
 
+def test_a_non_ascii_token_or_csrf_is_refused_not_a_crash(tmp_path):
+    app, _config = _app(tmp_path, token="s3cret")
+    client = TestClient(app, follow_redirects=False)
+    login = client.get("/login")
+    bad = client.post("/login", data={"csrf": _csrf(login.text), "token": "s3cret\u201d"})
+    assert bad.status_code == 401 and "That token does not match." in bad.text
+    stale = client.post("/login", data={"csrf": "\u00e9t\u00e9", "token": "s3cret"})
+    assert stale.status_code == 400 and "This form expired" in stale.text
+
+
 def test_token_gates_the_queue(tmp_path):
     app, _config = _app(tmp_path, token="s3cret")
     client = TestClient(app, follow_redirects=False)

@@ -182,7 +182,8 @@ def create_app(
         if not _csrf_ok(request, form.get("csrf")):
             return _expired()
         given = str(form.get("token") or "")
-        if not hmac.compare_digest(given, state["token"]):
+        # As bytes: compare_digest refuses a str with anything but ASCII in it.
+        if not hmac.compare_digest(given.encode("utf-8"), state["token"].encode("utf-8")):
             return _render(request, "login.html", error="That token does not match.", status_code=401)
         request.session["reviewer"] = True
         return RedirectResponse("/", status_code=303)
@@ -1011,7 +1012,7 @@ def _csrf_ok(request: Request, given: object) -> bool:
     expected = request.session.get("csrf")
     if not isinstance(expected, str) or not isinstance(given, str):
         return False
-    return hmac.compare_digest(expected, given)
+    return hmac.compare_digest(expected.encode("utf-8"), given.encode("utf-8"))
 
 
 def _flash(request: Request, kind: str, text: str) -> None:
