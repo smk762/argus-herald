@@ -569,7 +569,7 @@ def test_rebaseline_of_some_projects_does_not_record_a_full_baseline(tmp_path):
 
 
 def test_a_digest_that_fails_to_build_is_retried_on_the_next_poll(tmp_path, monkeypatch):
-    from argus_herald import digest
+    from argus_herald import digest, workflow
     from argus_herald.workflow import close_digests
 
     site = tmp_path / "site"
@@ -604,6 +604,17 @@ def test_a_digest_that_fails_to_build_is_retried_on_the_next_poll(tmp_path, monk
     assert len(store.releases(open_only=True)) == 1
 
     monkeypatch.setattr(digest, "build_digest", real)
+    real_gate = workflow.load_gate
+
+    def unreadable(_privacy):
+        raise OSError("deny-list unreadable")
+
+    monkeypatch.setattr(workflow, "load_gate", unreadable)  # not GateUnavailable: still dropped, still retried
+    events = close_digests(cfg, store, [TwitterPublisher()], now=now)
+    assert [(e.kind, e.detail) for e in events] == [("error", "deny-list unreadable")]
+    assert store.digests() == []
+
+    monkeypatch.setattr(workflow, "load_gate", real_gate)
     events = close_digests(cfg, store, [TwitterPublisher()], now=now)
     assert [e.kind for e in events] == ["digest"]
     assert [d.kind for d in store.list_drafts()] == ["digest"]
