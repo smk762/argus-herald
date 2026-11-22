@@ -7,6 +7,7 @@ import hmac
 import os
 import re
 import secrets
+import tempfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -181,7 +182,8 @@ def create_app(
         if not _csrf_ok(request, form.get("csrf")):
             return _expired()
         given = str(form.get("token") or "")
-        if not hmac.compare_digest(given, state["token"]):
+        # As bytes: compare_digest refuses a str with anything but ASCII in it.
+        if not hmac.compare_digest(given.encode("utf-8"), state["token"].encode("utf-8")):
             return _render(request, "login.html", error="That token does not match.", status_code=401)
         request.session["reviewer"] = True
         return RedirectResponse("/", status_code=303)
@@ -460,6 +462,7 @@ def create_app(
             # A queue page rendered before post keys existed.
             post_key = release_key(str(form.get("project")), str(form.get("version")))
         refused: list[str] = []
+        failed: list[str] = []
         count = 0
         try:
             gate = _gate(state)
@@ -469,12 +472,16 @@ def create_app(
                     for draft in (store.list_drafts(post_key=post_key) if post_key else [])
                     if draft.status == PENDING
                 ]
+                # One draft that can't be approved doesn't stop the rest, and the message says which.
                 for draft in pending:
-                    publisher = _publisher(state["publishers"], draft.platform)
                     try:
+                        publisher = _publisher(state["publishers"], draft.platform)
                         approve(store, publisher, draft.id, None, gate=gate)
                     except PrivacyRefused:
                         refused.append(draft.platform)
+                        continue
+                    except (ReviewError, ValueError, GateUnavailable) as exc:
+                        failed.append(f"{draft.platform} ({exc})")
                         continue
                     count += 1
         except (ReviewError, ValueError, GateUnavailable) as exc:
@@ -482,13 +489,13 @@ def create_app(
             return RedirectResponse("/?status=open", status_code=303)
         noun = "draft" if count == 1 else "drafts"
         label = pending[0].label if pending else post_key
-        if refused:
-            _flash(
-                request,
-                "bad",
-                f"Approved {count} {noun} for {label}. The privacy gate refused "
-                f"{', '.join(refused)}: open each draft to see why.",
-            )
+        if refused or failed:
+            message = f"Approved {count} {noun} for {label}."
+            if refused:
+                message += f" The privacy gate refused {', '.join(refused)}: open each draft to see why."
+            if failed:
+                message += f" Not approved: {'; '.join(failed)}."
+            _flash(request, "bad", message)
             return RedirectResponse("/?status=pending", status_code=303)
         _flash(request, "ok", f"Approved {count} {noun} for {label}.")
         return RedirectResponse("/?status=approved", status_code=303)
@@ -545,19 +552,37 @@ def _session_secret(config: Config, settings: Mapping[str, str]) -> str:
     path = config.store_path.parent / "ui-secret"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            kept = path.read_text(encoding="utf-8").strip()
-            if kept:
-                return kept
-            raise
+        kept = _read_secret(path)
+        if kept:
+            return kept
+        # Written in full beside it, then linked into place: the file is never seen empty, and a
+        # secret another process kept first is never replaced.
         fresh = secrets.token_hex(32)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(fresh + "\n")
-        return fresh
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".ui-secret-")  # mode 0600
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(fresh + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                kept = _read_secret(path)
+                if kept:
+                    return kept
+                os.replace(tmp, path)  # an empty file, left by a crash mid-write before this was atomic
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+        return _read_secret(path) or fresh
     except OSError:
         return secrets.token_hex(32)
+
+
+def _read_secret(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return ""
 
 
 def _session_key(secret: str, token: str) -> str:
@@ -647,6 +672,8 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
         if result.handed_off:
             return f"{draft.label} is ready to post on {publisher.label}."
         return result.detail
+    if action not in ("save", "approve"):  # before the edit below is stored, not after
+        raise ReviewError(f"Unknown action {action!r}")
     title = str(form.get("title") if form.get("title") is not None else draft.title)
     body = str(form.get("body") if form.get("body") is not None else draft.body)
     reply = str(form.get("reply")).strip() if form.get("reply") is not None else draft.reply
@@ -654,8 +681,6 @@ def _perform(store, publisher: Publisher, draft: Draft, form, action: str, state
         draft = edit_draft(store, publisher, draft.id, title, body, reply)
     if action == "save":
         return "Saved. This draft is pending approval."
-    if action != "approve":
-        raise ReviewError(f"Unknown action {action!r}")
     approved = approve(store, publisher, draft.id, note, gate=_gate(state), schedules=_schedules(config))
     if approved.publish_at:
         return f"Approved {draft.platform} for {draft.label}; scheduled for {_when(approved.publish_at)}."
@@ -992,7 +1017,7 @@ def _csrf_ok(request: Request, given: object) -> bool:
     expected = request.session.get("csrf")
     if not isinstance(expected, str) or not isinstance(given, str):
         return False
-    return hmac.compare_digest(expected, given)
+    return hmac.compare_digest(expected.encode("utf-8"), given.encode("utf-8"))
 
 
 def _flash(request: Request, kind: str, text: str) -> None:

@@ -861,9 +861,11 @@ def _notify_text(summary: str, body: str) -> None:
 
 
 def cmd_watch(config: Config, store: Store, http: HttpClient, publishers: list[Publisher]) -> int:
-    last_poll = 0.0
+    # The interval is measured on the monotonic clock: a wall-clock step back (NTP, a resumed VM)
+    # would otherwise hold off polling until the clock caught up. Scheduled posts still go by UTC.
+    last_poll = float("-inf")
     while True:
-        now = time.time()
+        now = time.monotonic()
         if now - last_poll < config.interval_seconds:
             # Woken for a scheduled post between polls.
             try:
@@ -890,10 +892,11 @@ def cmd_watch(config: Config, store: Store, http: HttpClient, publishers: list[P
 
 
 def _sleep_for(config: Config, store: Store, last_poll: float) -> float:
-    """Until the next poll, or the next scheduled post if that's sooner (at least 30 s)."""
+    """Until the next poll, or the next scheduled post if that's sooner (at least 30 s).
+    `last_poll` is a time.monotonic() reading."""
     from argus_herald.schedule import next_due_in
 
-    until_poll = max(0.0, last_poll + config.interval_seconds - time.time())
+    until_poll = max(0.0, last_poll + config.interval_seconds - time.monotonic())
     due = next_due_in(store, datetime.now(UTC))
     wait = until_poll if due is None else min(until_poll, due + 1)
     return max(30.0, wait)

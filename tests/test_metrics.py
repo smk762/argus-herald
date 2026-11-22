@@ -279,3 +279,68 @@ def test_traffic_refused_for_every_repo_is_an_error(tmp_path):
     report = collect(cfg, store, metrics, Denied(), {"GITHUB_TOKEN": "t"})
     assert any(e.startswith("gh_traffic: GET") and "403" in e for e in report.errors)
     assert metrics.count("gh_traffic") == 0
+
+
+def test_a_rate_limited_403_is_not_reported_as_a_repo_the_token_cannot_read(tmp_path):
+    cfg, store, metrics = _setup(tmp_path)
+
+    class Limited(Fake):
+        def request(self, method, url, body=None, headers=None):
+            if "/users/smk762/repos" in url:
+                names = ("argus-atlas", "argus-herald", "argus-lens")
+                return 200, json.dumps([{"name": n, "stargazers_count": 1} for n in names]).encode()
+            if "/repos/smk762/argus-herald/traffic/" in url:
+                return 403, b'{"message": "API rate limit exceeded for user ID 1."}'
+            return super().request(method, url, body, headers)
+
+    report = collect(cfg, store, metrics, Limited(), {"GITHUB_TOKEN": "t"})
+    traffic = [e for e in report.errors if e.startswith("gh_traffic")]
+    assert len(traffic) == 1 and "rate limited" in traffic[0]
+    assert not any("can't read traffic" in e for e in report.errors)
+
+
+def test_site_traffic_migration_is_not_run_twice_by_racing_processes(tmp_path, monkeypatch):
+    import sqlite3
+
+    import argus_herald.metrics as metrics_module
+
+    path = tmp_path / "metrics.sqlite"
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE site_traffic (date TEXT NOT NULL, path TEXT NOT NULL, pageviews INTEGER NOT NULL, "
+        "visits INTEGER NOT NULL, PRIMARY KEY (date, path))"
+    )
+    old.execute("INSERT INTO site_traffic VALUES ('2026-11-20', '/', 3, 2)")
+    old.commit()
+    old.close()
+    connect = sqlite3.connect
+
+    class Racing:
+        """Another process migrates and writes a host just after this one first reads the schema."""
+
+        def __init__(self, conn):
+            object.__setattr__(self, "_conn", conn)
+            object.__setattr__(self, "_fired", False)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def __setattr__(self, name, value):
+            setattr(self._conn, name, value)
+
+        def execute(self, sql, *args):
+            cur = self._conn.execute(sql, *args)
+            if sql.startswith("PRAGMA table_info(site_traffic)") and not self._fired:
+                object.__setattr__(self, "_fired", True)
+                rows = cur.fetchall()
+                monkeypatch.setattr(metrics_module.sqlite3, "connect", connect)
+                other = Metrics(path)
+                other.conn.execute("INSERT INTO site_traffic VALUES ('2026-11-21', 'example.com', '/', 5, 4)")
+                other.close()
+                return iter(rows)
+            return cur
+
+    monkeypatch.setattr(metrics_module.sqlite3, "connect", lambda *a, **k: Racing(connect(*a, **k)))
+    m = Metrics(path)
+    rows = m.conn.execute("SELECT date, host, path FROM site_traffic ORDER BY date").fetchall()
+    assert [tuple(r) for r in rows] == [("2026-11-20", "", "/"), ("2026-11-21", "example.com", "/")]

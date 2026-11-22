@@ -174,6 +174,16 @@ def test_approve_without_the_csrf_token_is_refused(tmp_path, csrf):
     assert _status(config, 2) == "approved"
 
 
+def test_a_non_ascii_token_or_csrf_is_refused_not_a_crash(tmp_path):
+    app, _config = _app(tmp_path, token="s3cret")
+    client = TestClient(app, follow_redirects=False)
+    login = client.get("/login")
+    bad = client.post("/login", data={"csrf": _csrf(login.text), "token": "s3cret\u201d"})
+    assert bad.status_code == 401 and "That token does not match." in bad.text
+    stale = client.post("/login", data={"csrf": "\u00e9t\u00e9", "token": "s3cret"})
+    assert stale.status_code == 400 and "This form expired" in stale.text
+
+
 def test_token_gates_the_queue(tmp_path):
     app, _config = _app(tmp_path, token="s3cret")
     client = TestClient(app, follow_redirects=False)
@@ -365,6 +375,26 @@ def test_bulk_approve_skips_refused_drafts(tmp_path):
     assert "Approved 1 draft" in result.text and "refused twitter" in result.text
     store = Store(config.store_path)
     assert (store.get(1).status, store.get(2).status) == ("pending", "approved")
+    store.close()
+
+
+def test_bulk_approve_reports_what_it_approved_when_one_draft_fails(tmp_path):
+    app, config = _app(tmp_path)
+    store = Store(config.store_path)
+    store.add_draft(
+        project="argus-atlas", version="0.2.0", platform="forum", title="", body="b", link="https://example.org/"
+    )
+    store.close()
+    client = TestClient(app)
+    page = client.get("/")
+    result = client.post(
+        "/releases/approve",
+        data={"csrf": _csrf(page.text), "project": "argus-atlas", "version": "0.2.0"},
+        follow_redirects=True,
+    )
+    assert "Approved 2 drafts" in result.text and "Not approved: forum (No publisher named forum)" in result.text
+    store = Store(config.store_path)
+    assert [store.get(i).status for i in (1, 2, 3)] == ["approved", "approved", "pending"]
     store.close()
 
 
@@ -644,6 +674,20 @@ def test_a_generated_session_secret_survives_a_restart(tmp_path):
     assert kept.stat().st_mode & 0o777 == 0o600
 
 
+def test_an_empty_session_secret_file_is_replaced_not_given_up_on(tmp_path):
+    from argus_herald.ui.app import _session_secret
+
+    config = _config(tmp_path)
+    kept = config.store_path.parent / "ui-secret"
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_text("", encoding="utf-8")  # a crash between creating the file and writing it
+    first = _session_secret(config, {})
+    assert first and _session_secret(config, {}) == first  # kept from now on, not one per process
+    assert kept.read_text(encoding="utf-8").strip() == first
+    assert kept.stat().st_mode & 0o777 == 0o600
+    assert [p.name for p in kept.parent.iterdir() if p.name.startswith(".ui-secret-")] == []
+
+
 def test_paste_handoff_without_a_url_does_not_point_at_patreon(tmp_path):
     from argus_herald.platforms import PatreonPublisher
     from argus_herald.ui.app import _draft_context
@@ -666,3 +710,24 @@ def test_paste_handoff_without_a_url_does_not_point_at_patreon(tmp_path):
         store.close()
     assert _draft_context(config, draft, Forum())["handoff"]["url"] is None
     assert _draft_context(config, draft, PatreonPublisher())["handoff"]["url"] == "https://www.patreon.com"
+
+
+def test_an_unknown_action_is_refused_before_any_edit_is_stored(tmp_path):
+    import pytest
+
+    from argus_herald.platforms import TwitterPublisher
+    from argus_herald.ui.app import _perform
+    from argus_herald.workflow import ReviewError
+
+    config = _config(tmp_path)
+    _seed(config)
+    store = Store(config.store_path)
+    try:
+        draft = store.get(1)
+        form = {"title": draft.title, "body": "Changed by a stale form", "reply": draft.reply}
+        with pytest.raises(ReviewError, match="Unknown action"):
+            _perform(store, TwitterPublisher(), draft, form, "aprove", {}, config)
+        after = store.get(1)
+        assert (after.body, after.edited) == (draft.body, draft.edited)
+    finally:
+        store.close()

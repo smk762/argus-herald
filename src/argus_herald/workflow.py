@@ -414,16 +414,16 @@ def close_digests(
         if window.start.isoformat() in done:
             continue
         digest_id = store.create_digest(window.start.isoformat(), window.period_to.isoformat(), window.closes_at)
-        # Without a gate the drafts are still made (approve and publish refuse them until the gate
-        # is back) but the site page isn't written; build_digest says so in its status.
-        try:
-            gate: Gate | None = load_gate(config.privacy)
-        except GateUnavailable:
-            gate = None
         from argus_herald.drafting import configured_backend
         from argus_herald.http import HttpClient
 
         try:
+            # Without a gate the drafts are still made (approve and publish refuse them until the gate
+            # is back) but the site page isn't written; build_digest says so in its status.
+            try:
+                gate: Gate | None = load_gate(config.privacy)
+            except GateUnavailable:
+                gate = None
             backend, warning = configured_backend(config.drafting, os.environ, HttpClient())
             ids, status = build_digest(store, settings, publishers, digest_id, gate, backend)
         except Exception as exc:

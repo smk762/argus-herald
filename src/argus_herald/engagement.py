@@ -514,14 +514,19 @@ def collect_site(metrics, http: Http, env: Mapping[str, str], today: date | None
                 f"DELETE FROM {table} WHERE date BETWEEN ? AND ?", (start.isoformat(), today.isoformat())
             )
             columns = ("date", *keys, "pageviews", "visits")
+            # Cloudflare groups by the raw values, so "Example.com" and "example.com" (or "" and "/")
+            # arrive as two rows that land on one key here: add them up rather than keep the last.
             metrics.conn.executemany(
-                f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) "
+                f"ON CONFLICT (date, {', '.join(keys)}) DO UPDATE SET "
+                "pageviews = pageviews + excluded.pageviews, visits = visits + excluded.visits",
                 [tuple(r[c] for c in columns) for r in rows],
             )
     views = sum(p["pageviews"] for p in paths)
     hosts = len({p["host"] for p in paths if p["host"]})
     pages = len({(p["host"], p["path"]) for p in paths})
-    return f"{days} days, {hosts} hosts, {pages} paths, {views} page views, {len(refs)} referrer rows"
+    referrers = len({(r["date"], r["referrer"]) for r in refs})
+    return f"{days} days, {hosts} hosts, {pages} paths, {views} page views, {referrers} referrer rows"
 
 
 def site_configured(env: Mapping[str, str]) -> list[str]:

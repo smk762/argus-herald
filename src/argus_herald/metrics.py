@@ -133,10 +133,12 @@ class Metrics:
     def _add_site_host(self) -> None:
         """site_traffic was keyed (date, path) before hosts were recorded. The key changes, so the
         table is rebuilt; its rows are kept with a blank host."""
-        columns = [row["name"] for row in self.conn.execute("PRAGMA table_info(site_traffic)")]
-        if not columns or "host" in columns:
+        if not self._needs_site_host():
             return
-        with self.transaction():
+        # Another process opening the same file may be migrating too: take the write lock, then look again.
+        with self.transaction(immediate=True):
+            if not self._needs_site_host():
+                return
             self.conn.execute("ALTER TABLE site_traffic RENAME TO site_traffic_old")
             self.conn.execute(
                 "CREATE TABLE site_traffic (date TEXT NOT NULL, host TEXT NOT NULL DEFAULT '', path TEXT NOT NULL, "
@@ -148,12 +150,16 @@ class Metrics:
             )
             self.conn.execute("DROP TABLE site_traffic_old")
 
+    def _needs_site_host(self) -> bool:
+        columns = [row["name"] for row in self.conn.execute("PRAGMA table_info(site_traffic)")]
+        return bool(columns) and "host" not in columns
+
     def close(self) -> None:
         self.conn.close()
 
     @contextmanager
-    def transaction(self) -> Iterator[None]:
-        self.conn.execute("BEGIN")
+    def transaction(self, *, immediate: bool = False) -> Iterator[None]:
+        self.conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
         try:
             yield
             self.conn.commit()
@@ -318,7 +324,7 @@ def _run(report: Report, metrics: Metrics, name: str, job, *, reraise_denied: bo
     try:
         detail = job()
     except HttpError as exc:
-        if reraise_denied and exc.status in (401, 403):
+        if reraise_denied and exc.status in (401, 403) and not isinstance(exc, RateLimited):
             raise
         report.errors.append(f"{name}: {exc}")
         return
@@ -336,9 +342,24 @@ def _gh_headers(token: str, accept: str = "application/vnd.github+json") -> dict
     return headers
 
 
+class RateLimited(HttpError):
+    """GitHub answered 403 or 429 because of a rate limit, not because the token lacks access."""
+
+    def __init__(self, method: str, url: str, status: int):
+        super().__init__(method, url, status)
+        self.args = (f"{self.args[0]} (rate limited; try again later)",)
+
+
+def _rate_limited(status: int, body: bytes) -> bool:
+    # The Http protocol gives no headers, but GitHub's primary and secondary limits both say so in the body.
+    return status == 429 or (status == 403 and b"rate limit" in body.lower())
+
+
 def _get_json(http: Http, url: str, headers: Mapping[str, str]):
     status, body = http.request("GET", url, headers=dict(headers))
     if status != 200:
+        if _rate_limited(status, body):
+            raise RateLimited("GET", url, status)
         raise HttpError("GET", url, status)
     return json.loads(body.decode("utf-8"))
 
@@ -358,8 +379,8 @@ def collect_traffic(
         try:
             views = _get_json(http, f"{base}/views?per=day", headers)
         except HttpError as exc:
-            if exc.status not in (403, 404):
-                raise
+            if isinstance(exc, RateLimited) or exc.status not in (403, 404):
+                raise  # a rate limit says nothing about access: stop, and the next run collects them all
             refused.append(repo)
             if len(refused) == len(repos):
                 raise  # not one repo answered: the token itself is the problem

@@ -48,6 +48,12 @@ def test_builtin_checks(gate, text, expected):
     assert rules(gate, text) == expected
 
 
+def test_tailscale_and_cgnat_addresses_are_internal():
+    gate = Gate()
+    assert rules(gate, "tailscale 100.101.102.103") == [("private-ip", "100.101.102.103")]
+    assert rules(gate, "public 100.63.255.255 and 100.128.0.1") == []  # either side of 100.64.0.0/10
+
+
 def test_allow_list_and_custom_patterns(private_denylist):
     gate = load_gate({"allow_addresses": [EVM.upper().replace("0X", "0x")], "patterns": {"ticket": r"TICKET-\d+"}})
     assert rules(gate, f"contract {EVM}, see TICKET-42") == [("pattern:ticket", "TICKET-42")]

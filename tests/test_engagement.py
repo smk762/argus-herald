@@ -399,22 +399,34 @@ def test_site_traffic_table_gains_a_host_column(tmp_path):
 
 
 def test_a_failed_getposts_batch_only_costs_its_own_posts(tmp_path):
+    from urllib.parse import parse_qs, urlsplit
+
     class Flaky(Fake):
         def request(self, method, url, body=None, headers=None):
-            if "getPosts" in url and "3kbad" in url:
+            if "getPosts" in url:
                 self.calls.append(url)
-                return 502, b"bad gateway"
+                if "3kzzbad" in url:
+                    return 502, b"bad gateway"
+                uris = parse_qs(urlsplit(url).query)["uris"]
+                posts = [{"uri": u, "likeCount": 1, "repostCount": 0, "replyCount": 0, "quoteCount": 0} for u in uris]
+                return 200, json.dumps({"posts": posts}).encode()
             return super().request(method, url, body, headers)
 
     metrics = _metrics(tmp_path)
-    _broadcast(metrics, "bluesky", BSKY_POST)
-    for n in range(25):  # fills the first batch, so the bad post lands in a batch of its own
-        _broadcast(metrics, "bluesky", f"https://bsky.app/profile/{DID}/post/3kz{n:02d}")
-    _broadcast(metrics, "bluesky", f"https://bsky.app/profile/{DID}/post/3kbad")
-    report = collect_posts(metrics, Flaky(), T0 + timedelta(hours=2))
+    good = [f"https://bsky.app/profile/{DID}/post/3kz{n:02d}" for n in range(25)]  # one full batch
+    for url in good:
+        _broadcast(metrics, "bluesky", url)
+    # Posts are batched in URL order, so this one sorts last and is alone in the second batch.
+    _broadcast(metrics, "bluesky", f"https://bsky.app/profile/{DID}/post/3kzzbad")
+    http = Flaky()
+    report = collect_posts(metrics, http, T0 + timedelta(hours=2))
+    assert sum("getPosts" in url for url in http.calls) == 2
     assert report.errors == []
-    assert metrics.count("post_metrics", platform="bluesky", external_id=BSKY_POST) == 1
-    assert sum("can't fetch" in line and "3kbad" in line for line in report.skipped) == 1
+    assert [url for url in good if metrics.count("post_metrics", platform="bluesky", external_id=url) != 1] == []
+    assert [line for line in report.skipped if "bluesky" in line] == [
+        line for line in report.skipped if "can't fetch" in line and "3kzzbad" in line
+    ]
+    assert len(report.skipped) == 1
 
 
 def test_a_getposts_answer_that_isnt_an_object_is_a_problem_not_a_crash(tmp_path):
@@ -461,3 +473,30 @@ def test_slash_dates_take_one_order_per_export(tmp_path):
 
     with pytest.raises(ValueError, match="mixes"):
         import_x_analytics(metrics, header + "25/04/2025,10,1,2\n04/26/2025,10,1,2\n", "dragonhound3")
+
+
+def test_site_rows_that_normalise_to_one_key_are_added_up(tmp_path):
+    def row(count, visits, **dims):
+        return {"count": count, "sum": {"visits": visits}, "dimensions": {"date": "2026-11-21", **dims}}
+
+    class Colliding(Fake):
+        def request(self, method, url, body=None, headers=None):
+            if "graphql" not in url:
+                return super().request(method, url, body, headers)
+            paths = [
+                row(4, 3, requestHost="Example.org", requestPath="/"),
+                row(2, 2, requestHost="example.org", requestPath="/"),
+                row(1, 1, requestHost="example.org", requestPath=""),
+            ]
+            refs = [row(5, 4, refererHost=""), row(3, 3, refererHost=None)]
+            data = {"data": {"viewer": {"accounts": [{"paths": paths, "referrers": refs}]}}}
+            return 200, json.dumps(data).encode()
+
+    metrics = _metrics(tmp_path)
+    env = {"CF_API_TOKEN": "t", "CF_ACCOUNT_ID": "a", "CF_SITE_TAG": "s"}
+    detail = collect_site(metrics, Colliding(), env, today=date(2026, 11, 22))
+    traffic = [tuple(r) for r in metrics.conn.execute("SELECT host, path, pageviews, visits FROM site_traffic")]
+    assert traffic == [("example.org", "/", 7, 6)]
+    refs = [tuple(r) for r in metrics.conn.execute("SELECT referrer, pageviews, visits FROM site_referrers")]
+    assert refs == [("(direct)", 8, 7)]
+    assert "1 paths, 7 page views, 1 referrer rows" in detail
