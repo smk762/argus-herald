@@ -21,6 +21,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    "argus-cortex>=0.14,<0.15",  # argus_cortex.hashing.sha256_hex (digest.py)
     "Pillow>=10",
     "PyYAML>=6",
     "itsdangerous>=2",

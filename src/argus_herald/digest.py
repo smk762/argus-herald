@@ -17,7 +17,6 @@ section. Patch releases and prereleases are never suggested.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -28,6 +27,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+
+from argus_cortex.hashing import sha256_hex
 
 from argus_herald.config import DigestSettings
 from argus_herald.models import Post, Release, Rendered
@@ -303,10 +304,6 @@ def render_for(publisher: Publisher, text_for, link: str, title: str) -> Rendere
     return rendered
 
 
-def _sha(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 def _write_atomic(path: Path, text: str) -> None:
     """Replace path in one step, so a crash or a full disk leaves the old page, never half of the new one.
 
@@ -374,16 +371,16 @@ def write_page(store: Store, settings: DigestSettings, digest_id: int, slug: str
     if path.exists():
         current = path.read_text(encoding="utf-8")
         if current == text:
-            store.update_digest(digest_id, site_path=str(path), site_hash=_sha(text), error=None)
+            store.update_digest(digest_id, site_path=str(path), site_hash=sha256_hex(text.encode()), error=None)
             return f"unchanged: {path}"
-        if not (row and row["site_hash"] and _sha(current) == row["site_hash"]):
+        if not (row and row["site_hash"] and sha256_hex(current.encode()) == row["site_hash"]):
             store.update_digest(digest_id, site_path=str(path), error=None)
             return f"left alone (edited by a person): {path}"
     if not settings.site_dir.is_dir():
         store.update_digest(digest_id, error=f"site_dir {settings.site_dir} does not exist")
         return f"site_dir {settings.site_dir} does not exist; page not written"
     _write_atomic(path, text)
-    store.update_digest(digest_id, site_path=str(path), site_hash=_sha(text), error=None)
+    store.update_digest(digest_id, site_path=str(path), site_hash=sha256_hex(text.encode()), error=None)
     return f"wrote {path}"
 
 
