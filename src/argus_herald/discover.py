@@ -18,7 +18,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
-from argus_herald.config import Config, normalize_name
+from packaging.utils import canonicalize_name
+
+from argus_herald.config import Config
 from argus_herald.http import Http, HttpError
 from argus_herald.pypi import ProfileUnavailable, discover_projects, project_json_url
 from argus_herald.workflow import tracked_projects
@@ -42,8 +44,8 @@ class Drift:
 def check_projects(config: Config, http: Http, env: Mapping[str, str]) -> Drift:
     drift = Drift()
     tracked = tracked_projects(config)
-    configured = {normalize_name(name) for name in config.projects}
-    ignored = {normalize_name(name) for name in config.ignore}
+    configured = {canonicalize_name(name) for name in config.projects}
+    ignored = {canonicalize_name(name) for name in config.ignore}
 
     for name in tracked:
         status = _pypi_status(http, name)
@@ -53,8 +55,12 @@ def check_projects(config: Config, http: Http, env: Mapping[str, str]) -> Drift:
             drift.notes.append(f"PyPI answered HTTP {status} for {name}")
 
     def found(name: str, where: str) -> None:
-        key = normalize_name(name)
-        if key not in configured and key not in ignored and key not in {normalize_name(n) for n in drift.unconfigured}:
+        key = canonicalize_name(name)
+        if (
+            key not in configured
+            and key not in ignored
+            and key not in {canonicalize_name(n) for n in drift.unconfigured}
+        ):
             drift.unconfigured[name] = where
 
     for user in config.users:
@@ -77,7 +83,7 @@ def check_projects(config: Config, http: Http, env: Mapping[str, str]) -> Drift:
                 continue
             try:
                 name = _pyproject_name(http, owner, repo)
-                if name and normalize_name(name) not in configured and _pypi_status(http, name) == 200:
+                if name and canonicalize_name(name) not in configured and _pypi_status(http, name) == 200:
                     found(name, f"github.com/{owner}/{repo}")
             except (HttpError, OSError, ValueError) as exc:
                 drift.notes.append(f"github.com/{owner}/{repo} not checked: {exc}")

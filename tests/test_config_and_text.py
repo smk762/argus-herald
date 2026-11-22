@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from argus_herald.config import ConfigError, load_config, load_env_file, normalize_name
+from argus_herald.config import ConfigError, load_config, load_env_file
 from argus_herald.pypi import ProfileUnavailable, list_versions, parse_profile_projects
 from argus_herald.textutil import (
     extract_changelog,
@@ -10,10 +10,6 @@ from argus_herald.textutil import (
     fit_weighted,
     weighted_length,
 )
-
-
-def test_normalize_name_treats_separators_as_equal():
-    assert normalize_name("Argus_Atlas") == normalize_name("argus-atlas")
 
 
 def test_yaml_rejects_secret_keys(tmp_path):
