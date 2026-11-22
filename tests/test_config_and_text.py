@@ -158,3 +158,17 @@ def test_list_versions_skips_empty_and_flags_yanked():
     assert set(refs) == {"1", "2"}
     assert refs["2"].yanked is True
     assert refs["1"].yanked is False
+
+
+def test_store_path_expands_a_tilde_like_media_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("ARGUS_HERALD_STORE", raising=False)
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "pypi: {projects: [demo]}\ndestinations: {twitter: {enabled: true}}\n"
+        "store: {path: ~/.argus-herald/state.sqlite}\n",
+        encoding="utf-8",
+    )
+    assert load_config(path).store_path == tmp_path / "home" / ".argus-herald" / "state.sqlite"
+    monkeypatch.setenv("ARGUS_HERALD_STORE", "~/elsewhere.sqlite")
+    assert load_config(path).store_path == tmp_path / "home" / "elsewhere.sqlite"

@@ -269,10 +269,10 @@ def load_config(path: Path) -> Config:
     interval = int(poll.get("interval_seconds") or 1800)
     if interval < 60:
         interval = 60
-    store_path = Path(str(store.get("path") or ".argus-herald/state.sqlite"))
+    store_path = Path(str(store.get("path") or ".argus-herald/state.sqlite")).expanduser()
     env_store = os.environ.get("ARGUS_HERALD_STORE")
     if env_store:
-        store_path = Path(env_store)
+        store_path = Path(env_store).expanduser()
     sources = data.get("sources") or {}
     if not isinstance(sources, dict):
         raise ConfigError("sources must be a mapping")
