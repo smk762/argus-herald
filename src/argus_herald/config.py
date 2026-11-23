@@ -731,7 +731,7 @@ _MINT_PROJECT = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
 
 def _mint(value: Any) -> MintSource | None:
-    """`sources.mint`: teasers approved in argus-mint. No address here: that is ARGUS_MINT_URL in .env."""
+    """`sources.mint`: teasers approved in argus-mint. No address here: that is ARGUS_MINT_URL (.env or the suite file)."""
     if value is None:
         return None
     if not isinstance(value, dict):

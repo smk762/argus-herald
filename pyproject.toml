@@ -21,7 +21,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "argus-cortex>=0.14,<0.15",  # argus_cortex.hashing.sha256_hex (digest.py)
+    "argus-cortex>=0.16.1,<0.17",  # hashing, timestamps, and peers (mint.py: ARGUS_MINT_URL from the suite file)
     "Pillow>=10",
     "PyYAML>=6",
     "itsdangerous>=2",

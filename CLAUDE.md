@@ -8,7 +8,7 @@ Guidance for AI agents working in this repo. Human-facing usage lives in [README
 
 The Argus suite's release broadcaster, usable by any maintainer: it polls PyPI (and GitHub Releases, feeds and digests), drafts one announcement per platform, holds every draft for a person to approve, then publishes or hands off. It also records adoption and engagement metrics and shows them on a dashboard.
 
-Herald doesn't depend on argus-cortex and mostly reads only public PyPI and GitHub data about the other Argus services. The one wire contract is with argus-mint (`mint.py`): `GET /posts/ready`, the draft image, and `POST /drafts/{id}/posted`.
+Herald uses argus-cortex for small shared helpers only (`hashing`, `timestamps`, `peers`) and mostly reads only public PyPI and GitHub data about the other Argus services. The one wire contract is with argus-mint (`mint.py`): `GET /posts/ready`, the draft image, and `POST /drafts/{id}/posted`. Mint's address is `ARGUS_MINT_URL` from `.env`, else from the suite file (`peer_url("mint")`); every token (platforms, `ARGUS_MINT_POSTER_TOKEN`) is read from herald's own environment only, never from the suite file.
 
 ## Argus suite
 <!-- argus-suite: keep this block; argus-ci checks for it -->
