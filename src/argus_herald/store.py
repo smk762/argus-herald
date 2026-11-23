@@ -5,8 +5,9 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from datetime import UTC, datetime
 from pathlib import Path
+
+from argus_cortex.timestamps import utc_now_iso
 
 from argus_herald.models import CLIP_FIELDS, DRAFT_FIELDS, Draft
 
@@ -185,10 +186,6 @@ def release_key(project: str, version: str) -> str:
     return f"release:{project}=={version}"
 
 
-def _now() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
-
-
 class Store:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -287,7 +284,7 @@ class Store:
         return row is not None
 
     def baseline(self, project: str, versions: list[str], source: str = "pypi") -> None:
-        now = _now()
+        now = utc_now_iso()
         with self.transaction():
             self.conn.execute(
                 "INSERT OR IGNORE INTO projects (source, name, baselined_at) VALUES (?, ?, ?)",
@@ -308,7 +305,7 @@ class Store:
     def mark_seen(self, project: str, version: str, source: str = "pypi") -> None:
         self.conn.execute(
             "INSERT OR IGNORE INTO seen (source, project, version, seen_at) VALUES (?, ?, ?, ?)",
-            (source, project, version, _now()),
+            (source, project, version, utc_now_iso()),
         )
 
     def add_draft(
@@ -331,7 +328,7 @@ class Store:
             if not (project and version):
                 raise ValueError("A draft needs a post_key, or a project and version")
             post_key = release_key(project, version)
-        now = _now()
+        now = utc_now_iso()
         # Only the (post_key, platform) conflict means "already drafted"; any other constraint
         # still raises. No commit here: outside a transaction the insert commits on its own, and
         # inside one (compose) the caller commits every destination's draft together.
@@ -389,7 +386,7 @@ class Store:
         cur = self.conn.execute(
             "INSERT OR IGNORE INTO releases (source, project, version, released_at, seen_at, summary, notes, url) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (source, project, version, released_at or _now(), _now(), summary, notes, url),
+            (source, project, version, released_at or utc_now_iso(), utc_now_iso(), summary, notes, url),
         )
         return bool(cur.rowcount)
 
@@ -433,7 +430,7 @@ class Store:
         with self.transaction():
             cur = self.conn.execute(
                 "INSERT INTO digests (period_from, period_to, closes_at, created_at) VALUES (?, ?, ?, ?)",
-                (period_from, period_to, closes_at, _now()),
+                (period_from, period_to, closes_at, utc_now_iso()),
             )
             digest_id = int(cur.lastrowid)
             self.conn.execute(
@@ -477,7 +474,7 @@ class Store:
         cur = self.conn.execute(
             "UPDATE drafts SET title = ?, body = ?, reply = ?, drafted_by = ?, note = ?, edited = 0, updated_at = ? "
             f"WHERE id = ? AND status = 'pending'{edited}",
-            (title, body, reply, drafted_by, note, _now(), draft_id),
+            (title, body, reply, drafted_by, note, utc_now_iso(), draft_id),
         )
         return bool(cur.rowcount)
 
@@ -488,7 +485,7 @@ class Store:
     def log_broadcast(self, **fields: str) -> int:
         if set(fields) != set(self._LOGGED):
             raise ValueError(f"log_broadcast needs exactly {self._LOGGED}")
-        now = _now()
+        now = utc_now_iso()
         try:
             cur = self.conn.execute(
                 f"INSERT INTO logged_broadcasts ({', '.join(self._LOGGED)}, created_at, updated_at) "
@@ -513,7 +510,7 @@ class Store:
         try:
             cur = self.conn.execute(
                 f"UPDATE logged_broadcasts SET {sets}, updated_at = ? WHERE id = ?",
-                (*fields.values(), _now(), broadcast_id),
+                (*fields.values(), utc_now_iso(), broadcast_id),
             )
         except sqlite3.IntegrityError as exc:
             raise ValueError(f"{fields.get('url')} is already logged") from exc
@@ -524,7 +521,8 @@ class Store:
 
     def set_logged_clip(self, broadcast_id: int, clip_id: str | None) -> bool:
         cur = self.conn.execute(
-            "UPDATE logged_broadcasts SET clip_id = ?, updated_at = ? WHERE id = ?", (clip_id, _now(), broadcast_id)
+            "UPDATE logged_broadcasts SET clip_id = ?, updated_at = ? WHERE id = ?",
+            (clip_id, utc_now_iso(), broadcast_id),
         )
         return bool(cur.rowcount)
 
@@ -540,7 +538,7 @@ class Store:
     def save_clips(self, rows: list[dict]) -> tuple[int, int]:
         """Add or update clips in one transaction; each row carries `id` and the fields to set.
         Returns (added, updated)."""
-        now = _now()
+        now = utc_now_iso()
         added = updated = 0
         with self.transaction():
             for row in rows:
@@ -573,7 +571,7 @@ class Store:
 
     def save_freshness(self, clip_id: str, **fields: object) -> None:
         """Record a completed check; it replaces the last one, failure included."""
-        row = {"clip_id": clip_id, **fields, "checked_at": _now(), "failed_at": "", "error": ""}
+        row = {"clip_id": clip_id, **fields, "checked_at": utc_now_iso(), "failed_at": "", "error": ""}
         names = ", ".join(row)
         self.conn.execute(
             f"INSERT OR REPLACE INTO clip_freshness ({names}) VALUES ({', '.join('?' * len(row))})",
@@ -592,7 +590,7 @@ class Store:
                 "INSERT INTO clip_freshness (clip_id, state, base_commit, base_version, failed_at, error) "
                 "VALUES (?, 'unknown', ?, ?, ?, ?) "
                 "ON CONFLICT(clip_id) DO UPDATE SET failed_at = excluded.failed_at, error = excluded.error",
-                (clip_id, base_commit, base_version, _now(), error[:300]),
+                (clip_id, base_commit, base_version, utc_now_iso(), error[:300]),
             )
 
     def clip_uses(self, clip_id: str) -> list[dict]:
@@ -623,7 +621,7 @@ class Store:
         return row is not None
 
     def baseline_feed(self, source: str, item_ids: list[str]) -> None:
-        now = _now()
+        now = utc_now_iso()
         with self.transaction():
             self.conn.execute("INSERT OR IGNORE INTO feed_sources (source, baselined_at) VALUES (?, ?)", (source, now))
             self.conn.executemany(
@@ -640,7 +638,7 @@ class Store:
     def mark_feed_seen(self, source: str, item_id: str) -> None:
         self.conn.execute(
             "INSERT OR IGNORE INTO feed_items (source, item_id, seen_at) VALUES (?, ?, ?)",
-            (source, item_id, _now()),
+            (source, item_id, utc_now_iso()),
         )
 
     def add_mint_report(
@@ -667,7 +665,7 @@ class Store:
     def settle_mint_report(self, draft_id: int, *, reported: bool, refused: bool = False, error: str = "") -> None:
         self.conn.execute(
             "UPDATE mint_reports SET reported_at = ?, refused = ?, error = ? WHERE draft_id = ?",
-            (_now() if reported else "", int(refused), error[:500], draft_id),
+            (utc_now_iso() if reported else "", int(refused), error[:500], draft_id),
         )
         self.conn.commit()
 
@@ -725,7 +723,7 @@ class Store:
         (None: still empty). The check and the write are one statement, so a caller can act on what
         it read without another request changing the draft in between."""
         assignments = ["status = ?", "updated_at = ?"]
-        params: list[object] = [to_status, _now()]
+        params: list[object] = [to_status, utc_now_iso()]
         if to_status == "pending" and "publish_at" not in fields:
             fields = {**fields, "publish_at": None}  # back to review: its slot is released
         for key, value in fields.items():
@@ -774,7 +772,7 @@ class Store:
         cur = self.conn.execute(
             "INSERT INTO draft_media (draft_id, position, kind, path, name, alt, bytes, removed, created_at, clip_id) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (draft_id, position, kind, path, name, alt, size, removed, _now(), clip_id),
+            (draft_id, position, kind, path, name, alt, size, removed, utc_now_iso(), clip_id),
         )
         return int(cur.lastrowid)
 
@@ -797,7 +795,7 @@ class Store:
     def set_publish_at(self, draft_id: int, when: str | None) -> bool:
         cur = self.conn.execute(
             "UPDATE drafts SET publish_at = ?, updated_at = ? WHERE id = ? AND status = 'approved'",
-            (when, _now(), draft_id),
+            (when, utc_now_iso(), draft_id),
         )
         return bool(cur.rowcount)
 
@@ -832,7 +830,7 @@ class Store:
         self.conn.execute(
             "INSERT INTO gate_accepts (draft_id, key, note, accepted_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(draft_id, key) DO UPDATE SET note = excluded.note, accepted_at = excluded.accepted_at",
-            (draft_id, key, note, _now()),
+            (draft_id, key, note, utc_now_iso()),
         )
 
     def accepted(self, draft_id: int) -> dict[str, str]:
@@ -855,7 +853,7 @@ class Store:
         """Reject the given drafts in one transaction. Rows no longer pending are left alone."""
         if not ids:
             return 0
-        now = _now()
+        now = utc_now_iso()
         changed = 0
         with self.transaction():
             for draft_id in ids:

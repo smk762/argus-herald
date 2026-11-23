@@ -24,9 +24,11 @@ import sqlite3
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import date
 from pathlib import Path
 from urllib.parse import quote
+
+from argus_cortex.timestamps import utc_now_iso
 
 from argus_herald.config import Config
 from argus_herald.engagement import collect_posts, collect_site, site_configured
@@ -213,7 +215,7 @@ class Metrics:
     def record_run(self, collector: str, detail: str) -> None:
         self.conn.execute(
             "INSERT OR REPLACE INTO runs (collector, ran_at, detail) VALUES (?, ?, ?)",
-            (collector, _now(), detail),
+            (collector, utc_now_iso(), detail),
         )
 
 
@@ -704,7 +706,3 @@ def record_account(
 
 def _hash(login: str) -> str:
     return hashlib.sha256(login.lower().encode("utf-8")).hexdigest()[:16]
-
-
-def _now() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
