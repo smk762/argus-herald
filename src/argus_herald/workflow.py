@@ -12,7 +12,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from argus_herald.config import Config, normalize_name
+from packaging.utils import canonicalize_name
+
+from argus_herald.config import Config
 from argus_herald.feeds import FeedItem, FeedSource, read_feed
 from argus_herald.http import Http, HttpError, check_url, send_json
 from argus_herald.models import (
@@ -173,8 +175,8 @@ class PollEvent:
 
 
 def tracked_projects(config: Config) -> list[str]:
-    ignored = {normalize_name(name) for name in config.ignore}
-    return [name for name in config.projects if normalize_name(name) not in ignored]
+    ignored = {canonicalize_name(name) for name in config.ignore}
+    return [name for name in config.projects if canonicalize_name(name) not in ignored]
 
 
 def poll(
@@ -651,11 +653,11 @@ def rebaseline(config: Config, store: Store, http: Http, projects: list[str] | N
     """
     tracked = tracked_projects(config)
     if projects:
-        known = {normalize_name(name): name for name in tracked}
-        unknown = [name for name in projects if normalize_name(name) not in known]
+        known = {canonicalize_name(name): name for name in tracked}
+        unknown = [name for name in projects if canonicalize_name(name) not in known]
         if unknown:
             raise ReviewError(f"Not tracked: {', '.join(unknown)}")
-        targets = [known[normalize_name(name)] for name in projects]
+        targets = [known[canonicalize_name(name)] for name in projects]
     else:
         targets = tracked
     if not targets:

@@ -10,6 +10,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from packaging.utils import canonicalize_name
+
 from argus_herald.feeds import FeedSource, youtube_feed_url
 
 _SECRET_KEY = re.compile(
@@ -385,16 +387,12 @@ def _dedupe(names: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
     for name in names:
-        key = normalize_name(name)
+        key = canonicalize_name(name)
         if key in seen:
             continue
         seen.add(key)
         out.append(name)
     return out
-
-
-def normalize_name(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).strip().lower()
 
 
 def _destinations(value: Any) -> dict[str, Destination]:

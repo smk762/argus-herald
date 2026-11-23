@@ -422,11 +422,11 @@ class Store:
     def seen_versions_named(self, project: str) -> list[str]:
         """Versions seen for a project from any source, matching its name the way PyPI does
         (case, and '-', '_' and '.' alike)."""
-        from argus_herald.config import normalize_name
+        from packaging.utils import canonicalize_name
 
-        key = normalize_name(project)
+        key = canonicalize_name(project)
         rows = self.conn.execute("SELECT DISTINCT project, version FROM seen")
-        return [row["version"] for row in rows if normalize_name(row["project"]) == key]
+        return [row["version"] for row in rows if canonicalize_name(row["project"]) == key]
 
     def create_digest(self, period_from: str, period_to: str, closes_at: str) -> int:
         """A digest for one window. Takes every open release seen before the window closed."""
