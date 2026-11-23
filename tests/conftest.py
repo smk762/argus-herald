@@ -25,6 +25,13 @@ def no_github_token(monkeypatch):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def no_suite_settings(monkeypatch):
+    # A developer's suite file or shell may name a real mint; tests never read either.
+    monkeypatch.setenv("ARGUS_ENV_FILE", "off")
+    monkeypatch.delenv("ARGUS_MINT_URL", raising=False)
+
+
 @pytest.fixture
 def gate(private_denylist):
     from argus_herald.privacy import load_gate

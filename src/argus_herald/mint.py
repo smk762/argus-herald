@@ -11,7 +11,9 @@ cleaned copy herald posted. Mint only records a post of the exact image it revie
 why `media.clean` copies an already-bare PNG byte for byte. A report that can't be sent (mint is
 on another network, say) stays queued and goes out on a later poll.
 
-Mint's address is ARGUS_MINT_URL and the poster token ARGUS_MINT_POSTER_TOKEN, both in `.env`.
+Mint's address is ARGUS_MINT_URL: in `.env`, or else in the suite settings file, where it is the
+suite-wide name of the peer `mint` (`argus_cortex.peers`). The poster token, ARGUS_MINT_POSTER_TOKEN,
+is herald's own secret and is read from `.env` only.
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
+from argus_cortex.peers import OFF, PeerRefused, peer_url
+
 from argus_herald.config import Config
 from argus_herald.http import BodyTooLarge, Http, HttpClient, HttpError, LanHttpClient, check_lan_url, send_json
 from argus_herald.media import MediaError, clean
@@ -38,7 +42,8 @@ log = logging.getLogger(__name__)
 
 SOURCE = "mint"
 KEY_PREFIX = "mint:"
-URL_ENV = "ARGUS_MINT_URL"
+PEER = "mint"
+URL_ENV = "ARGUS_MINT_URL"  # also peer_env(PEER): herald's variable and the suite-wide one are the same name
 TOKEN_ENV = "ARGUS_MINT_POSTER_TOKEN"
 MAX_IMAGE_BYTES = 20_000_000
 PAGE = 200
@@ -86,9 +91,21 @@ class Reported:
 
 
 def base_url(env: Mapping[str, str]) -> str:
+    """Mint's address: ARGUS_MINT_URL in *env* (herald's `.env`), else the suite file's.
+
+    `off` (or `none`) in *env* means mint is not configured here, whatever the suite file says.
+    Either way the address is held to the same rule: https, or http to this machine or the LAN.
+    """
     base = (env.get(URL_ENV) or "").strip().rstrip("/")
+    if base.lower() in OFF:
+        base = ""
+    elif not base:
+        try:
+            base = peer_url(PEER) or ""  # blank here: the process environment, then the suite file
+        except PeerRefused as exc:  # names the variable, never the value
+            raise MintError(str(exc)) from None
     if not base:
-        raise MintError(f"Set {URL_ENV} in .env to argus-mint's address")
+        raise MintError(f"Set {URL_ENV} in .env (or the Argus suite file) to argus-mint's address")
     try:
         check_lan_url(base)
     except ValueError as exc:

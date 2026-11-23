@@ -275,7 +275,7 @@ sources:
     platforms: [twitter]       # default: every enabled destination that takes images
 ```
 
-Mint's address goes in `.env` as `ARGUS_MINT_URL`, never in the config (plain `http://` is accepted only for this machine or a private address). Herald pulls from mint and mint never calls herald, so it works from a laptop that is only sometimes on mint's network: while mint is out of reach the poll skips it.
+Mint's address goes in `.env` as `ARGUS_MINT_URL`, never in the config (plain `http://` is accepted only for this machine or a private address). `ARGUS_MINT_URL` is also the suite-wide name for mint (`argus_cortex.peers`): when `.env` leaves it unset or empty, herald reads it from the Argus suite settings file, `~/.config/argus/suite.env` (mode 600; `python -m argus_cortex.settings --init` creates it), and holds it to the same rule. A value in `.env` wins, and `ARGUS_MINT_URL=off` there ignores the suite file's. Nothing else comes from that file: the poster token and the platform tokens are read from herald's own environment only. Herald pulls from mint and mint never calls herald, so it works from a laptop that is only sometimes on mint's network: while mint is out of reach the poll skips it.
 
 - The first read baselines the source, so teasers already approved are not drafted.
 - A teaser that has been superseded by a newer draft, or already has a post, is skipped.
@@ -510,6 +510,10 @@ docker compose run --rm watcher drafts
 ```
 
 The review service is on `http://127.0.0.1:8787/` after `ARGUS_HERALD_UI_TOKEN` is set in `.env`. The watcher runs as uid 10001 with a read-only root filesystem. Config is mounted read-only. The queue is the volume compose created before the rename, `pip-release_pip-release-data`, so existing drafts carry over. Release images are published as `ghcr.io/smk762/argus-herald`. Secrets come from `.env`.
+
+To let the containers read the suite settings file, add [`compose.suite.yaml`](compose.suite.yaml) (`COMPOSE_FILE=compose.yaml:compose.suite.yaml` in `.env`). It mounts `${ARGUS_SUITE_ENV:-~/.config/argus/suite.env}` read-only at `/etc/argus/suite.env`; it is a separate file because a host without a suite file could not start with the mount in place. Known limit ([argus-cortex#218](https://github.com/smk762/argus-cortex/issues/218)): the containers run as uid 10001, which cannot open a mode-600 file it does not own, so today the mounted file has to be root-owned; otherwise it is ignored with a warning, and `ARGUS_MINT_URL` belongs in `.env`.
+
+Herald is not labelled for the suite directory (no `argus.peer` label), because its review UI is published on loopback only and has no health route.
 
 ## Tests
 

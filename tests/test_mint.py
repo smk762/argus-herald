@@ -374,3 +374,45 @@ def test_a_report_with_a_bad_draft_id_is_refused_for_that_reason(tmp_path):
     store.add_mint_report(draft_id, mint_id="../abc", platform="twitter", url=None, at="2026-11-18", sha256="0" * 64)
     (reported,) = mint.send_reports(store, ENV, MintHttp())
     assert reported.outcome == "refused" and reported.detail == "'../abc' isn't a draft id mint accepts"
+
+
+def _suite_file(tmp_path, monkeypatch, text):
+    path = tmp_path / "suite.env"
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o600)
+    monkeypatch.setenv("ARGUS_ENV_FILE", str(path))
+
+
+def test_mints_address_falls_back_to_the_suite_file_and_herald_s_own_wins(tmp_path, monkeypatch):
+    with pytest.raises(mint.MintError, match="ARGUS_MINT_URL"):  # nothing set anywhere: as before
+        mint.base_url({})
+    _suite_file(tmp_path, monkeypatch, "ARGUS_MINT_URL=http://suite.lan:8108/\n")
+    assert mint.base_url({}) == "http://suite.lan:8108"
+    assert mint.base_url({"ARGUS_MINT_URL": "  "}) == "http://suite.lan:8108"  # blank is unset
+    assert mint.base_url(ENV) == BASE  # herald's own .env wins
+    for off in ("off", "none", "OFF"):  # opted out here, whatever the suite file says
+        with pytest.raises(mint.MintError, match="Set ARGUS_MINT_URL"):
+            mint.base_url({"ARGUS_MINT_URL": off})
+
+
+def test_a_suite_file_address_is_held_to_the_same_rules_and_never_echoed(tmp_path, monkeypatch):
+    for bad in ("http://example.org", "https://user:hunter2@mint.example", "mint.lan:8108", "/api/mint"):
+        _suite_file(tmp_path, monkeypatch, f"ARGUS_MINT_URL={bad}\n")
+        with pytest.raises(mint.MintError) as refused:
+            mint.base_url({})
+        assert "ARGUS_MINT_URL" in str(refused.value) and bad not in str(refused.value)
+    # A bad address is an error on the poll, not "mint isn't configured".
+    cfg = _config(tmp_path)
+    (event,) = poll(cfg, Store(cfg.store_path), MintHttp(), PUBS, env={})
+    assert event.kind == "error" and "ARGUS_MINT_URL" in event.detail
+
+
+def test_the_poster_token_is_never_read_from_the_suite_file(tmp_path, monkeypatch, gate):
+    cfg, store, http, _ = _ready(tmp_path)
+    poll(cfg, store, http, PUBS, env=ENV)
+    draft_id = _handed_off(store, gate)
+    confirmed = confirm(store, draft_id, "https://x.com/someone/status/5")
+    _suite_file(tmp_path, monkeypatch, f"ARGUS_MINT_URL={BASE}\nARGUS_MINT_POSTER_TOKEN=from-the-suite-file\n")
+    note = mint.report_note(store, confirmed, {}, http)  # the address is found, the token is not
+    assert "ARGUS_MINT_POSTER_TOKEN" in note and "next poll" in note
+    assert not store.mint_report(draft_id)["reported_at"]
