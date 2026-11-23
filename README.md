@@ -513,7 +513,7 @@ The review service is on `http://127.0.0.1:8787/` after `ARGUS_HERALD_UI_TOKEN` 
 
 To let the containers read the suite settings file, add [`compose.suite.yaml`](compose.suite.yaml) (`COMPOSE_FILE=compose.yaml:compose.suite.yaml` in `.env`). It mounts `${ARGUS_SUITE_ENV:-~/.config/argus/suite.env}` read-only at `/etc/argus/suite.env`; it is a separate file because a host without a suite file could not start with the mount in place. Known limit ([argus-cortex#218](https://github.com/smk762/argus-cortex/issues/218)): the containers run as uid 10001, which cannot open a mode-600 file it does not own, so today the mounted file has to be root-owned; otherwise it is ignored with a warning, and `ARGUS_MINT_URL` belongs in `.env`.
 
-The review service carries the suite's discovery labels (`argus.peer: herald`, `argus.service: argus-herald`, `argus.port: "8787"`). It has no `/health` route (the watcher's health is `argus-herald healthcheck`, the heartbeat file), and its port is published on loopback only.
+Herald is not labelled for the suite directory (no `argus.peer` label), because its review UI is published on loopback only and has no health route.
 
 ## Tests
 

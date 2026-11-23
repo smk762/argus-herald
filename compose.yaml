@@ -42,12 +42,6 @@ services:
       ARGUS_HERALD_UI_URL: http://127.0.0.1:8787
     ports:
       - "127.0.0.1:8787:8787"
-    # What argus-iris's node agents read to list the suite's services. The review UI has no /health
-    # route, so there is no argus.health label, and the port is published on loopback only.
-    labels:
-      argus.peer: herald
-      argus.service: argus-herald
-      argus.port: "8787"
     volumes:
       - ./config.yaml:/config/config.yaml:ro
       - argus-herald-data:/data
