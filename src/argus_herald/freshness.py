@@ -36,7 +36,6 @@ from argus_herald.github import COMPARE_FILES, Comparison, compare
 from argus_herald.http import Http, HttpError
 from argus_herald.models import CLIP_CURRENT
 from argus_herald.store import Store
-from argus_herald.workflow import ReviewError
 
 FRESH, CHECK, REDO, UNKNOWN = "fresh", "check", "redo", "unknown"
 ORDER = (REDO, CHECK, UNKNOWN, FRESH)  # most urgent first; clips not checked come last
@@ -223,37 +222,7 @@ def refresh(store: Store, http: Http, config: Config, token: str = "") -> Summar
     return summary
 
 
-def ack(store: Store, clip_id: str) -> dict:
-    """The person looked and the clip still matches: move what it was recorded against up to
-    what the last check found."""
-    from argus_herald import clips
-
-    clip = clips.require(store, clip_id)
-    row = current(clip, store.clip_freshness().get(clip["id"]))
-    if row is None or not row["checked_at"]:
-        raise ReviewError(f"Clip {clip['id']} hasn't been compared with its demo yet; run `argus-herald clips refresh`")
-    changes = {}
-    if row["head_commit"]:
-        changes["demo_commit"] = row["head_commit"]
-    newest = row["newest_version"]
-    if newest and (minor(clip["project_version"]) is None or _later(newest, clip["project_version"])):
-        changes["project_version"] = newest
-    if changes:
-        clip = clips.update(store, clip["id"], **changes)
-    store.save_freshness(
-        clip["id"],
-        state=FRESH,
-        head_commit=row["head_commit"],
-        branch=row["branch"],
-        newest_version=newest,
-        base_commit=clip["demo_commit"],
-        base_version=clip["project_version"],
-        reason="acknowledged",
-    )
-    return clip
-
-
-def _later(version: str, than: str) -> bool:
+def later(version: str, than: str) -> bool:
     from argus_herald.digest import parse_version
 
     a, b = parse_version(version), parse_version(than)
@@ -320,7 +289,7 @@ def explain(clip: dict, row: dict | None, now: datetime | None = None) -> list[s
             commits += f" (GitHub lists only the first {COMPARE_FILES} changed files, so there may be more)"
         lines.append(commits + ".")
     newest, recorded = row["newest_version"], row["base_version"]
-    if newest and recorded and _later(newest, recorded):
+    if newest and recorded and later(newest, recorded):
         moved = "minor version moved" if minor_moved(recorded, newest) else "patch only"
         lines.append(f"{clip['project']} {recorded} -> {newest} ({moved}).")
     if row["state"] in FLAGGED and clip["stale_if"]:

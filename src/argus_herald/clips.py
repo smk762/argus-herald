@@ -117,6 +117,36 @@ def update(store: Store, clip_id: str, **changes: object) -> dict:
     return require(store, clip["id"])
 
 
+def ack(store: Store, clip_id: str) -> dict:
+    """The person looked and the clip still matches: move what it was recorded against up to
+    what the last check found."""
+    clip = require(store, clip_id)
+    row = freshness.current(clip, store.clip_freshness().get(clip["id"]))
+    if row is None or not row["checked_at"]:
+        raise ReviewError(f"Clip {clip['id']} hasn't been compared with its demo yet; run `argus-herald clips refresh`")
+    changes = {}
+    if row["head_commit"]:
+        changes["demo_commit"] = row["head_commit"]
+    newest = row["newest_version"]
+    if newest and (
+        freshness.minor(clip["project_version"]) is None or freshness.later(newest, clip["project_version"])
+    ):
+        changes["project_version"] = newest
+    if changes:
+        clip = update(store, clip["id"], **changes)
+    store.save_freshness(
+        clip["id"],
+        state=freshness.FRESH,
+        head_commit=row["head_commit"],
+        branch=row["branch"],
+        newest_version=newest,
+        base_commit=clip["demo_commit"],
+        base_version=clip["project_version"],
+        reason="acknowledged",
+    )
+    return clip
+
+
 def _stamp(before: dict | None, fields: dict[str, object]) -> dict[str, object]:
     """A clip that becomes `recorded` (first take or a re-record) was recorded today, unless a date is given."""
     was = before["status"] if before else None
