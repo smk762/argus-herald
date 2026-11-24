@@ -362,7 +362,7 @@ def cmd_clips(config: Config, store: Store, args: argparse.Namespace, http) -> i
         clips.remove(store, rest[0])
         print(f"Removed clip {rest[0]}.")
     elif action == "ack":
-        clip = freshness.ack(store, rest[0])
+        clip = clips.ack(store, rest[0])
         print(
             f"Clip {clip['id']} is fresh: demo_commit={clip['demo_commit']} project_version={clip['project_version']}"
         )

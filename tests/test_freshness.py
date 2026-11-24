@@ -407,7 +407,7 @@ def test_ack_moves_the_clip_forward(tmp_path):
     store.baseline("argus-atlas", ["0.4.0", "0.5.1"])
     recorded(store, "ui")
     with pytest.raises(ReviewError, match="hasn't been compared"):
-        freshness.ack(store, "ui")
+        clips.ack(store, "ui")
     gh = GitHub({f"smk762/argus-realms/compare/{BASE}...dev": compared(4, ["src/a.ts"])})
     freshness.refresh(store, gh, cfg)
     assert freshness.state(store.clip("ui"), store.clip_freshness()["ui"]) == "redo"
@@ -416,10 +416,10 @@ def test_ack_moves_the_clip_forward(tmp_path):
     clips.update(store, "ui", demo_commit="fffffff")
     assert freshness.state(store.clip("ui"), store.clip_freshness()["ui"]) == ""
     with pytest.raises(ReviewError, match="hasn't been compared"):
-        freshness.ack(store, "ui")
+        clips.ack(store, "ui")
     clips.update(store, "ui", demo_commit=BASE)
 
-    clip = freshness.ack(store, "ui")
+    clip = clips.ack(store, "ui")
     assert (clip["demo_commit"], clip["project_version"], clip["status"]) == (HEAD, "0.5.1", "recorded")
     row = store.clip_freshness()["ui"]
     assert freshness.state(clip, row) == "fresh" and freshness.explain(clip, row)[-1].startswith("Acknowledged")
