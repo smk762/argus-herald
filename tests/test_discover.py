@@ -131,3 +131,17 @@ def test_one_failing_repo_is_a_note_and_the_rest_are_checked(tmp_path):
     assert drift.missing == ["argus-typo"]
     assert drift.unconfigured == {"argus-mask": "github.com/smk762/argus-mask"}
     assert any(note.startswith("github.com/smk762/argus-broken not checked") for note in drift.notes)
+
+
+def test_a_network_error_on_a_tracked_project_is_a_note_and_the_rest_are_checked(tmp_path):
+    class Flaky(Http):
+        def request(self, method, url, body=None, headers=None):
+            if url.startswith("https://pypi.org/pypi/argus-atlas/"):
+                raise OSError("name resolution failed")
+            return super().request(method, url, body, headers)
+
+    cfg = _config(tmp_path, ["argus-atlas", "argus-typo"])
+    drift = check_projects(cfg, Flaky(KNOWN, REPOS, PYPROJECTS), {})
+    assert drift.missing == ["argus-typo"]
+    assert "PyPI not checked for argus-atlas: name resolution failed" in drift.notes
+    assert drift.unconfigured == {"argus-mask": "github.com/smk762/argus-mask"}

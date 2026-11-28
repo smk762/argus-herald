@@ -468,13 +468,20 @@ class Store:
         note: str | None = None,
         *,
         force: bool = False,
+        expect: Draft | None = None,
     ) -> bool:
-        """Replace a pending draft's text only if a person hasn't edited it (or force)."""
-        edited = "" if force else " AND edited = 0"
+        """Replace a pending draft's text only if a person hasn't edited it (or force). With expect,
+        only if the draft is still as expect read it: the same text, and not touched since (a draft
+        that was approved or withdrawn and came back to pending has a newer updated_at)."""
+        conditions = "" if force else " AND edited = 0"
+        params: list[object] = [title, body, reply, drafted_by, note, utc_now_iso(), draft_id]
+        if expect is not None:
+            conditions += " AND title = ? AND body = ? AND reply = ? AND edited = ? AND updated_at = ?"
+            params += [expect.title, expect.body, expect.reply, int(expect.edited), expect.updated_at]
         cur = self.conn.execute(
             "UPDATE drafts SET title = ?, body = ?, reply = ?, drafted_by = ?, note = ?, edited = 0, updated_at = ? "
-            f"WHERE id = ? AND status = 'pending'{edited}",
-            (title, body, reply, drafted_by, note, utc_now_iso(), draft_id),
+            f"WHERE id = ? AND status = 'pending'{conditions}",
+            params,
         )
         return bool(cur.rowcount)
 
@@ -649,7 +656,6 @@ class Store:
             "INSERT OR IGNORE INTO mint_reports (draft_id, mint_id, platform, url, at, sha256) VALUES (?, ?, ?, ?, ?, ?)",
             (draft_id, mint_id, platform, url, at, sha256),
         )
-        self.conn.commit()
         return cur.rowcount == 1
 
     def mint_report(self, draft_id: int) -> dict | None:
@@ -667,7 +673,6 @@ class Store:
             "UPDATE mint_reports SET reported_at = ?, refused = ?, error = ? WHERE draft_id = ?",
             (utc_now_iso() if reported else "", int(refused), error[:500], draft_id),
         )
-        self.conn.commit()
 
     def get(self, draft_id: int) -> Draft | None:
         row = self.conn.execute("SELECT * FROM drafts WHERE id = ?", (draft_id,)).fetchone()
@@ -749,7 +754,8 @@ class Store:
             """,
             params,
         )
-        self.conn.commit()
+        # No commit here: autocommit already ends a lone statement, and a caller's transaction()
+        # must be able to roll this back with the rest of its writes.
         if cur.rowcount != 1:
             return None
         return self.get(draft_id)

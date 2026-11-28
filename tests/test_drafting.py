@@ -210,6 +210,30 @@ def test_regenerate_keeps_an_edit_made_while_the_model_was_drafting(tmp_path, ga
     store.close()
 
 
+def test_regenerate_keeps_a_draft_that_left_pending_and_came_back_while_the_model_was_drafting(
+    tmp_path, gate, monkeypatch
+):
+    import argus_herald.store as store_module
+
+    settings, store, digest_id = _digest(tmp_path)
+    ids, _ = build_digest(store, settings, [TwitterPublisher()], digest_id, gate)
+    before = store.get(ids[0]).body
+
+    class ApproveAndWithdrawMeanwhile(Chat):
+        def request(self, method, url, body=None, headers=None):
+            # Its text is untouched, but it was approved and sent back: a later updated_at.
+            monkeypatch.setattr(store_module, "utc_now_iso", lambda: "2999-01-01T00:00:00+00:00")
+            store.transition(ids[0], ("pending",), "approved")
+            store.transition(ids[0], ("approved",), "pending")
+            return super().request(method, url, body, headers)
+
+    backend = OpenAICompatible(ApproveAndWithdrawMeanwhile(GOOD), "http://localhost/v1", "nemo")
+    with pytest.raises(ValueError, match="changed while it was being regenerated"):
+        regenerate(store, settings, TwitterPublisher(), ids[0], backend, gate)
+    assert store.get(ids[0]).body == before
+    store.close()
+
+
 def test_dropping_an_item_keeps_the_closing_line():
     from argus_herald.drafting import repair
 

@@ -58,3 +58,23 @@ def test_add_draft_raises_when_a_row_is_refused_for_anything_but_an_existing_dra
         project="argus-atlas", version="0.1.0", platform="twitter", title="", body="b", link="l"
     )[1]
     store.close()
+
+
+def test_transition_and_mint_reports_roll_back_with_an_enclosing_transaction(tmp_path):
+    import pytest
+
+    store = Store(tmp_path / "s.sqlite")
+    draft_id, _ = store.add_draft(
+        project="argus-atlas", version="0.1.0", platform="twitter", title="", body="b", link="l"
+    )
+    with pytest.raises(RuntimeError), store.transaction():
+        assert store.transition(draft_id, ("pending",), "approved") is not None
+        store.add_mint_report(draft_id, mint_id="abc", platform="twitter", url=None, at="2026-11-18", sha256="0" * 64)
+        store.settle_mint_report(draft_id, reported=True)
+        raise RuntimeError("a later step fails")
+    assert store.get(draft_id).status == "pending"
+    assert store.mint_report(draft_id) is None
+    # Outside a transaction each one still stands on its own.
+    assert store.transition(draft_id, ("pending",), "approved") is not None
+    store.close()
+    assert Store(tmp_path / "s.sqlite").get(draft_id).status == "approved"
