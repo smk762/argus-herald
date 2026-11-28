@@ -423,10 +423,12 @@ def test_a_failed_getposts_batch_only_costs_its_own_posts(tmp_path):
     assert sum("getPosts" in url for url in http.calls) == 2
     assert report.errors == []
     assert [url for url in good if metrics.count("post_metrics", platform="bluesky", external_id=url) != 1] == []
-    assert [line for line in report.skipped if "bluesky" in line] == [
-        line for line in report.skipped if "can't fetch" in line and "3kzzbad" in line
-    ]
     assert len(report.skipped) == 1
+    assert "can't fetch" in report.skipped[0] and "3kzzbad" in report.skipped[0]
+    assert (
+        metrics.count("post_metrics", platform="bluesky", external_id=f"https://bsky.app/profile/{DID}/post/3kzzbad")
+        == 0
+    )
 
 
 def test_a_getposts_answer_that_isnt_an_object_is_a_problem_not_a_crash(tmp_path):

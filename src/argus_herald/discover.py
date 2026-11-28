@@ -48,7 +48,11 @@ def check_projects(config: Config, http: Http, env: Mapping[str, str]) -> Drift:
     ignored = {canonicalize_name(name) for name in config.ignore}
 
     for name in tracked:
-        status = _pypi_status(http, name)
+        try:
+            status = _pypi_status(http, name)
+        except OSError as exc:  # HttpError is answered by _pypi_status; this is DNS, timeouts, resets
+            drift.notes.append(f"PyPI not checked for {name}: {exc}")
+            continue
         if status == 404:
             drift.missing.append(name)
         elif status != 200:
