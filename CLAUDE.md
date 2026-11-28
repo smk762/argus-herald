@@ -1,6 +1,6 @@
 # CLAUDE.md — argus-herald
 
-Guidance for AI agents working in this repo. Human-facing usage lives in [README.md](README.md); this file is the orientation an agent needs to change code safely.
+Guidance for AI agents working in this repo. Human-facing usage lives in [README.md](README.md) and the guides under `docs/` (both imported by docs.dragonhound.dev; `tests/test_docs_publishable.py` holds them to its rules); this file is the orientation an agent needs to change code safely.
 
 > Scaffolded from [`argus-pkg-template`](https://github.com/smk762/argus-pkg-template) (`.copier-answers.yml`); `uvx copier update` pulls tooling changes.
 

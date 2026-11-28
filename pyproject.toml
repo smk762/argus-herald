@@ -56,7 +56,7 @@ version-file = "src/argus_herald/_version.py"
 
 [tool.hatch.build.targets.sdist]
 # An allow-list: a local build must never pick up untracked notes or tests/bombadil/node_modules.
-only-include = ["src", "tests", "examples", "contrib", "README.md", "LICENSE", "config.example.yaml", ".env.example"]
+only-include = ["src", "tests", "examples", "contrib", "docs", "README.md", "LICENSE", "config.example.yaml", ".env.example"]
 exclude = ["tests/bombadil/node_modules", "tests/bombadil/out", "**/__pycache__"]
 
 [tool.hatch.build.targets.wheel]
